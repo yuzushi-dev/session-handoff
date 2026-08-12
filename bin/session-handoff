@@ -4,15 +4,122 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PACKAGE_ROOT))
 
 from server.session_switch import SessionSupervisor
+from server.setup import SetupError, install_setup, render_plan, restore_setup, setup_plan
+
+
+def _setup(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="session-handoff setup",
+        description="Install the user-scoped Codex and Claude handoff adapters.",
+    )
+    parser.add_argument(
+        "--client",
+        action="append",
+        choices=("codex", "claude"),
+        help="Only configure one client; repeat to configure both.",
+    )
+    parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
+    args = parser.parse_args(argv)
+
+    requested = args.client or ["codex", "claude"]
+    executable_paths: dict[str, Path] = {}
+    missing: list[str] = []
+    for client in dict.fromkeys(requested):
+        executable = shutil.which(client)
+        if executable:
+            executable_paths[client] = Path(executable)
+        else:
+            missing.append(client)
+    if missing and args.client:
+        print("client executable not found: " + ", ".join(missing), file=sys.stderr)
+        return 2
+    if not executable_paths:
+        print("No supported client executable found (codex or claude).", file=sys.stderr)
+        return 2
+
+    home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+    package_root = PACKAGE_ROOT
+    plan = setup_plan(package_root, home, list(executable_paths), executable_paths=executable_paths)
+    print(render_plan(plan))
+    if not args.yes:
+        answer = input("\nProceed with this setup? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Setup cancelled.")
+            return 0
+
+    try:
+        result = install_setup(
+            package_root,
+            home,
+            list(executable_paths),
+            executable_paths=executable_paths,
+        )
+    except (SetupError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"Setup failed: {exc}", file=sys.stderr)
+        return 1
+    print("\nSetup complete. Restart the client and any open shell once.")
+    if missing:
+        print("Skipped unavailable client(s): " + ", ".join(missing))
+    if result.get("already_configured"):
+        print("Existing setup was already valid; nothing changed.")
+    return 0
+
+
+def _run_supervisor(argv: list[str]) -> int:
+    if len(argv) < 3 or argv[0] not in {"codex", "claude"} or argv[1] != "--executable":
+        raise SystemExit("usage: session-handoff run {codex|claude} --executable PATH [HOST_ARGS...]")
+    client = argv[0]
+    executable = argv[2]
+    host_args = argv[3:]
+    return SessionSupervisor(
+        client,
+        host_args,
+        executable=executable,
+    ).run()
+
+
+def _uninstall(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="session-handoff uninstall",
+        description="Restore client launchers and remove the managed setup.",
+    )
+    parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
+    args = parser.parse_args(argv)
+    home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+    if not args.yes:
+        answer = input("Restore original launchers and remove session-handoff setup? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Uninstall cancelled.")
+            return 0
+    try:
+        result = restore_setup(home)
+    except (SetupError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"Uninstall failed: {exc}", file=sys.stderr)
+        return 1
+    if result.get("already_clean"):
+        print("No managed setup found.")
+    else:
+        print("Session-handoff setup removed and original launchers restored.")
+    return 0
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["setup"]:
+        return _setup(sys.argv[2:])
+    if sys.argv[1:2] == ["run"]:
+        return _run_supervisor(sys.argv[2:])
+    if sys.argv[1:2] == ["uninstall"]:
+        return _uninstall(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="Run Codex or Claude and automatically relaunch after a handoff."
     )

@@ -5,14 +5,14 @@ description: Create or resume an exact handoff document when a user asks for a h
 
 # Session Handoff
 
-Use this skill to move work between coding-agent sessions without relying on the old transcript. The handoff is an implementation-state document, not a generic summary.
+Use this skill to move work between coding-agent sessions without relying on the old transcript. The handoff is an implementation-state document, not a generic summary. In Codex, invoke it explicitly as `$session-handoff` or use the installed skill from the slash/menu surface when available. In Claude, the setup command installs a user-scoped `/session-handoff` adapter.
 
 ## Choose the mode
 
 - Create mode: the user asks to create, prepare, or write a handoff, or says they want a fresh start.
 - Resume mode: the user provides a handoff path or asks to continue from a handoff.
 
-When the user asks for a handoff or fresh start, the intended behavior is an automatic switch. The bundled launcher supervises Codex or Claude and starts a fresh client after `handoff_create` succeeds. If the launcher is not active, the MCP result reports `auto_switch_requested: false`; report the manual fallback instead of claiming that a switch occurred.
+When the user asks for a handoff or fresh start, the intended behavior is an automatic switch. The one-time `npx session-handoff setup` command installs a persistent plugin bundle, user-scoped MCP registration, and managed Codex/Claude launchers. The launcher supervises the client and starts a fresh one after `handoff_create` succeeds. If the launcher is not active, the MCP result reports `auto_switch_requested: false`; report the manual fallback instead of claiming that a switch occurred.
 
 ## Create mode
 

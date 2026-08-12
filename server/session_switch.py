@@ -102,6 +102,43 @@ def handoff_prompt(workspace: str, path: str) -> str:
     return f"Resume from {path} in {workspace}."
 
 
+def _fresh_session_args(client: str, args: list[str]) -> list[str]:
+    """Remove selectors that would make the relaunch reuse the old session."""
+
+    selectors = {"--resume", "--session-id"}
+    if client == "claude":
+        selectors.update({"-c", "--continue"})
+    else:
+        selectors.update({"--last"})
+    fresh: list[str] = []
+    index = 0
+    while index < len(args):
+        argument = args[index]
+        if client == "codex" and argument == "resume":
+            index += 1
+            if index < len(args) and not args[index].startswith("-"):
+                index += 1
+            continue
+        if argument in selectors:
+            index += 1
+            if argument in {"--resume", "--session-id"} and index < len(args):
+                index += 1
+            continue
+        if argument.startswith("--resume=") or argument.startswith("--session-id="):
+            index += 1
+            continue
+        fresh.append(argument)
+        index += 1
+    if client == "codex" and "exec" in fresh:
+        exec_index = fresh.index("exec")
+        if len(fresh) > exec_index + 1 and not fresh[-1].startswith("-"):
+            fresh.pop()
+    elif client == "claude" and ("-p" in fresh or "--print" in fresh):
+        if fresh and not fresh[-1].startswith("-"):
+            fresh.pop()
+    return fresh
+
+
 class SessionSupervisor:
     """Run a client and replace it when the MCP server requests a handoff."""
 
@@ -131,11 +168,21 @@ class SessionSupervisor:
         os.chmod(control_dir, 0o700)
         control = control_dir / "switch.json"
         token = secrets.token_urlsafe(32)
+        token_file = control_dir / "token"
+        token_file.write_text(token, encoding="utf-8")
+        os.chmod(token_file, 0o600)
         env = os.environ.copy()
         env[CONTROL_PATH_ENV] = str(control)
-        env[CONTROL_TOKEN_ENV] = token
+        env.pop(CONTROL_TOKEN_ENV, None)
         executable = self.executable or shutil.which(self.client) or self.client
-        base_argv = [executable, *self.host_args]
+        host_args = list(self.host_args)
+        if self.client == "codex":
+            host_args = [
+                "-c",
+                f"mcp_servers.session-handoff.env.{CONTROL_PATH_ENV}={json.dumps(str(control))}",
+                *host_args,
+            ]
+        base_argv = [executable, *host_args]
         process = self.popen(base_argv, env=env)
 
         while True:
@@ -146,7 +193,11 @@ class SessionSupervisor:
             if request:
                 self._terminate(process)
                 process = self.popen(
-                    [*base_argv, handoff_prompt(request["workspace"], request["path"])],
+                    [
+                        executable,
+                        *_fresh_session_args(self.client, host_args),
+                        handoff_prompt(request["workspace"], request["path"]),
+                    ],
                     env=env,
                     cwd=request["workspace"],
                 )

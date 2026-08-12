@@ -26,7 +26,7 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
 
 
 SERVER_NAME = "session-handoff"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.4.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MAX_CONTENT_BYTES = 2_000_000
 MAX_LIST_LIMIT = 100
@@ -225,9 +225,15 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     }
     if auto_switch:
         try:
+            control_path = os.environ.get(CONTROL_PATH_ENV)
+            token = os.environ.get(CONTROL_TOKEN_ENV)
+            if control_path:
+                token_path = Path(control_path).with_name("token")
+                if token_path.is_file():
+                    token = token_path.read_text(encoding="utf-8").strip()
             write_switch_request(
-                os.environ.get(CONTROL_PATH_ENV),
-                os.environ.get(CONTROL_TOKEN_ENV),
+                control_path,
+                token,
                 str(root),
                 result["path"],
             )
