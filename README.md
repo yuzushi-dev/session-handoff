@@ -12,13 +12,13 @@ In an active session:
 Create a handoff focused on the remaining API migration work.
 ```
 
-Start a fresh session and continue with:
+When the client is launched through the bundled supervisor, the handoff automatically starts a fresh session and continues with:
 
 ```text
 Resume from handoffs/2026-08-12-api-migration.md
 ```
 
-The skill creates and reads the handoff; the MCP server does not switch sessions automatically.
+The automatic path is opt-in at process level: the supervisor owns the current Codex or Claude process and relaunches it after `handoff_create` succeeds.
 
 ## Examples
 
@@ -46,15 +46,23 @@ List the handoffs under handoffs/ and validate the one related to the release wo
 
 The local Codex marketplace entry is at `~/.agents/plugins/marketplace.json`. Install `session-handoff` from that marketplace, or load the package directly while developing. Codex uses `.codex-plugin/plugin.json`, `skills/`, and `.mcp.json`.
 
+Run Codex with automatic switching:
+
+```bash
+python3 /path/to/session-handoff/bin/session-handoff codex --
+```
+
 ## Claude Code
 
 Load the package for a development session with:
 
 ```bash
-claude --plugin-dir /path/to/session-handoff
+python3 /path/to/session-handoff/bin/session-handoff claude -- --plugin-dir /path/to/session-handoff
 ```
 
-Then invoke `/session-handoff:session-handoff`, or ask for a handoff in natural language. Claude uses `.claude-plugin/plugin.json`, the shared `skills/` directory, and `.mcp.json`.
+Then invoke `/session-handoff:handoff`, or ask for a handoff in natural language. Claude uses `.claude-plugin/plugin.json`, `commands/`, the shared `skills/` directory, and `.mcp.json`.
+
+The command requests the automatic switch through the supervisor. A direct `claude --plugin-dir ...` invocation intentionally falls back to manual resume because a Claude plugin cannot replace its own host process.
 
 ## Safety and scope
 
@@ -62,7 +70,7 @@ Then invoke `/session-handoff:session-handoff`, or ask for a handoff in natural 
 - Existing files are never overwritten by default.
 - Secrets are redacted before persistence and before read results are returned.
 - The plugin does not delete, rename, or mutate project files other than the requested handoff file.
-- It does not automatically start, stop, or switch a Codex/Claude session.
+- Automatic switching requires the bundled supervisor; launching `codex` or `claude` directly keeps the safe manual-resume fallback.
 
 ## Development checks
 

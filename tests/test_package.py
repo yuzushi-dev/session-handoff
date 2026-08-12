@@ -16,7 +16,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.1.0"
+    assert portable["version"] == codex["version"] == claude["version"] == "0.2.0"
     assert set(portable) <= {
         "$schema",
         "name",
@@ -57,6 +57,7 @@ def test_skill_documents_create_and_resume_workflows():
     assert "name: session-handoff" in skill
     assert "description:" in skill
     assert "handoff_create" in skill
+    assert "auto_switch: true" in skill
     assert "resume" in skill.lower()
     for section in (
         "## Goal",
@@ -67,3 +68,18 @@ def test_skill_documents_create_and_resume_workflows():
         "## Next Steps",
     ):
         assert section in skill
+
+
+def test_claude_command_requests_supervised_handoff():
+    command = (ROOT / "commands/handoff.md").read_text(encoding="utf-8")
+
+    assert command.startswith("---\n")
+    assert "auto_switch: true" in command
+    assert "auto_switch_requested" in command
+
+
+def test_supervisor_entrypoint_is_executable():
+    entrypoint = ROOT / "bin/session-handoff"
+
+    assert entrypoint.stat().st_mode & 0o111
+    assert "SessionSupervisor" in entrypoint.read_text(encoding="utf-8")

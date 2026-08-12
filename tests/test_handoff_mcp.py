@@ -8,7 +8,7 @@ from pathlib import Path
 SERVER = Path(__file__).parents[1] / "server" / "handoff_mcp.py"
 
 
-def exchange(requests):
+def exchange(requests, env_overrides=None):
     payload = "\n".join(json.dumps(request) for request in requests) + "\n"
     result = subprocess.run(
         [sys.executable, str(SERVER)],
@@ -16,7 +16,7 @@ def exchange(requests):
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", **(env_overrides or {})},
     )
     assert result.returncode == 0, result.stderr
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
@@ -109,6 +109,116 @@ Keep the API stable.
     assert tool_result(responses[2])["isError"] is True
     read = tool_result(responses[3])
     assert "API_TOKEN=[REDACTED]" in read["content"]
+
+
+def test_create_requests_automatic_switch_when_supervised(tmp_path):
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    control_path = control_dir / "switch.json"
+    token = "test-control-token"
+    content = """## Goal
+Continue the feature.
+
+## Constraints & Preferences
+- Keep the API stable.
+
+## Progress
+### Done
+- Wrote the handoff.
+### In Progress
+- None.
+### Pending
+- Continue implementation.
+
+## Key Decisions
+- Use the handoff file.
+
+## Critical Context
+- The supervisor owns the next session.
+
+## Next Steps
+1. Resume from this file.
+"""
+
+    responses = exchange(
+        [
+            initialized(),
+            call(
+                2,
+                "handoff_create",
+                {
+                    "workspace": str(tmp_path),
+                    "path": "handoffs/feature.md",
+                    "content": content,
+                    "auto_switch": True,
+                },
+            ),
+        ],
+        {
+            "SESSION_HANDOFF_CONTROL": str(control_path),
+            "SESSION_HANDOFF_CONTROL_TOKEN": token,
+        },
+    )
+
+    result = tool_result(responses[1])
+    assert result["auto_switch_requested"] is True
+    request = json.loads(control_path.read_text(encoding="utf-8"))
+    assert request == {
+        "token": token,
+        "workspace": str(tmp_path),
+        "path": "handoffs/feature.md",
+    }
+
+
+def test_create_reports_manual_fallback_without_supervisor(tmp_path):
+    content = """## Goal
+Continue the feature.
+
+## Constraints & Preferences
+- Keep the API stable.
+
+## Progress
+### Done
+- Wrote the handoff.
+### In Progress
+- None.
+### Pending
+- Continue implementation.
+
+## Key Decisions
+- Use the handoff file.
+
+## Critical Context
+- No launcher is active.
+
+## Next Steps
+1. Resume from this file.
+"""
+
+    responses = exchange(
+        [
+            initialized(),
+            call(
+                2,
+                "handoff_create",
+                {
+                    "workspace": str(tmp_path),
+                    "path": "handoffs/manual.md",
+                    "content": content,
+                    "auto_switch": True,
+                },
+            ),
+        ],
+        {
+            "SESSION_HANDOFF_CONTROL": "",
+            "SESSION_HANDOFF_CONTROL_TOKEN": "",
+        },
+    )
+
+    result = tool_result(responses[1])
+    assert result["valid"] is True
+    assert result["auto_switch_requested"] is False
+    assert "unavailable" in result["auto_switch_error"]
 
 
 def test_create_rejects_path_escape_and_missing_sections(tmp_path):

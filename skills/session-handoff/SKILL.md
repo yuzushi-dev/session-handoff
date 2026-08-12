@@ -12,7 +12,7 @@ Use this skill to move work between coding-agent sessions without relying on the
 - Create mode: the user asks to create, prepare, or write a handoff, or says they want a fresh start.
 - Resume mode: the user provides a handoff path or asks to continue from a handoff.
 
-Never claim that this skill automatically switches, closes, or starts a host session. After creating the file, the user starts the fresh Codex or Claude session and invokes this skill again.
+When the user asks for a handoff or fresh start, the intended behavior is an automatic switch. The bundled launcher supervises Codex or Claude and starts a fresh client after `handoff_create` succeeds. If the launcher is not active, the MCP result reports `auto_switch_requested: false`; report the manual fallback instead of claiming that a switch occurred.
 
 ## Create mode
 
@@ -20,8 +20,8 @@ Never claim that this skill automatically switches, closes, or starts a host ses
 2. Capture exact technical state: absolute or repository-relative file paths, symbols, commands, outputs, test names and results, errors, decisions, and unfinished work. Do not replace specifics with vague prose.
 3. Never copy secrets into the handoff. Do not read or include `.env` values, credentials, tokens, private keys, cookies, or authorization headers. Use placeholders such as `<configured externally>` when needed. The MCP server redacts common credential forms as a second safety layer, but the model must still avoid sending secrets to the tool.
 4. Choose a new path such as `handoffs/YYYY-MM-DD-<short-slug>.md`. Do not overwrite an existing file unless the user explicitly asks for that exact replacement.
-5. Call `handoff_create` with the absolute workspace directory, the workspace-relative path, and the complete document. If the MCP server is unavailable, write the same document with the normal file tool and then run `handoff_validate` when available.
-6. Report only the created path, validity, and the next-session instruction. Do not claim work was completed merely because a handoff was written.
+5. Call `handoff_create` with the absolute workspace directory, the workspace-relative path, the complete document, and `auto_switch: true`. If the MCP server is unavailable, write the same document with the normal file tool and report that automatic switching was unavailable.
+6. If the result has `auto_switch_requested: true`, do not continue the old task or ask for confirmation: the launcher is replacing this client with a fresh session using the handoff path. If it is false, report the created path and the manual resume command. Do not claim a switch occurred merely because a handoff was written.
 
 Use exactly this document structure:
 

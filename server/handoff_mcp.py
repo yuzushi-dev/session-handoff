@@ -15,9 +15,18 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from .session_switch import (
+        CONTROL_PATH_ENV,
+        CONTROL_TOKEN_ENV,
+        write_switch_request,
+    )
+except ImportError:  # direct `python server/handoff_mcp.py` execution
+    from session_switch import CONTROL_PATH_ENV, CONTROL_TOKEN_ENV, write_switch_request
+
 
 SERVER_NAME = "session-handoff"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MAX_CONTENT_BYTES = 2_000_000
 MAX_LIST_LIMIT = 100
@@ -194,6 +203,9 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     overwrite = arguments.get("overwrite", False)
     if not isinstance(overwrite, bool):
         raise HandoffError("overwrite must be a boolean")
+    auto_switch = arguments.get("auto_switch", False)
+    if not isinstance(auto_switch, bool):
+        raise HandoffError("auto_switch must be a boolean")
 
     redacted, redacted_count = redact_secrets(content)
     missing_sections = validate_handoff(redacted)
@@ -205,12 +217,25 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
         )
     _atomic_write(path, redacted)
-    return {
+    result = {
         "path": _relative(root, path),
         "valid": True,
         "redacted_count": redacted_count,
         "bytes": len(redacted.encode("utf-8")),
     }
+    if auto_switch:
+        try:
+            write_switch_request(
+                os.environ.get(CONTROL_PATH_ENV),
+                os.environ.get(CONTROL_TOKEN_ENV),
+                str(root),
+                result["path"],
+            )
+            result["auto_switch_requested"] = True
+        except (ValueError, OSError) as exc:
+            result["auto_switch_requested"] = False
+            result["auto_switch_error"] = str(exc)
+    return result
 
 
 def _read(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -296,7 +321,7 @@ def _list(arguments: dict[str, Any]) -> dict[str, Any]:
 TOOLS = [
     {
         "name": "handoff_create",
-        "description": "Create a validated handoff document inside a workspace. Secrets are redacted before writing; existing files are never overwritten unless overwrite=true is explicit.",
+        "description": "Create a validated handoff document inside a workspace. Secrets are redacted before writing; existing files are never overwritten unless overwrite=true is explicit. Set auto_switch=true when running under the session-handoff launcher to replace the current client session automatically.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -306,6 +331,7 @@ TOOLS = [
                 "path": {"type": "string", "description": "File path relative to workspace, for example handoffs/2026-08-12-feature.md."},
                 "content": {"type": "string", "description": "Complete handoff with all canonical sections."},
                 "overwrite": {"type": "boolean", "default": False, "description": "Explicitly allow replacing an existing handoff."},
+                "auto_switch": {"type": "boolean", "default": False, "description": "Ask the session-handoff launcher to terminate this client and start a fresh session with the handoff."},
             },
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},

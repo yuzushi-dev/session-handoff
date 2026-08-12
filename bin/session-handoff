@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Launch Codex or Claude with automatic session handoff support."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+from server.session_switch import SessionSupervisor
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run Codex or Claude and automatically relaunch after a handoff."
+    )
+    parser.add_argument("client", choices=("codex", "claude"))
+    parser.add_argument("host_args", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    host_args = args.host_args[1:] if args.host_args[:1] == ["--"] else args.host_args
+    return SessionSupervisor(args.client, host_args).run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
