@@ -1,0 +1,27 @@
+{
+  "name": "session-handoff",
+  "version": "0.1.0",
+  "description": "Create and resume exact, secret-safe handoff documents across coding-agent sessions.",
+  "author": {
+    "name": "yuzushi-dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "handoff",
+    "session",
+    "context",
+    "codex",
+    "claude"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Session Handoff",
+    "shortDescription": "Carry exact coding context into a fresh session.",
+    "longDescription": "Session Handoff creates validated, secret-safe handoff documents and resumes work from them in Codex or Claude.",
+    "developerName": "yuzushi-dev",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Create a handoff for this session."
+  },
+  "mcpServers": "./.mcp.json"
+}

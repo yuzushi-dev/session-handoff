@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "session-handoff",
+  "version": "0.1.0",
+  "description": "Create and resume exact, secret-safe handoff documents across coding-agent sessions.",
+  "author": {
+    "name": "yuzushi-dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "handoff",
+    "session",
+    "context",
+    "codex",
+    "claude"
+  ]
+}
