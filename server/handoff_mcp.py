@@ -19,11 +19,16 @@ try:
     from .session_switch import (
         CONTROL_PATH_ENV,
         CONTROL_TOKEN_ENV,
+        write_migration_request,
         write_switch_request,
     )
 except ImportError:  # direct `python server/handoff_mcp.py` execution
-    from session_switch import CONTROL_PATH_ENV, CONTROL_TOKEN_ENV, write_switch_request
-
+    from session_switch import (
+        CONTROL_PATH_ENV,
+        CONTROL_TOKEN_ENV,
+        write_migration_request,
+        write_switch_request,
+    )
 
 SERVER_NAME = "session-handoff"
 SERVER_VERSION = "0.5.0"
@@ -74,7 +79,6 @@ def _replace_assignment(match: re.Match[str]) -> str:
 
 def redact_secrets(text: str) -> tuple[str, int]:
     """Redact common credential forms before handoff text is persisted/displayed."""
-
     count = 0
 
     def replace_private(match: re.Match[str]) -> str:
@@ -107,8 +111,6 @@ def redact_secrets(text: str) -> tuple[str, int]:
 
 
 def validate_handoff(text: str) -> list[str]:
-    """Return canonical sections absent from a handoff document."""
-
     return [section for section in REQUIRED_SECTIONS if section not in text]
 
 
@@ -193,6 +195,16 @@ def _require_string(arguments: dict[str, Any], name: str) -> str:
     return value
 
 
+def _control_credentials() -> tuple[str, str]:
+    control_path = os.environ.get(CONTROL_PATH_ENV)
+    token = os.environ.get(CONTROL_TOKEN_ENV)
+    if control_path:
+        token_path = Path(control_path).with_name("token")
+        if token_path.is_file():
+            token = token_path.read_text(encoding="utf-8").strip()
+    return control_path or "", token or ""
+
+
 def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     workspace = _require_string(arguments, "workspace")
     requested_path = _require_string(arguments, "path")
@@ -211,7 +223,6 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     missing_sections = validate_handoff(redacted)
     if missing_sections:
         raise HandoffError("missing canonical sections: " + ", ".join(missing_sections))
-
     if path.exists() and not overwrite:
         raise HandoffError(
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
@@ -225,22 +236,44 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     }
     if auto_switch:
         try:
-            control_path = os.environ.get(CONTROL_PATH_ENV)
-            token = os.environ.get(CONTROL_TOKEN_ENV)
-            if control_path:
-                token_path = Path(control_path).with_name("token")
-                if token_path.is_file():
-                    token = token_path.read_text(encoding="utf-8").strip()
-            write_switch_request(
-                control_path,
-                token,
-                str(root),
-                result["path"],
-            )
+            control_path, token = _control_credentials()
+            write_switch_request(control_path, token, str(root), result["path"])
             result["auto_switch_requested"] = True
         except (ValueError, OSError) as exc:
             result["auto_switch_requested"] = False
             result["auto_switch_error"] = str(exc)
+    return result
+
+
+def _migrate(arguments: dict[str, Any]) -> dict[str, Any]:
+    root = _workspace_root(_require_string(arguments, "workspace"))
+    source_client = _require_string(arguments, "source_client").lower()
+    target_client = _require_string(arguments, "target_client").lower()
+    source_session_id = _require_string(arguments, "source_session_id")
+    if source_client not in {"claude", "codex"} or target_client not in {"claude", "codex"}:
+        raise HandoffError("migrate mode currently supports only Claude and Codex")
+    if source_client == target_client:
+        raise HandoffError("migrate mode requires a different target client")
+
+    result = {
+        "source_client": source_client,
+        "target_client": target_client,
+        "source_session_id": source_session_id,
+    }
+    try:
+        control_path, token = _control_credentials()
+        write_migration_request(
+            control_path,
+            token,
+            str(root),
+            source_client,
+            target_client,
+            source_session_id,
+        )
+        result["auto_switch_requested"] = True
+    except (ValueError, OSError) as exc:
+        result["auto_switch_requested"] = False
+        result["auto_switch_error"] = str(exc)
     return result
 
 
@@ -294,14 +327,12 @@ def _list(arguments: dict[str, Any]) -> dict[str, Any]:
         }
     if not handoff_dir.is_dir():
         raise HandoffError("directory must identify a directory")
-
     limit = arguments.get("limit", 20)
     offset = arguments.get("offset", 0)
     if not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
         raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
     if not isinstance(offset, int) or offset < 0:
         raise HandoffError("offset must be a non-negative integer")
-
     files = []
     for candidate in handoff_dir.rglob("*.md"):
         resolved = candidate.resolve(strict=False)
@@ -341,6 +372,22 @@ TOOLS = [
             },
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "handoff_migrate",
+        "description": "Request a supervised native-session migration from Claude to Codex or Codex to Claude. The launcher stops the source client before invoking session-migrate and resumes the source session if migration fails.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["workspace", "source_client", "target_client", "source_session_id"],
+            "properties": {
+                "workspace": {"type": "string", "description": "Absolute workspace directory."},
+                "source_client": {"type": "string", "enum": ["claude", "codex"]},
+                "target_client": {"type": "string", "enum": ["claude", "codex"]},
+                "source_session_id": {"type": "string", "description": "Exact native session/thread id of the active source session."},
+            },
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
     },
     {
         "name": "handoff_read",
@@ -415,6 +462,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
     try:
         handlers = {
             "handoff_create": _create,
+            "handoff_migrate": _migrate,
             "handoff_read": _read,
             "handoff_validate": _validate,
             "handoff_list": _list,
@@ -425,8 +473,6 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
-    """Handle one JSON-RPC request; return None for notifications."""
-
     method = request.get("method")
     request_id = request.get("id")
     if method == "notifications/initialized" or (isinstance(method, str) and method.startswith("notifications/")):

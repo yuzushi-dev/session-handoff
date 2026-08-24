@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "session-handoff",
   "version": "0.5.0",
-  "description": "Create handoffs and automatically continue in a fresh, secret-safe Codex or Claude session.",
+  "description": "Create clean coding handoffs or migrate active native sessions between Codex and Claude Code.",
   "author": {
     "name": "yuzushi-dev"
   },
@@ -10,6 +10,7 @@
   "keywords": [
     "handoff",
     "session",
+    "migration",
     "context",
     "codex",
     "claude"

@@ -62,6 +62,7 @@ def test_server_initializes_and_lists_handoff_tools():
     names = {tool["name"] for tool in tool_result(responses[1])["tools"]}
     assert names == {
         "handoff_create",
+        "handoff_migrate",
         "handoff_read",
         "handoff_validate",
         "handoff_list",
@@ -105,7 +106,7 @@ Keep the API stable.
 
     created = tool_result(responses[1])
     assert created["redacted_count"] == 1
-    assert (tmp_path / path).read_text() .find("super-secret-value") == -1
+    assert (tmp_path / path).read_text().find("super-secret-value") == -1
     assert tool_result(responses[2])["isError"] is True
     read = tool_result(responses[3])
     assert "API_TOKEN=[REDACTED]" in read["content"]
@@ -168,6 +169,70 @@ Continue the feature.
         "workspace": str(tmp_path),
         "path": "handoffs/feature.md",
     }
+
+
+def test_migrate_requests_supervised_native_switch(tmp_path):
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    control_path = control_dir / "switch.json"
+    token = "test-control-token"
+
+    responses = exchange(
+        [
+            initialized(),
+            call(
+                2,
+                "handoff_migrate",
+                {
+                    "workspace": str(tmp_path),
+                    "source_client": "claude",
+                    "target_client": "codex",
+                    "source_session_id": "source-session-id",
+                },
+            ),
+        ],
+        {
+            "SESSION_HANDOFF_CONTROL": str(control_path),
+            "SESSION_HANDOFF_CONTROL_TOKEN": token,
+        },
+    )
+
+    result = tool_result(responses[1])
+    assert result["auto_switch_requested"] is True
+    assert json.loads(control_path.read_text(encoding="utf-8")) == {
+        "token": token,
+        "mode": "migrate",
+        "workspace": str(tmp_path),
+        "source_client": "claude",
+        "target_client": "codex",
+        "source_session_id": "source-session-id",
+    }
+
+
+def test_migrate_requires_managed_launcher(tmp_path):
+    responses = exchange(
+        [
+            initialized(),
+            call(
+                2,
+                "handoff_migrate",
+                {
+                    "workspace": str(tmp_path),
+                    "source_client": "codex",
+                    "target_client": "claude",
+                    "source_session_id": "thread-id",
+                },
+            ),
+        ],
+        {
+            "SESSION_HANDOFF_CONTROL": "",
+            "SESSION_HANDOFF_CONTROL_TOKEN": "",
+        },
+    )
+
+    result = tool_result(responses[1])
+    assert result["auto_switch_requested"] is False
+    assert "unavailable" in result["auto_switch_error"]
 
 
 def test_create_reports_manual_fallback_without_supervisor(tmp_path):
