@@ -2,14 +2,116 @@ import json
 import os
 import shlex
 import sys
+import time
 from pathlib import Path
 
 from server.session_switch import (
     CONTROL_PATH_ENV,
     CONTROL_TOKEN_ENV,
     SessionSupervisor,
+    _fresh_session_args,
+    handoff_prompt,
     write_switch_request,
 )
+
+
+def test_handoff_prompt_is_a_manual_reference():
+    assert handoff_prompt("/workspace", "handoffs/feature.md") == (
+        "reference [handoffs/feature.md] riparti da qui"
+    )
+
+
+def test_draft_relaunch_removes_non_interactive_client_modes():
+    assert _fresh_session_args(
+        "codex",
+        ["exec", "--ephemeral", "--json", "original prompt"],
+        interactive=True,
+    ) == []
+    assert _fresh_session_args(
+        "codex",
+        ["exec", "review", "--uncommitted"],
+        interactive=True,
+    ) == []
+    assert _fresh_session_args(
+        "codex",
+        ["review", "--uncommitted"],
+        interactive=True,
+    ) == []
+    assert _fresh_session_args(
+        "codex",
+        ["fork", "session-id"],
+        interactive=True,
+    ) == []
+    assert _fresh_session_args(
+        "codex",
+        ["--profile", "exec", "--cd", "e"],
+        interactive=True,
+    ) == ["--profile", "exec", "--cd", "e"]
+    assert _fresh_session_args(
+        "claude",
+        ["-p", "--output-format", "json", "--json-schema", "schema.json", "original prompt"],
+        interactive=True,
+    ) == []
+
+
+def test_supervisor_prefills_relaunch_without_submitting_prompt(tmp_path):
+    handoff = tmp_path / "handoffs" / "feature.md"
+    handoff.parent.mkdir()
+    handoff.write_text("handoff", encoding="utf-8")
+    result = tmp_path / "result.json"
+    host = tmp_path / "fake_host.py"
+    host.write_text(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "import tty\n"
+        "from pathlib import Path\n"
+        "tty.setraw(sys.stdin.fileno())\n"
+        "draft = os.read(sys.stdin.fileno(), 4096).decode()\n"
+        "Path(sys.argv[1]).write_text(json.dumps({\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'draft': draft,\n"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    class InitialProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 143
+
+        def kill(self):
+            pass
+
+    def fake_popen(argv, **kwargs):
+        control = Path(kwargs["env"][CONTROL_PATH_ENV])
+        write_switch_request(
+            str(control),
+            control.with_name("token").read_text(encoding="utf-8"),
+            str(tmp_path),
+            "handoffs/feature.md",
+        )
+        return InitialProcess()
+
+    supervisor = SessionSupervisor(
+        "claude",
+        [str(host), str(result)],
+        popen=fake_popen,
+        sleep=lambda seconds: time.sleep(seconds),
+        temp_dir=tmp_path / "control",
+        executable=sys.executable,
+        draft=True,
+    )
+
+    assert supervisor.run() == 0
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    assert payload["argv"] == [str(result)]
+    assert payload["draft"] == "reference [handoffs/feature.md] riparti da qui"
 
 
 def test_write_switch_request_is_consumed_by_supervisor(tmp_path):
@@ -57,12 +159,13 @@ def test_write_switch_request_is_consumed_by_supervisor(tmp_path):
         sleep=lambda _: None,
         temp_dir=tmp_path / "control",
         executable="claude",
+        draft=False,
     )
 
     assert supervisor.run() == 0
     assert calls[0][0] == ["claude", "--plugin-dir", "/plugin"]
     assert calls[1][0][:3] == ["claude", "--plugin-dir", "/plugin"]
-    assert calls[1][0][-1] == "Resume from handoffs/feature.md in /" + str(tmp_path).lstrip("/") + "."
+    assert calls[1][0][-1] == "reference [handoffs/feature.md] riparti da qui"
 
 
 def test_write_switch_request_rejects_invalid_handoff(tmp_path):
@@ -260,6 +363,7 @@ def test_supervisor_strips_resume_selectors_for_the_fresh_session(tmp_path):
         sleep=lambda _: None,
         temp_dir=tmp_path / "control",
         executable="claude",
+        draft=False,
     )
 
     assert supervisor.run() == 0
@@ -267,7 +371,7 @@ def test_supervisor_strips_resume_selectors_for_the_fresh_session(tmp_path):
         "claude",
         "--plugin-dir",
         "/plugin",
-        "Resume from handoff.md in /" + str(tmp_path).lstrip("/") + ".",
+        "reference [handoff.md] riparti da qui",
     ]
 
 
@@ -315,11 +419,12 @@ def test_supervisor_replaces_codex_exec_prompt_on_relaunch(tmp_path):
         sleep=lambda _: None,
         temp_dir=tmp_path / "control",
         executable="codex",
+        draft=False,
     )
 
     assert supervisor.run() == 0
     assert "original prompt" not in calls[1]
-    assert calls[1][-1] == "Resume from handoff.md in /" + str(tmp_path).lstrip("/") + "."
+    assert calls[1][-1] == "reference [handoff.md] riparti da qui"
 
 
 def test_supervisor_replaces_claude_print_prompt_on_relaunch(tmp_path):
@@ -366,8 +471,9 @@ def test_supervisor_replaces_claude_print_prompt_on_relaunch(tmp_path):
         sleep=lambda _: None,
         temp_dir=tmp_path / "control",
         executable="claude",
+        draft=False,
     )
 
     assert supervisor.run() == 0
     assert "original prompt" not in calls[1]
-    assert calls[1][-1] == "Resume from handoff.md in /" + str(tmp_path).lstrip("/") + "."
+    assert calls[1][-1] == "reference [handoff.md] riparti da qui"

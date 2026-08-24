@@ -26,7 +26,8 @@ Launch Codex or Claude normally after setup, then use:
 - Claude: `/session-handoff`
 
 The plugin writes a validated Markdown file under `handoffs/`, starts a fresh
-session, and gives it the handoff path as its first prompt.
+session, and pre-fills the chat with `reference [handoffs/<name>.md] riparti da
+qui`. Press Enter to send it when you are ready.
 
 The automatic switch requires the managed launcher. A client started through a
 direct binary path uses the manual-resume fallback.
