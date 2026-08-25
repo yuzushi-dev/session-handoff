@@ -37,6 +37,34 @@ def test_claude_input_tokens_include_cache_usage():
     assert parsed["input_tokens"] == 15
 
 
+def test_snapshot_diff_does_not_dereference_symlinks(tmp_path):
+    template = tmp_path / "template"
+    workspace = tmp_path / "workspace"
+    template.mkdir()
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must-not-leak\n", encoding="utf-8")
+    (workspace / "link").symlink_to(outside)
+
+    diff = study_runner._snapshot_diff(template, workspace)
+
+    assert "must-not-leak" not in diff
+    assert "symlink ->" in diff
+    assert str(outside) in diff
+
+
+def test_snapshot_diff_represents_binary_files_by_hash(tmp_path):
+    template = tmp_path / "template"
+    workspace = tmp_path / "workspace"
+    template.mkdir()
+    workspace.mkdir()
+    (workspace / "artifact.bin").write_bytes(b"\xff\x00")
+
+    diff = study_runner._snapshot_diff(template, workspace)
+
+    assert "binary sha256:" in diff
+
+
 def prepare_study(tmp_path: Path) -> Path:
     study = tmp_path / "study"
     result = subprocess.run(
@@ -455,6 +483,9 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     if condition == "handoff":
         assert len(generation_calls) == 1
         assert generation_calls[0]["workspace_entries"] == []
+        if client == "claude":
+            mode_index = generation_calls[0]["argv"].index("--permission-mode")
+            assert generation_calls[0]["argv"][mode_index + 1] == "dontAsk"
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     blind_dir = output / "blinded" / state["blind_id"]
@@ -834,6 +865,9 @@ def test_verification_checkpoint_resumes_without_another_provider_call(
     assert resumed.returncode == 0, resumed.stderr
     assert json.loads(resumed.stdout)["task_success"] is True
     assert len(fake_calls(run_dir)) == 1
+    resumed_state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert resumed_state["provenance"]["resume_runner_sha256"]
+    assert resumed_state["provenance"]["resume_runner_git_revision"]
 
 
 @pytest.mark.parametrize(

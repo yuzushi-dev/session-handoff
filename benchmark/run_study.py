@@ -322,7 +322,7 @@ def _agent_command(
             return [
                 *command,
                 "--permission-mode",
-                "plan",
+                "dontAsk",
                 "--tools",
                 "",
                 "--no-session-persistence",
@@ -522,13 +522,23 @@ def _migration_provenance(executable: str, cwd: Path) -> dict[str, str]:
     }
 
 
+def _snapshot_lines(path: Path) -> list[str]:
+    if path.is_symlink():
+        return [f"symlink -> {json.dumps(os.readlink(path), ensure_ascii=False)}\n"]
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        return [f"binary sha256: {_sha256(data)}\n"]
+
+
 def _snapshot_diff(template: Path, workspace: Path) -> str:
     ignored = {"__pycache__", ".pytest_cache"}
     relatives = {
         path.relative_to(root)
         for root in (template, workspace)
         for path in root.rglob("*")
-        if path.is_file()
+        if (path.is_symlink() or path.is_file())
         and not any(part in ignored for part in path.relative_to(root).parts)
         and path.suffix != ".pyc"
     }
@@ -536,8 +546,16 @@ def _snapshot_diff(template: Path, workspace: Path) -> str:
     for relative in sorted(relatives):
         before_path = template / relative
         after_path = workspace / relative
-        before = before_path.read_text(encoding="utf-8").splitlines(keepends=True) if before_path.exists() else []
-        after = after_path.read_text(encoding="utf-8").splitlines(keepends=True) if after_path.exists() else []
+        before = (
+            _snapshot_lines(before_path)
+            if before_path.exists() or before_path.is_symlink()
+            else []
+        )
+        after = (
+            _snapshot_lines(after_path)
+            if after_path.exists() or after_path.is_symlink()
+            else []
+        )
         pieces.extend(
             difflib.unified_diff(
                 before,
@@ -852,6 +870,13 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         )
         if not resumable:
             raise StudyRunError("run is not at a retry-free resumable checkpoint")
+        provenance = state.get("provenance")
+        if not isinstance(provenance, dict):
+            raise StudyRunError("existing run has no valid provenance")
+        runner_path = Path(__file__).resolve()
+        provenance["resume_runner_sha256"] = _sha256(runner_path.read_bytes())
+        provenance["resume_runner_git_revision"] = _git_revision()
+        _write_json(state_path, state)
         workspace = run_dir / "workspace"
     else:
         if args.resume:

@@ -17,6 +17,18 @@ CLIENTS = ("codex", "claude")
 STATE_PATH = Path(".config/session-handoff/state.json")
 BUNDLE_PATH = Path(".local/share/session-handoff/plugin")
 BACKUP_SUFFIX = ".session-handoff-original"
+BUNDLE_ENTRIES = (
+    ".claude-plugin",
+    ".codex-plugin",
+    ".mcp.json",
+    "mcp.json",
+    "plugin.json",
+    "README.md",
+    "bin",
+    "commands",
+    "server",
+    "skills",
+)
 
 
 class SetupError(ValueError):
@@ -106,12 +118,17 @@ def _stage_bundle(package_root: Path, bundle: Path) -> Path:
     bundle.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.staging-", dir=bundle.parent))
     try:
-        shutil.copytree(
-            package_root,
-            staging,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
-        )
+        for name in BUNDLE_ENTRIES:
+            source = package_root / name
+            target = staging / name
+            if source.is_dir():
+                shutil.copytree(
+                    source,
+                    target,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+            elif source.is_file():
+                shutil.copy2(source, target)
     except BaseException:
         _remove(staging)
         raise
