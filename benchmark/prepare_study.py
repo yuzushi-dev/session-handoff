@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
+from fixture_workspace import materialize_workspace
 from render_fixture import load_spec, render, render_oracle
 
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
@@ -71,6 +72,7 @@ def main() -> int:
     for case in data["cases"]:
         case_dir = args.output / case["id"]
         case_dir.mkdir(parents=True, exist_ok=True)
+        fixture = materialize_workspace(case["id"], case_dir / "workspace")
         (case_dir / "oracle.md").write_text(render_oracle(case), encoding="utf-8")
         (case_dir / "gold.json").write_text(
             json.dumps({
@@ -88,6 +90,8 @@ def main() -> int:
             for condition in CONDITIONS:
                 for replicate in range(1, args.runs_per_condition + 1):
                     run = evaluation_run(case, band, condition, replicate)
+                    run["workspace_template"] = f"{case['id']}/workspace"
+                    run["verify_command"] = fixture["verify_command"]
                     evaluation["runs"].append(run)
 
     (args.output / "evaluation.json").write_text(
