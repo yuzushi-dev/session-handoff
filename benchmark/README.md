@@ -91,7 +91,7 @@ The same semantic fixture can be rendered at multiple bands. This isolates the e
 ## Running one fixture
 
 ```bash
-python benchmark/render_fixture.py \
+python3 benchmark/render_fixture.py \
   benchmark/fixtures/context_rot_cases.json \
   --case superseded-decision \
   --band long \
@@ -103,7 +103,7 @@ The output ends at the interruption point and includes the continuation request.
 ## Preparing the full study
 
 ```bash
-python benchmark/prepare_study.py \
+python3 benchmark/prepare_study.py \
   benchmark/fixtures/context_rot_cases.json \
   --output benchmark/generated \
   --runs-per-condition 2
@@ -111,12 +111,26 @@ python benchmark/prepare_study.py \
 
 The default suite contains 6 context-rot cases, 3 size bands, 4 conditions, and 2 replications, for 144 continuation runs. The command writes the rendered transcripts, oracle state documents, per-case gold annotations, and an `evaluation.json` skeleton. `benchmark/generated/` and `benchmark/results/` are gitignored so long transcripts and study outputs stay out of the repository.
 
+## Native migration integration
+
+The benchmark also has an isolated end-to-end migration test:
+
+```bash
+python3 -m pytest -q tests/test_benchmark_migrate.py
+```
+
+It creates a native-format paginated Codex home, runs the installed
+`session-migrate` writer into a temporary Claude home, and verifies the target
+JSONL, manifest, target UUID, source immutability, dropped events, and
+normalized fields. It uses synthetic benchmark data and never opens a live
+client session.
+
 ## Scoring
 
 Fill the judge labels and continuation outcomes in the generated `evaluation.json`, following `benchmark/JUDGE.md`, then run:
 
 ```bash
-python benchmark/score.py benchmark/generated/evaluation.json --pretty
+python3 benchmark/score.py benchmark/generated/evaluation.json --pretty
 ```
 
 For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across conditions. Randomize condition order and blind the judge to the condition name when practical.
