@@ -176,9 +176,11 @@ python3 -m pytest -q tests/test_benchmark_migrate.py
 
 It creates a native-format paginated Codex home, runs the installed
 `session-migrate` writer into a temporary Claude home, and verifies the target
-JSONL, manifest, target UUID, source immutability, dropped events, and
-normalized fields. It uses synthetic benchmark data and never opens a live
-client session.
+JSONL, manifest, target UUID, source immutability, dropped events, normalized
+fields, and content sentinels for edits, MCP, collaboration, subagents, plans,
+hooks, reviews, web results, media references, and compaction. The round-trip
+test writes the same portable content back to a temporary Codex home. It uses
+synthetic benchmark data and never opens a live client session.
 
 An opt-in smoke test exercises the same path with a real local historical
 session. It reads the source in place, writes only to temporary directories,

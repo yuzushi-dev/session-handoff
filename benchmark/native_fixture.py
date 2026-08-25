@@ -55,7 +55,40 @@ def build_paginated_codex_home(
         (
             "user-1",
             "userMessage",
-            {"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "benchmark user request"}]},
+            {
+                "type": "userMessage",
+                "id": "user-1",
+                "content": [
+                    {"type": "text", "text": "benchmark user request"},
+                    {
+                        "type": "image",
+                        "url": "https://example.test/portable-remote-image-sentinel.png",
+                        "detail": "low",
+                    },
+                    {
+                        "type": "localImage",
+                        "path": "portable-local-image-sentinel.png",
+                    },
+                    {
+                        "type": "audio",
+                        "url": "https://example.test/portable-audio-sentinel.wav",
+                    },
+                    {
+                        "type": "localAudio",
+                        "path": "portable-local-audio-sentinel.wav",
+                    },
+                    {
+                        "type": "skill",
+                        "name": "portable-skill-sentinel",
+                        "path": "/skills/portable-skill-sentinel",
+                    },
+                    {
+                        "type": "mention",
+                        "name": "portable-mention-sentinel",
+                        "path": "src/portable-mention-sentinel.py",
+                    },
+                ],
+            },
         ),
         (
             "agent-1",
@@ -83,7 +116,184 @@ def build_paginated_codex_home(
         (
             "search-1",
             "webSearch",
-            {"type": "webSearch", "id": "search-1", "query": "context rot", "results": []},
+            {
+                "type": "webSearch",
+                "id": "search-1",
+                "query": "context rot",
+                "action": {"type": "search"},
+                "results": [{"title": "portable-web-result-sentinel"}],
+            },
+        ),
+        (
+            "patch-1",
+            "fileChange",
+            {
+                "type": "fileChange",
+                "id": "patch-1",
+                "changes": [
+                    {
+                        "path": "src/cache.py",
+                        "kind": "update",
+                        "diff": "portable-file-change-sentinel",
+                    }
+                ],
+                "status": "completed",
+            },
+        ),
+        (
+            "mcp-1",
+            "mcpToolCall",
+            {
+                "type": "mcpToolCall",
+                "id": "mcp-1",
+                "server": "docs",
+                "tool": "lookup",
+                "status": "completed",
+                "arguments": {"query": "portable-mcp-query-sentinel"},
+                "mcpAppResourceUri": "portable-mcp-resource-sentinel",
+                "result": {
+                    "content": [
+                        {"type": "text", "text": "portable-mcp-result-sentinel"}
+                    ]
+                },
+                "error": None,
+            },
+        ),
+        (
+            "collab-1",
+            "collabAgentToolCall",
+            {
+                "type": "collabAgentToolCall",
+                "id": "collab-1",
+                "tool": "spawnAgent",
+                "status": "completed",
+                "senderThreadId": "parent-thread",
+                "receiverThreadIds": ["child-thread"],
+                "prompt": "portable-collab-prompt-sentinel",
+                "agentsStates": {
+                    "child-thread": {
+                        "status": "completed",
+                        "message": "portable-collab-result-sentinel",
+                    }
+                },
+            },
+        ),
+        (
+            "activity-1",
+            "subAgentActivity",
+            {
+                "type": "subAgentActivity",
+                "id": "activity-1",
+                "kind": "completed",
+                "agentThreadId": "child-thread",
+                "agentPath": "portable-agent-path-sentinel",
+            },
+        ),
+        (
+            "collab-v2-1",
+            "collabToolCall",
+            {
+                "type": "collabToolCall",
+                "id": "collab-v2-1",
+                "tool": "send_input",
+                "status": "completed",
+                "senderThreadId": "parent-thread",
+                "receiverThreadId": "child-thread",
+                "prompt": "portable-collab-v2-prompt-sentinel",
+                "agentStatus": {
+                    "status": "completed",
+                    "message": "portable-collab-v2-result-sentinel",
+                },
+            },
+        ),
+        (
+            "image-view-1",
+            "imageView",
+            {
+                "type": "imageView",
+                "id": "image-view-1",
+                "path": "portable-image-view-sentinel.png",
+            },
+        ),
+        (
+            "image-generation-1",
+            "imageGeneration",
+            {
+                "type": "imageGeneration",
+                "id": "image-generation-1",
+                "status": "completed",
+                "revisedPrompt": "portable-image-prompt-sentinel",
+                "result": "portable-image-result-sentinel",
+                "transparentBackground": False,
+                "savedPath": "portable-image-output-sentinel.png",
+            },
+        ),
+        (
+            "compaction-1",
+            "contextCompaction",
+            {"type": "contextCompaction", "id": "compaction-1"},
+        ),
+        (
+            "hook-1",
+            "hookPrompt",
+            {
+                "type": "hookPrompt",
+                "id": "hook-1",
+                "fragments": [
+                    {
+                        "hookRunId": "hook-run-1",
+                        "text": "portable-hook-prompt-sentinel",
+                    }
+                ],
+            },
+        ),
+        (
+            "plan-1",
+            "plan",
+            {"type": "plan", "id": "plan-1", "text": "portable-plan-sentinel"},
+        ),
+        (
+            "dynamic-1",
+            "dynamicToolCall",
+            {
+                "type": "dynamicToolCall",
+                "id": "dynamic-1",
+                "namespace": "fixture",
+                "tool": "lookup",
+                "arguments": {"query": "portable-dynamic-query-sentinel"},
+                "status": "completed",
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "portable-dynamic-result-sentinel",
+                    }
+                ],
+                "success": True,
+                "durationMs": 4,
+            },
+        ),
+        (
+            "sleep-1",
+            "sleep",
+            {"type": "sleep", "id": "sleep-1", "durationMs": 25},
+        ),
+        (
+            "review-enter-1",
+            "enteredReviewMode",
+            {
+                "type": "enteredReviewMode",
+                "id": "review-enter-1",
+                "review": "portable-review-target-sentinel",
+            },
+        ),
+        (
+            "review-exit-1",
+            "exitedReviewMode",
+            {
+                "type": "exitedReviewMode",
+                "id": "review-exit-1",
+                "review": "portable-review-result-sentinel",
+            },
         ),
     ]
     for ordinal, (item_id, item_type, item) in enumerate(items):

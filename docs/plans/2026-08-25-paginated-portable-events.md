@@ -14,7 +14,7 @@
 
 The installed Codex database contains content-bearing item types that `server/paginated_migration.py` currently drops: `fileChange`, `mcpToolCall`, and `collabAgentToolCall`. The local aggregate on 2026-08-25 contained 2,331 file changes, 867 MCP calls, and 912 collaboration calls. Counts alone do not preserve operational context.
 
-The projector will whitelist verified item types. It will map file edits, MCP calls, collaboration calls, subagent activity, image paths/results, and compaction markers into paired `function_call` and `function_call_output` records. Arguments remain JSON objects. Results become deterministic JSON text because `session-migrate` treats arbitrary result objects as opaque. The projector will continue to omit private reasoning and unknown item types, recording each omission.
+The projector will whitelist verified item types. It will map file edits, MCP calls, collaboration calls, subagent activity, plans, hook prompts, dynamic tools, reviews, image paths/results, and compaction markers into paired `function_call` and `function_call_output` records. Remote user images remain image blocks; local media, audio, skill, and mention inputs become exact workspace references. Arguments remain JSON objects. Results become deterministic JSON text because `session-migrate` treats arbitrary result objects as opaque. The projector will continue to omit private reasoning and unknown item types, recording each omission.
 
 This avoids two rejected approaches. Keeping only counters leaves useful context behind. Copying arbitrary unknown JSON can expose unstable or private client state and gives the target model no stable interpretation.
 

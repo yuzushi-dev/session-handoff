@@ -41,6 +41,7 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
     assert result["target_format"] == "claude"
     assert isinstance(result["warnings"], list)
     assert isinstance(result["dropped_events"], dict)
+    assert set(result["dropped_events"]) <= {"reasoning"}
     assert isinstance(result["context_loss"], dict)
     assert Path(result["manifest"]).is_file()
     output = Path(result["output"])

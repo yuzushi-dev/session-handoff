@@ -74,12 +74,16 @@ when the backend is absent. Migrate mode currently exposes only Claude Code ↔
 Codex even though the upstream migrator supports more formats. For current Codex
 sessions using paginated history, `session-handoff` reads the canonical
 `thread_history_1.sqlite` items and projects them into a private temporary view
-before invoking the native Claude writer. User/assistant messages, shell
-executions, and web searches are preserved; private reasoning and unknown item
-types are omitted and reported in `dropped_events`. The Codex source is opened
-read-only and is never rewritten. The migration result also exposes
-`context_loss.normalized_fields` for source fields that were intentionally
-flattened rather than copied verbatim.
+before invoking the native Claude writer. It preserves messages, command
+outputs and status, file diffs, web results, MCP calls and results,
+collaboration/subagent state, plans, hook prompts, reviews, image references,
+image-generation results, and compaction markers. Remote image URLs remain
+image blocks; local media, audio, skill, and mention inputs become exact
+references that the target can resolve in the same workspace. Private reasoning
+and unknown item types are omitted and reported in `dropped_events`. The Codex
+source is opened read-only and is never rewritten. The migration result also
+exposes `context_loss.normalized_fields` for fields translated into the portable
+tool representation.
 
 ## Safety
 

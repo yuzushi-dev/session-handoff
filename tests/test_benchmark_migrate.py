@@ -30,23 +30,58 @@ def test_migrate_condition_executes_native_codex_to_claude_transfer(tmp_path, mo
     assert result["warnings"]
     assert result["dropped_events"] == {"reasoning": 1}
     assert result["context_loss"]["dropped_events"] == {"reasoning": 1}
-    assert result["context_loss"]["normalized_fields"] == {
-        "commandExecution": ["exitCode", "status"]
-    }
+    assert result["context_loss"]["normalized_fields"]["commandExecution"] == [
+        "exitCode",
+        "status",
+    ]
+    assert result["context_loss"]["normalized_fields"]["mcpToolCall"]
     assert Path(result["manifest"]).is_file()
     output = Path(result["output"])
     assert output.is_file()
     messages = [json.loads(line)["message"] for line in output.read_text().splitlines()]
-    assert [message["role"] for message in messages] == [
-        "user",
-        "assistant",
-        "assistant",
-        "user",
-        "assistant",
-        "user",
-    ]
-    assert messages[0]["content"] == "benchmark user request"
+    assert [message["role"] for message in messages[:2]] == ["user", "assistant"]
+    assert any(
+        block.get("type") == "tool_use"
+        for message in messages
+        for block in (
+            message.get("content", [])
+            if isinstance(message.get("content"), list)
+            else []
+        )
+    )
+    assert isinstance(messages[0]["content"], list)
+    assert messages[0]["content"][0]["text"] == "benchmark user request"
+    assert {
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": "https://example.test/portable-remote-image-sentinel.png",
+        },
+    } in messages[0]["content"]
     assert messages[1]["content"][0]["text"] == "benchmark assistant response"
+    target_text = output.read_text(encoding="utf-8")
+    for expected in (
+        "portable-file-change-sentinel",
+        "portable-mcp-result-sentinel",
+        "portable-mcp-resource-sentinel",
+        "portable-collab-result-sentinel",
+        "portable-agent-path-sentinel",
+        "portable-collab-v2-result-sentinel",
+        "portable-image-output-sentinel.png",
+        "portable-web-result-sentinel",
+        "portable-hook-prompt-sentinel",
+        "portable-plan-sentinel",
+        "portable-dynamic-result-sentinel",
+        "portable-review-result-sentinel",
+        "portable-remote-image-sentinel.png",
+        "portable-local-image-sentinel.png",
+        "portable-audio-sentinel.wav",
+        "portable-local-audio-sentinel.wav",
+        "portable-skill-sentinel",
+        "portable-mention-sentinel",
+        "exitCode",
+    ):
+        assert expected in target_text
     assert hashlib.sha256(source_rollout.read_bytes()).hexdigest() == source_hash
     assert hashlib.sha256(source_database.read_bytes()).hexdigest() == database_hash
 
@@ -92,6 +127,25 @@ def test_migrate_condition_executes_real_writer_in_both_directions(tmp_path, mon
         "benchmark assistant response",
         "pytest -q",
         "2 passed",
+        "portable-file-change-sentinel",
+        "portable-mcp-result-sentinel",
+        "portable-mcp-resource-sentinel",
+        "portable-collab-result-sentinel",
+        "portable-agent-path-sentinel",
+        "portable-collab-v2-result-sentinel",
+        "portable-image-output-sentinel.png",
+        "portable-web-result-sentinel",
+        "portable-hook-prompt-sentinel",
+        "portable-plan-sentinel",
+        "portable-dynamic-result-sentinel",
+        "portable-review-result-sentinel",
+        "portable-remote-image-sentinel.png",
+        "portable-local-image-sentinel.png",
+        "portable-audio-sentinel.wav",
+        "portable-local-audio-sentinel.wav",
+        "portable-skill-sentinel",
+        "portable-mention-sentinel",
+        "exitCode",
     ):
         assert expected in target_text
     assert hashlib.sha256(claude_output.read_bytes()).hexdigest() == claude_hash
