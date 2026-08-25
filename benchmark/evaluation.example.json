@@ -1,16 +1,24 @@
 {
+  "schema_version": 1,
+  "study": {
+    "cases": ["compound-rot"],
+    "bands": ["long"],
+    "conditions": ["handoff"],
+    "runs_per_condition": 1
+  },
   "runs": [
     {
       "case": "compound-rot",
       "band": "long",
       "condition": "handoff",
+      "replicate": 1,
       "facts": [
-        {"id": "F1", "weight": 3, "status": "preserved"},
-        {"id": "F2", "weight": 3, "status": "preserved"},
-        {"id": "F3", "weight": 3, "status": "missing"},
-        {"id": "F4", "weight": 2, "status": "preserved"},
-        {"id": "F5", "weight": 3, "status": "preserved"},
-        {"id": "F6", "weight": 2, "status": "preserved"}
+        {"id": "F1", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F2", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F3", "weight": 3, "critical": true, "status": "missing"},
+        {"id": "F4", "weight": 2, "critical": true, "status": "preserved"},
+        {"id": "F5", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F6", "weight": 2, "critical": true, "status": "preserved"}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "activated": false},

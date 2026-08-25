@@ -12,13 +12,19 @@ from render_fixture import load_spec, render, render_oracle
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
 
 
-def evaluation_run(case, band: str, condition: str) -> dict:
+def evaluation_run(case, band: str, condition: str, replicate: int) -> dict:
     return {
         "case": case["id"],
         "band": band,
         "condition": condition,
+        "replicate": replicate,
         "facts": [
-            {"id": item["id"], "weight": item.get("weight", 1), "status": None}
+            {
+                "id": item["id"],
+                "weight": item.get("weight", 1),
+                "critical": item["critical"],
+                "status": None,
+            }
             for item in case["gold_facts"]
         ],
         "stale_traps": [
@@ -51,7 +57,16 @@ def main() -> int:
 
     data = load_spec(args.spec)
     args.output.mkdir(parents=True, exist_ok=True)
-    evaluation = {"runs": []}
+    evaluation = {
+        "schema_version": 1,
+        "study": {
+            "cases": [case["id"] for case in data["cases"]],
+            "bands": list(data["bands"]),
+            "conditions": list(CONDITIONS),
+            "runs_per_condition": args.runs_per_condition,
+        },
+        "runs": [],
+    }
 
     for case in data["cases"]:
         case_dir = args.output / case["id"]
@@ -72,8 +87,7 @@ def main() -> int:
             (case_dir / f"session-{band}.md").write_text(transcript, encoding="utf-8")
             for condition in CONDITIONS:
                 for replicate in range(1, args.runs_per_condition + 1):
-                    run = evaluation_run(case, band, condition)
-                    run["replicate"] = replicate
+                    run = evaluation_run(case, band, condition, replicate)
                     evaluation["runs"].append(run)
 
     (args.output / "evaluation.json").write_text(

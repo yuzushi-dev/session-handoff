@@ -18,9 +18,9 @@
         {"at": 0.97, "role": "user", "content": "Continue from here and finish the bugfix."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "constraint", "weight": 3, "statement": "refresh_session(user_id, token) must remain synchronous and keep the same public signature."},
-        {"id": "F2", "category": "location", "weight": 2, "statement": "The implementation target is src/auth/session.py, specifically validate_refresh()."},
-        {"id": "F3", "category": "test", "weight": 2, "statement": "tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."}
+        {"id": "F1", "category": "constraint", "weight": 3, "critical": true, "statement": "refresh_session(user_id, token) must remain synchronous and keep the same public signature."},
+        {"id": "F2", "category": "location", "weight": 2, "critical": true, "statement": "The implementation target is src/auth/session.py, specifically validate_refresh()."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "statement": "Convert refresh_session to async or change its signature."}
@@ -43,9 +43,9 @@
         {"at": 0.98, "role": "user", "content": "Finish the change and verify it."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "decision", "weight": 3, "statement": "The authoritative negative-cache TTL is 15 seconds; 60 seconds was superseded."},
-        {"id": "F2", "category": "progress", "weight": 2, "statement": "cache/config.py already uses 15 seconds."},
-        {"id": "F3", "category": "pending", "weight": 2, "statement": "tests/cache/test_negative_ttl.py still needs its 60-second expectation updated."}
+        {"id": "F1", "category": "decision", "weight": 3, "critical": true, "statement": "The authoritative negative-cache TTL is 15 seconds; 60 seconds was superseded."},
+        {"id": "F2", "category": "progress", "weight": 2, "critical": true, "statement": "cache/config.py already uses 15 seconds."},
+        {"id": "F3", "category": "pending", "weight": 2, "critical": true, "statement": "tests/cache/test_negative_ttl.py still needs its 60-second expectation updated."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "statement": "Use or restore the obsolete 60 second TTL."}
@@ -67,9 +67,9 @@
         {"at": 0.97, "role": "user", "content": "Continue and implement the correct fix."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "failed_attempt", "weight": 3, "statement": "A regex-only sanitizer change was already tried and failed; it must not be repeated."},
-        {"id": "F2", "category": "direction", "weight": 3, "statement": "The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."},
-        {"id": "F3", "category": "test", "weight": 2, "statement": "tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."}
+        {"id": "F1", "category": "failed_attempt", "weight": 3, "critical": true, "statement": "A regex-only sanitizer change was already tried and failed; it must not be repeated."},
+        {"id": "F2", "category": "direction", "weight": 3, "critical": true, "statement": "The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "statement": "Retry or expand the regex-only sanitizer as the primary fix."}
@@ -91,10 +91,10 @@
         {"at": 0.98, "role": "user", "content": "Finish the remaining migration work."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "done", "weight": 2, "statement": "src/codec/writer.py is already complete and its v3 writer test passes."},
-        {"id": "F2", "category": "done", "weight": 1, "statement": "fixtures/v3/basic.json is already regenerated and validated."},
-        {"id": "F3", "category": "pending", "weight": 3, "statement": "src/codec/reader.py still needs dual v2/v3 compatibility."},
-        {"id": "F4", "category": "test", "weight": 2, "statement": "tests/codec/test_reader_compat.py fails on v2 payloads."}
+        {"id": "F1", "category": "done", "weight": 2, "critical": true, "statement": "src/codec/writer.py is already complete and its v3 writer test passes."},
+        {"id": "F2", "category": "done", "weight": 1, "critical": true, "statement": "fixtures/v3/basic.json is already regenerated and validated."},
+        {"id": "F3", "category": "pending", "weight": 3, "critical": true, "statement": "src/codec/reader.py still needs dual v2/v3 compatibility."},
+        {"id": "F4", "category": "test", "weight": 2, "critical": true, "statement": "tests/codec/test_reader_compat.py fails on v2 payloads."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 2, "statement": "Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."}
@@ -117,9 +117,9 @@
         {"at": 0.98, "role": "user", "content": "Finish it."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "correction", "weight": 3, "statement": "The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."},
-        {"id": "F2", "category": "location", "weight": 2, "statement": "src/client/export.py still contains the obsolete endpoint."},
-        {"id": "F3", "category": "test", "weight": 2, "statement": "tests/client/test_export_endpoint.py must assert /api/v2/exports."}
+        {"id": "F1", "category": "correction", "weight": 3, "critical": true, "statement": "The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."},
+        {"id": "F2", "category": "location", "weight": 2, "critical": true, "statement": "src/client/export.py still contains the obsolete endpoint."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/client/test_export_endpoint.py must assert /api/v2/exports."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "statement": "Continue using /api/v1/export because it appears repeatedly in older context."}
@@ -144,12 +144,12 @@
         {"at": 0.98, "role": "user", "content": "Finish the fix and verify both retry tests."}
       ],
       "gold_facts": [
-        {"id": "F1", "category": "constraint", "weight": 3, "statement": "RetryPolicy.should_retry(error) must remain public and synchronous."},
-        {"id": "F2", "category": "decision", "weight": 3, "statement": "The final retry cap is 3; the earlier cap of 5 is obsolete."},
-        {"id": "F3", "category": "failed_attempt", "weight": 3, "statement": "Broad Exception handling was tried and rejected because it retries programming errors."},
-        {"id": "F4", "category": "progress", "weight": 2, "statement": "src/retry/policy.py already uses cap=3."},
-        {"id": "F5", "category": "pending", "weight": 3, "statement": "The next code change is to add TimeoutError to TRANSIENT_ERRORS."},
-        {"id": "F6", "category": "test", "weight": 2, "statement": "test_timeout_is_retried must pass while test_type_error_is_not_retried remains passing."}
+        {"id": "F1", "category": "constraint", "weight": 3, "critical": true, "statement": "RetryPolicy.should_retry(error) must remain public and synchronous."},
+        {"id": "F2", "category": "decision", "weight": 3, "critical": true, "statement": "The final retry cap is 3; the earlier cap of 5 is obsolete."},
+        {"id": "F3", "category": "failed_attempt", "weight": 3, "critical": true, "statement": "Broad Exception handling was tried and rejected because it retries programming errors."},
+        {"id": "F4", "category": "progress", "weight": 2, "critical": true, "statement": "src/retry/policy.py already uses cap=3."},
+        {"id": "F5", "category": "pending", "weight": 3, "critical": true, "statement": "The next code change is to add TimeoutError to TRANSIENT_ERRORS."},
+        {"id": "F6", "category": "test", "weight": 2, "critical": true, "statement": "test_timeout_is_retried must pass while test_type_error_is_not_retried remains passing."}
       ],
       "stale_traps": [
         {"id": "T1", "weight": 3, "statement": "Restore or preserve retry cap 5."},
