@@ -311,7 +311,14 @@ def _agent_command(
                 "",
                 "--no-session-persistence",
             ]
-        command.extend(("--permission-mode", "acceptEdits"))
+        command.extend(
+            (
+                "--permission-mode",
+                "bypassPermissions",
+                "--tools",
+                "Read,Edit,Write,Bash,Glob,Grep",
+            )
+        )
         if mode == "resume":
             if not session_id:
                 raise StudyRunError("resume mode requires a native session id")
@@ -785,6 +792,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                     "generation_tools": "disabled",
                     "generation_sandbox": "read_only",
                     "continuation_sandbox": "workspace_write",
+                    "claude_permission_mode": "bypassPermissions",
                 },
             },
         }

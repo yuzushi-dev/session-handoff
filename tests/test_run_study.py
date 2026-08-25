@@ -49,7 +49,7 @@ if "--version" in args:
     raise SystemExit(0)
 
 prompt = sys.stdin.read()
-generation = "--tools" in args or (
+generation = ("--tools" in args and args[args.index("--tools") + 1] == "") or (
     "--sandbox" in args and args[args.index("--sandbox") + 1] == "read-only"
 )
 client = "claude" if "--safe-mode" in args else "codex"
@@ -367,6 +367,10 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert all("Initial decision" not in json.dumps(call["argv"]) for call in calls)
     assert all(call["codex_home"] or call["claude_home"] for call in calls)
     assert all(call["unrelated_secret_present"] is False for call in calls)
+    continuation_call = next(call for call in calls if not call["generation"])
+    if client == "claude":
+        mode_index = continuation_call["argv"].index("--permission-mode")
+        assert continuation_call["argv"][mode_index + 1] == "bypassPermissions"
     generation_calls = [call for call in calls if call["generation"]]
     if condition == "handoff":
         assert len(generation_calls) == 1
