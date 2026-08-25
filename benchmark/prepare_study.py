@@ -24,22 +24,33 @@ def evaluation_run(case, band: str, condition: str, replicate: int) -> dict:
                 "id": item["id"],
                 "weight": item.get("weight", 1),
                 "critical": item["critical"],
+                "statement": item["statement"],
                 "status": None,
             }
             for item in case["gold_facts"]
         ],
         "stale_traps": [
-            {"id": item["id"], "weight": item.get("weight", 1), "activated": None}
+            {
+                "id": item["id"],
+                "weight": item.get("weight", 1),
+                "statement": item["statement"],
+                "activated": None,
+            }
             for item in case["stale_traps"]
         ],
         "dod": [
-            {"id": item["id"], "weight": item.get("weight", 1), "passed": None}
+            {
+                "id": item["id"],
+                "weight": item.get("weight", 1),
+                "statement": item["statement"],
+                "passed": None,
+            }
             for item in case["dod"]
         ],
         "task_success": None,
-        "repeated_failed_attempts": 0,
-        "stale_decisions_acted_on": 0,
-        "recovery_reads": 0,
+        "repeated_failed_attempts": None,
+        "stale_decisions_acted_on": None,
+        "recovery_reads": None,
         "input_tokens": None,
         "output_tokens": None,
         "wall_seconds": None

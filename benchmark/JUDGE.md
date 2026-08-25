@@ -18,6 +18,8 @@ For Stage B you also receive:
 
 The condition label (`full`, `handoff`, `migrate`, `oracle`) should be hidden from the judge when practical.
 
+`run_study.py` writes a `judge.json` payload without the condition label. Judge from the referenced `supplied-context.md`, `continuation.txt`, `workspace.diff`, and verification output. Do not inspect the enclosing run directory name or `state.json`, because both reveal the condition.
+
 ## Gold-fact labels
 
 For each gold fact choose exactly one label.
@@ -53,6 +55,14 @@ Count `repeated_failed_attempts` when the continuation materially repeats an app
 Count `stale_decisions_acted_on` when the continuation edits code, tests, configuration, or its plan based on a superseded fact before correcting course.
 
 Count `recovery_reads` when the continuation must inspect repository state to recover a gold fact missing from its supplied context. Normal verification reads after the agent already knows the fact do not count.
+
+## Evidence and calibration
+
+Every fact, stale-trap, DoD, and counter label needs concise evidence: an exact path or symbol, a short artifact excerpt, or a concrete action in the execution trace. `automated_pass` is test evidence, not permission to infer missing context recall.
+
+Before using model judgments as release evidence, human-score a stratified calibration sample covering every case, condition, and size band. Record the judge identity/model, calibration-set identifier, sample size, agreement, and adjudicated disagreements. Set `human_reviewed=true` only after that comparison. Review every disagreement involving a critical fact; do not tune the fixture or handoff template against the held-out study cells.
+
+After judgment, transfer the labels and evidence into the matching `evaluation-run.json` entry, including all three counters. Merge complete entries into the prepared `evaluation.json`. The scorer intentionally rejects `null` labels or counters.
 
 ## Context-rot focus
 

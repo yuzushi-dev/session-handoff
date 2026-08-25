@@ -111,6 +111,58 @@ python3 benchmark/prepare_study.py \
 
 The default suite contains 6 context-rot cases, 3 size bands, 4 conditions, and 2 replications, for 144 continuation runs. The command writes the rendered transcripts, oracle state documents, per-case gold annotations, and an `evaluation.json` skeleton. `benchmark/generated/` and `benchmark/results/` are gitignored so long transcripts and study outputs stay out of the repository.
 
+## Planning and running one study cell
+
+The runner selects exactly one manifest cell. Its default is a content-free plan: it does not create a result directory or call a provider.
+
+```bash
+python3 benchmark/run_study.py benchmark/generated/evaluation.json \
+  --client codex \
+  --model <exact-model-id> \
+  --case superseded-decision \
+  --band long \
+  --condition handoff \
+  --replicate 1
+```
+
+Execution needs both an action flag and a separate cost acknowledgement:
+
+```bash
+python3 benchmark/run_study.py benchmark/generated/evaluation.json \
+  --client codex \
+  --model <exact-model-id> \
+  --case superseded-decision \
+  --band long \
+  --condition handoff \
+  --replicate 1 \
+  --execute \
+  --acknowledge-provider-cost
+```
+
+Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the real migration backend, then resumes the target; `handoff` first generates and validates the canonical Markdown handoff, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, never retries a provider failure, and prints only a content-free summary. Raw model output, the supplied context, verification output, native session data, and the workspace diff remain in the ignored run directory.
+
+Because native homes are isolated, provider authentication must be available through the client's supported environment. The runner does not copy credentials from the normal Claude or Codex home. A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so never use that mode for secrets or commit its artifacts.
+
+`--resume` is accepted only at a recorded retry-free checkpoint. It refuses completed, failed, or ambiguous runs rather than risking a duplicate billed call.
+
+The default matrix is 144 continuations. The 36 `handoff` cells also need a generation call, so execution is 180 provider calls before any automated judging. Run a small synthetic pilot and inspect costs before authorizing the matrix.
+
+### Run artifacts
+
+- `state.json`: content-free selection, versions, session IDs, phase, and call counters.
+- `supplied-context.md`: the blinded condition input.
+- `continuation.txt`, `workspace.diff`, `verify.stdout`, `verify.stderr`: Stage B evidence.
+- `handoff.md`: generated only for the handoff condition.
+- `migration.json`: content-free loss report for the migrate condition.
+- `evaluation-run.json`: deterministic outcomes and blank manual counters.
+- `judge.json`: condition-blinded reference payload with evidence fields and calibration metadata.
+
+The offline pilot uses fake executables and no provider:
+
+```bash
+python3 -m pytest -q tests/test_run_study.py
+```
+
 ## Native migration integration
 
 The benchmark also has an isolated end-to-end migration test:
@@ -139,7 +191,7 @@ threshold with `SESSION_HANDOFF_REAL_MIN_ITEMS`. Do not pass an active session.
 
 ## Scoring
 
-Fill the judge labels and continuation outcomes in the generated `evaluation.json`, following `benchmark/JUDGE.md`, then run:
+Fill the judge labels and continuation outcomes in the generated `evaluation.json`, following `benchmark/JUDGE.md`. Unjudged counters are deliberately `null`, so scoring refuses incomplete evidence. Then run:
 
 ```bash
 python3 benchmark/score.py benchmark/generated/evaluation.json --pretty
