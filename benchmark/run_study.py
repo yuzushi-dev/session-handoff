@@ -413,9 +413,18 @@ def _parse_agent_output(client: str, stdout: str) -> dict[str, Any]:
                     )
         if message is None:
             raise StudyRunError("Claude returned no final result; inspect the run artifact")
+        input_values = [
+            value
+            for name in (
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+            if isinstance((value := usage.get(name)), int) and not isinstance(value, bool)
+        ]
         return {
             "text": message,
-            "input_tokens": usage.get("input_tokens"),
+            "input_tokens": sum(input_values) if input_values else None,
             "output_tokens": usage.get("output_tokens"),
             "trace": trace,
         }

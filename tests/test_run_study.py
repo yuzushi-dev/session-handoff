@@ -18,6 +18,25 @@ RUNNER = ROOT / "benchmark/run_study.py"
 SPEC = ROOT / "benchmark/fixtures/context_rot_cases.json"
 
 
+def test_claude_input_tokens_include_cache_usage():
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": "done",
+            "usage": {
+                "input_tokens": 2,
+                "cache_creation_input_tokens": 5,
+                "cache_read_input_tokens": 8,
+                "output_tokens": 3,
+            },
+        }
+    )
+
+    parsed = study_runner._parse_agent_output("claude", stdout)
+
+    assert parsed["input_tokens"] == 15
+
+
 def prepare_study(tmp_path: Path) -> Path:
     study = tmp_path / "study"
     result = subprocess.run(
