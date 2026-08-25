@@ -125,6 +125,18 @@ JSONL, manifest, target UUID, source immutability, dropped events, and
 normalized fields. It uses synthetic benchmark data and never opens a live
 client session.
 
+An opt-in smoke test exercises the same path with a real local historical
+session. It reads the source in place, writes only to temporary directories,
+and never prints or commits transcript data:
+
+```bash
+SESSION_HANDOFF_REAL_CODEX_SESSION_ID=<historical-session-id> \
+  python3 -m pytest -q tests/test_real_long_migration.py
+```
+
+The test requires at least 1,000 canonical items by default; override that
+threshold with `SESSION_HANDOFF_REAL_MIN_ITEMS`. Do not pass an active session.
+
 ## Scoring
 
 Fill the judge labels and continuation outcomes in the generated `evaluation.json`, following `benchmark/JUDGE.md`, then run:
