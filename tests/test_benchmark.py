@@ -1,4 +1,5 @@
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
@@ -236,7 +237,7 @@ def test_validate_evaluation_requires_exact_cartesian_runs():
         scoring.validate_evaluation(payload)
 
 
-def test_release_gate_requires_all_critical_context_and_no_stale_intrusion():
+def test_handoff_fidelity_gate_requires_all_critical_context_and_no_stale_intrusion():
     good = scoring.score_run(valid_run())
     bad = scoring.score_run(
         valid_run(
@@ -248,10 +249,114 @@ def test_release_gate_requires_all_critical_context_and_no_stale_intrusion():
         )
     )
 
-    assert scoring.release_gate([good])["passed"] is True
-    failed = scoring.release_gate([good, bad])
+    assert scoring.handoff_fidelity_gate([good])["passed"] is True
+    failed = scoring.handoff_fidelity_gate([good, bad])
     assert failed["passed"] is False
     assert {failure["metric"] for failure in failed["failures"]} == {
         "critical_rcr",
         "stale_context_intrusion",
+    }
+
+
+def test_release_gate_rejects_pilot_scope_and_missing_calibration():
+    payload = {
+        "schema_version": 1,
+        "study": {
+            "cases": ["superseded-decision"],
+            "bands": ["long"],
+            "conditions": ["full", "handoff", "migrate", "oracle"],
+            "runs_per_condition": 1,
+        },
+        "runs": [
+            valid_run(case="superseded-decision", condition=condition)
+            for condition in ("full", "handoff", "migrate", "oracle")
+        ],
+    }
+
+    result = scoring.score_evaluation(payload)
+
+    assert result["handoff_fidelity_gate"]["passed"] is True
+    assert result["release_gate"]["passed"] is False
+    assert {failure["metric"] for failure in result["release_gate"]["failures"]} >= {
+        "study_cases",
+        "study_bands",
+        "runs_per_condition",
+        "condition_blind",
+        "human_reviewed",
+    }
+
+
+def release_payload():
+    cases = list(scoring.RELEASE_CASES)
+    bands = list(scoring.RELEASE_BANDS)
+    conditions = list(scoring.RELEASE_CONDITIONS)
+    runs = [
+        valid_run(case=case, band=band, condition=condition, replicate=replicate)
+        for case, band, condition, replicate in itertools.product(
+            cases, bands, conditions, range(1, 3)
+        )
+    ]
+    return {
+        "schema_version": 1,
+        "study": {
+            "cases": cases,
+            "bands": bands,
+            "conditions": conditions,
+            "runs_per_condition": 2,
+        },
+        "judging": {
+            "condition_blind": True,
+            "judge_id": "calibrated-judge",
+            "judge_model": "fixture-model",
+            "calibration_set": "fixture-calibration-v1",
+            "calibration_sample_size": 18,
+            "agreement": 0.9,
+            "human_reviewed": True,
+            "critical_disagreements_adjudicated": True,
+            "covered_cases": cases,
+            "covered_bands": bands,
+            "covered_conditions": conditions,
+        },
+        "runs": runs,
+    }
+
+
+def test_release_gate_accepts_complete_calibrated_study():
+    payload = release_payload()
+
+    result = scoring.score_evaluation(payload)
+
+    assert result["handoff_fidelity_gate"]["passed"] is True
+    assert result["release_gate"] == {"passed": True, "failures": []}
+
+
+def test_release_gate_requires_product_and_oracle_continuations_to_succeed():
+    payload = release_payload()
+    failed_run = next(run for run in payload["runs"] if run["condition"] == "migrate")
+    failed_run["task_success"] = False
+    failed_run["dod"][0]["passed"] = False
+
+    result = scoring.score_evaluation(payload)
+
+    assert result["handoff_fidelity_gate"]["passed"] is True
+    assert result["release_gate"]["passed"] is False
+    assert {failure["metric"] for failure in result["release_gate"]["failures"]} == {
+        "task_success",
+        "dod_pass_rate",
+    }
+
+
+def test_release_gate_rejects_malformed_calibration_without_crashing():
+    payload = release_payload()
+    payload["judging"]["agreement"] = float("nan")
+    payload["judging"]["calibration_sample_size"] = 17
+    payload["judging"]["covered_cases"] = [{}]
+
+    result = scoring.score_evaluation(payload)
+
+    assert result["release_gate"]["passed"] is False
+    assert {failure["metric"] for failure in result["release_gate"]["failures"]} == {
+        "calibration_agreement",
+        "calibration_sample_size",
+        "calibration_covered_cases",
     }

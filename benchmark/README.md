@@ -205,6 +205,14 @@ Fill the judge labels and continuation outcomes in the generated `evaluation.jso
 python3 benchmark/score.py benchmark/generated/evaluation.json --pretty
 ```
 
+`handoff_fidelity_gate` checks the semantic thresholds on the available handoff
+runs. `release_gate` additionally requires all six release cases, all three
+bands, all four conditions, at least two replications, successful handoff,
+migrate, and oracle continuations, and condition-blind human-calibrated judging
+with documented axis coverage and agreement of at least `0.8`. A pilot can pass
+the fidelity gate but cannot pass the release gate. Calibration needs at least
+18 human-reviewed samples.
+
 For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across conditions. Randomize condition order and blind the judge to the condition name when practical.
 
 ## Minimum study before changing the handoff format

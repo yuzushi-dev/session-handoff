@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,19 @@ COUNTER_FIELDS = (
     "recovery_reads",
 )
 OPTIONAL_METRICS = ("input_tokens", "output_tokens", "wall_seconds")
+RELEASE_CASES = (
+    "buried-constraint",
+    "superseded-decision",
+    "failed-attempt-trap",
+    "partial-state",
+    "late-correction",
+    "compound-rot",
+)
+RELEASE_BANDS = ("short", "long", "very_long")
+RELEASE_CONDITIONS = ("full", "handoff", "migrate", "oracle")
+MIN_RELEASE_REPLICATIONS = 2
+MIN_CALIBRATION_SAMPLE_SIZE = 18
+MIN_CALIBRATION_AGREEMENT = 0.8
 
 
 def _weighted_ratio(items: list[dict[str, Any]], predicate) -> float | None:
@@ -219,7 +233,7 @@ def validate_evaluation(payload: Any) -> None:
         _validate_run(run)
 
 
-def release_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
+def handoff_fidelity_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
     handoff = [row for row in scored if row.get("condition") == "handoff"]
     failures: list[dict[str, Any]] = []
     if not handoff:
@@ -245,13 +259,122 @@ def release_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
     return {"passed": not failures, "failures": failures}
 
 
+def release_gate(
+    payload: dict[str, Any], scored: list[dict[str, Any]]
+) -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    study = payload["study"]
+
+    for field, required in (
+        ("cases", RELEASE_CASES),
+        ("bands", RELEASE_BANDS),
+        ("conditions", RELEASE_CONDITIONS),
+    ):
+        actual = study[field]
+        if not set(required).issubset(actual):
+            failures.append(
+                {"metric": f"study_{field}", "value": actual, "expected": list(required)}
+            )
+    if study["runs_per_condition"] < MIN_RELEASE_REPLICATIONS:
+        failures.append(
+            {
+                "metric": "runs_per_condition",
+                "value": study["runs_per_condition"],
+                "expected": f">={MIN_RELEASE_REPLICATIONS}",
+            }
+        )
+
+    judging = payload.get("judging")
+    if not isinstance(judging, dict):
+        judging = {}
+    for field in (
+        "condition_blind",
+        "human_reviewed",
+        "critical_disagreements_adjudicated",
+    ):
+        if judging.get(field) is not True:
+            failures.append({"metric": field, "value": judging.get(field), "expected": True})
+    for field in ("judge_id", "judge_model", "calibration_set"):
+        if not isinstance(judging.get(field), str) or not judging[field]:
+            failures.append(
+                {"metric": field, "value": judging.get(field), "expected": "non-empty string"}
+            )
+    sample_size = judging.get("calibration_sample_size")
+    if (
+        isinstance(sample_size, bool)
+        or not isinstance(sample_size, int)
+        or sample_size < MIN_CALIBRATION_SAMPLE_SIZE
+    ):
+        failures.append(
+            {
+                "metric": "calibration_sample_size",
+                "value": sample_size,
+                "expected": f">={MIN_CALIBRATION_SAMPLE_SIZE}",
+            }
+        )
+    agreement = judging.get("agreement")
+    if (
+        isinstance(agreement, bool)
+        or not isinstance(agreement, (int, float))
+        or not math.isfinite(agreement)
+        or agreement < MIN_CALIBRATION_AGREEMENT
+        or agreement > 1
+    ):
+        failures.append(
+            {
+                "metric": "calibration_agreement",
+                "value": agreement,
+                "expected": f"{MIN_CALIBRATION_AGREEMENT}..1.0",
+            }
+        )
+    for field, required in (
+        ("covered_cases", RELEASE_CASES),
+        ("covered_bands", RELEASE_BANDS),
+        ("covered_conditions", RELEASE_CONDITIONS),
+    ):
+        actual = judging.get(field)
+        if (
+            not isinstance(actual, list)
+            or any(not isinstance(value, str) for value in actual)
+            or not set(required).issubset(actual)
+        ):
+            failures.append(
+                {
+                    "metric": f"calibration_{field}",
+                    "value": actual,
+                    "expected": list(required),
+                }
+            )
+
+    fidelity = handoff_fidelity_gate(scored)
+    failures.extend(fidelity["failures"])
+    for row in scored:
+        if row["condition"] not in {"handoff", "migrate", "oracle"}:
+            continue
+        for metric, expected in (("task_success", True), ("dod_pass_rate", 1.0)):
+            if row[metric] != expected:
+                failures.append(
+                    {
+                        "case": row["case"],
+                        "band": row["band"],
+                        "condition": row["condition"],
+                        "replicate": row["replicate"],
+                        "metric": metric,
+                        "value": row[metric],
+                        "expected": expected,
+                    }
+                )
+    return {"passed": not failures, "failures": failures}
+
+
 def score_evaluation(payload: dict[str, Any]) -> dict[str, Any]:
     validate_evaluation(payload)
     scored = [score_run(run) for run in payload["runs"]]
     return {
         "runs": scored,
         "aggregate_by_condition": aggregate(scored),
-        "release_gate": release_gate(scored),
+        "handoff_fidelity_gate": handoff_fidelity_gate(scored),
+        "release_gate": release_gate(payload, scored),
     }
 
 

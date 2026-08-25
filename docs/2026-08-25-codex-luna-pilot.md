@@ -18,7 +18,9 @@ gitignored local result directories.
 All four selected continuations preserved the three critical facts, changed the
 focused test from 60 to the authoritative 15 seconds, avoided the obsolete
 decision, and passed both visible tests and the hidden semantic acceptance.
-`benchmark/score.py` reported a passing handoff release gate.
+`benchmark/score.py` reports a passing `handoff_fidelity_gate`. Its release gate
+correctly remains closed because this pilot lacks the required scope and
+calibrated blinded judging.
 
 The handoff total includes its generation and continuation calls. The token and
 latency samples are single-run observations, not comparative estimates.
@@ -50,6 +52,6 @@ Two additional resume attempts failed locally before reaching the provider.
 
 - One case, one size band, one replicate, Codex target only.
 - Assessment was condition-aware and not calibrated against a human sample.
-- The passing scorer gate is therefore pilot evidence, not a release decision.
+- The passing fidelity gate is therefore pilot evidence, not a release decision.
 - Release-grade evidence still needs all six cases, three bands, two or more
   replicates, blinded calibrated judging, and a corresponding Claude live run.

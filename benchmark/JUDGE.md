@@ -62,6 +62,30 @@ Every fact, stale-trap, DoD, and counter label needs concise evidence: an exact 
 
 Before using model judgments as release evidence, human-score a stratified calibration sample covering every case, condition, and size band. Record the judge identity/model, calibration-set identifier, sample size, agreement, and adjudicated disagreements. Set `human_reviewed=true` only after that comparison. Review every disagreement involving a critical fact; do not tune the fixture or handoff template against the held-out study cells.
 
+Record the study-level result in the evaluation root:
+
+```json
+{
+  "judging": {
+    "condition_blind": true,
+    "judge_id": "<reviewer-or-system-id>",
+    "judge_model": "<exact-model-id>",
+    "calibration_set": "<stable-set-id>",
+    "calibration_sample_size": 18,
+    "agreement": 0.8,
+    "human_reviewed": true,
+    "critical_disagreements_adjudicated": true,
+    "covered_cases": ["<every release case>"],
+    "covered_bands": ["short", "long", "very_long"],
+    "covered_conditions": ["full", "handoff", "migrate", "oracle"]
+  }
+}
+```
+
+The release gate requires at least 18 calibration samples and agreement of at
+least `0.8`; the reported coverage must include every required case, band, and
+condition.
+
 After judgment, transfer the labels and evidence into the matching `evaluation-run.json` entry, including all three counters. Merge complete entries into the prepared `evaluation.json`. The scorer intentionally rejects `null` labels or counters.
 
 ## Context-rot focus
