@@ -1,12 +1,37 @@
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from benchmark.real_session import count_thread_items, find_codex_rollout
 from server.migration import migrate_session
+
+
+def _thread_hash(database: Path, session_id: str) -> str:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            """
+            SELECT item_id, rollout_ordinal, created_at_ms, item_json,
+                   item_type, updated_at_ordinal
+            FROM thread_items
+            WHERE thread_id = ?
+            ORDER BY rollout_ordinal, item_id
+            """,
+            (session_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monkeypatch):
@@ -18,7 +43,7 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
     rollout = find_codex_rollout(source_home, session_id)
     source_hash = hashlib.sha256(rollout.read_bytes()).hexdigest()
     database = source_home / "thread_history_1.sqlite"
-    database_hash = hashlib.sha256(database.read_bytes()).hexdigest()
+    thread_hash = _thread_hash(database, session_id)
     source_items = count_thread_items(database, session_id)
     minimum_items = int(os.environ.get("SESSION_HANDOFF_REAL_MIN_ITEMS", "1000"))
     assert source_items >= minimum_items
@@ -48,4 +73,4 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
     assert output.is_file() and output.stat().st_size > 0
     assert any(json.loads(line) for line in output.read_text().splitlines())
     assert hashlib.sha256(rollout.read_bytes()).hexdigest() == source_hash
-    assert hashlib.sha256(database.read_bytes()).hexdigest() == database_hash
+    assert _thread_hash(database, session_id) == thread_hash

@@ -83,7 +83,10 @@ references that the target can resolve in the same workspace. Private reasoning
 and unknown item types are omitted and reported in `dropped_events`. The Codex
 source is opened read-only and is never rewritten. The migration result also
 exposes `context_loss.normalized_fields` for fields translated into the portable
-tool representation.
+tool representation. Claude→Codex output is normalized to the current native
+Codex representation by removing an adjacent duplicate `event_msg` when the
+same user message is already present as a `response_item`; the target manifest
+record count and checksum are updated, and the normalization is reported.
 
 ## Safety
 
@@ -107,7 +110,11 @@ The [benchmark protocol](benchmark/README.md) keeps two claims separate:
 - semantic handoff must retain every critical active fact and exclude stale state;
 - native migration must preserve supported events, leave the source unchanged, and report each omission or normalization.
 
-The offline suite covers six context-rot cases at three transcript sizes, runnable continuation workspaces, both native migration directions, strict release gates, and a fake-client pilot for all four study conditions. The provider study remains opt-in because the default matrix needs 180 execution calls before judging.
+The offline suite covers six context-rot cases at three transcript sizes,
+runnable continuation workspaces, hidden semantic acceptance checks, both
+native migration directions, strict release gates, and a fake-client pilot for
+all four study conditions. The provider study remains opt-in because the
+default matrix needs 180 execution calls before judging.
 
 ```bash
 python3 benchmark/prepare_study.py \

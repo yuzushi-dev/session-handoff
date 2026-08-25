@@ -139,7 +139,7 @@ python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --acknowledge-provider-cost
 ```
 
-Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the real migration backend, then resumes the target; `handoff` generates and validates the canonical Markdown handoff in a repository-blind sandbox, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not retry provider failures. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
+Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the real migration backend, then resumes the target; `handoff` generates and validates the canonical Markdown handoff in a repository-blind sandbox, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not retry provider failures. After the visible repository tests, a fixture-specific acceptance command hidden from the agent checks the authoritative semantics, so a coherently stale code-and-test edit cannot become an automated pass. Both checks run offline with host files and environment hidden; acceptance sees the fixture read-only. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
 
 On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolated client home while hiding the study source, host home, repository, and unrelated temporary files. It mounts an existing Claude or Codex OAuth credential read-only into the isolated home and never copies its content. Use `--credential-mode environment` to disable that mount. The runner passes a small environment allowlist; add a required provider variable with `--pass-env NAME`. Handoff generation fails closed when `bwrap` is unavailable. Claude continuation uses `bypassPermissions` inside this OS sandbox so non-interactive shell verification can run; the tool set remains limited to repository reads, edits, and Bash. See [Claude permission modes](https://code.claude.com/docs/en/permission-modes).
 
@@ -151,9 +151,9 @@ For one client/model study, the default matrix is 144 continuations. The 36 `han
 
 ### Run artifacts
 
-- `state.json`: content-free selection, client and migration executable provenance, session IDs, phase, call counters, prompt hashes, seed, and snapshot hashes.
+- `state.json`: content-free selection, client and migration executable provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
-- `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`: Stage B evidence.
+- `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`, `acceptance.stdout`, `acceptance.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
 - `migration.json`: content-free loss report for the migrate condition.
 - `evaluation-run.json`: deterministic outcomes and blank manual counters.
@@ -165,6 +165,9 @@ The offline pilot uses fake executables and no provider:
 ```bash
 python3 -m pytest -q tests/test_run_study.py
 ```
+
+The first live Codex/Luna exploratory pilot is recorded in
+[the 2026-08-25 pilot report](../docs/2026-08-25-codex-luna-pilot.md).
 
 ## Native migration integration
 

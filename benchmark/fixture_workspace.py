@@ -5,6 +5,34 @@ from __future__ import annotations
 from pathlib import Path
 
 
+VISIBLE_TEST_RUNNER = """\
+import runpy
+from pathlib import Path
+
+failures = []
+passed = 0
+for path in sorted(Path('tests').rglob('test_*.py')):
+    try:
+        namespace = runpy.run_path(str(path))
+    except Exception as exc:
+        failures.append(f'{path}: {type(exc).__name__}: {exc}')
+        continue
+    for name, test in sorted(namespace.items()):
+        if not name.startswith('test_') or not callable(test):
+            continue
+        try:
+            test()
+        except Exception as exc:
+            failures.append(f'{path}::{name}: {type(exc).__name__}: {exc}')
+        else:
+            passed += 1
+if failures:
+    print('\\n'.join(failures))
+    raise SystemExit(1)
+print(f'{passed} passed')
+"""
+
+
 FIXTURES: dict[str, dict[str, object]] = {
     "buried-constraint": {
         "expected_failure": "test_expired_refresh_token",
@@ -126,6 +154,42 @@ FIXTURES: dict[str, dict[str, object]] = {
 }
 
 CASE_IDS = tuple(FIXTURES)
+ACCEPTANCE = {
+    "buried-constraint": (
+        "import inspect\n"
+        "from src.auth.session import refresh_session\n"
+        "assert not inspect.iscoroutinefunction(refresh_session)\n"
+        "assert str(inspect.signature(refresh_session)) == '(user_id, token)'\n"
+        "assert refresh_session('user-1', {'access_valid': False, 'refresh_valid': True})\n"
+    ),
+    "superseded-decision": (
+        "from cache.config import NEGATIVE_CACHE_TTL\n"
+        "assert NEGATIVE_CACHE_TTL == 15\n"
+    ),
+    "failed-attempt-trap": (
+        "from src.slug.normalize import normalize_slug\n"
+        "assert normalize_slug('Cafe\\u0301') == 'café'\n"
+    ),
+    "partial-state": (
+        "from src.codec.reader import read_payload\n"
+        "assert read_payload('{\"version\": 2, \"value\": \"old\"}') == 'old'\n"
+        "assert read_payload('{\"version\": 3, \"value\": \"new\"}') == 'new'\n"
+    ),
+    "late-correction": (
+        "from src.client.export import EXPORT_ENDPOINT\n"
+        "assert EXPORT_ENDPOINT == '/api/v2/exports'\n"
+    ),
+    "compound-rot": (
+        "import inspect\n"
+        "from src.retry.policy import RetryPolicy\n"
+        "policy = RetryPolicy()\n"
+        "assert policy.max_attempts == 3\n"
+        "assert not inspect.iscoroutinefunction(RetryPolicy.should_retry)\n"
+        "assert policy.should_retry(ConnectionError())\n"
+        "assert policy.should_retry(TimeoutError())\n"
+        "assert not policy.should_retry(TypeError())\n"
+    ),
+}
 
 
 def materialize_workspace(case_id: str, destination: str | Path) -> dict[str, object]:
@@ -150,6 +214,7 @@ def materialize_workspace(case_id: str, destination: str | Path) -> dict[str, ob
         target.write_text(str(content), encoding="utf-8")
     return {
         "workspace": str(root),
-        "verify_command": ["python3", "-m", "pytest", "-q"],
+        "verify_command": ["python3", "-c", VISIBLE_TEST_RUNNER],
+        "acceptance_command": ["python3", "-c", ACCEPTANCE[case_id]],
         "expected_failure": fixture["expected_failure"],
     }

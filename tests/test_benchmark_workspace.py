@@ -84,7 +84,22 @@ def test_prepare_study_records_one_workspace_template_per_case(tmp_path):
     assert templates == {f"{case_id}/workspace" for case_id in CASE_IDS}
     for template in templates:
         assert (output / template).is_dir()
-    assert all(run["verify_command"][0:3] == ["python3", "-m", "pytest"] for run in evaluation["runs"])
+    assert all(run["verify_command"][0:2] == ["python3", "-c"] for run in evaluation["runs"])
+    assert all(run["acceptance_command"][0:2] == ["python3", "-c"] for run in evaluation["runs"])
+
+
+def test_hidden_acceptance_rejects_a_coherently_stale_fix(tmp_path):
+    workspace = tmp_path / "superseded-decision"
+    fixture = materialize_workspace("superseded-decision", workspace)
+    (workspace / "cache/config.py").write_text(
+        "NEGATIVE_CACHE_TTL = 60\n", encoding="utf-8"
+    )
+
+    visible = subprocess.run(fixture["verify_command"], cwd=workspace, check=False)
+    hidden = subprocess.run(fixture["acceptance_command"], cwd=workspace, check=False)
+
+    assert visible.returncode == 0
+    assert hidden.returncode != 0
 
 
 @pytest.mark.parametrize("case_id", CASE_IDS)

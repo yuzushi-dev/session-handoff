@@ -212,6 +212,8 @@ def _sandbox_agent(
     native_home: Path,
     hidden_paths: list[Path],
     credential_source: Path | None,
+    network: bool = True,
+    workspace_writable: bool = True,
 ) -> list[str]:
     sandbox = shutil.which(executable)
     if not sandbox:
@@ -222,6 +224,10 @@ def _sandbox_agent(
     agent_path = Path(agent_executable).resolve()
     if not agent_path.is_file():
         raise StudyRunError("agent executable is not a readable file")
+    agent_paths = [agent_path]
+    companion = agent_path.parent / "codex-code-mode-host"
+    if companion.is_file():
+        agent_paths.append(companion.resolve())
     command = [str(agent_path), *command[1:]]
 
     masked: list[Path] = []
@@ -246,6 +252,8 @@ def _sandbox_agent(
         "--proc",
         "/proc",
     ]
+    if not network:
+        result.append("--unshare-net")
     for path in masked:
         result.extend(("--tmpfs", str(path)))
     for root in (Path.home().resolve(), Path("/tmp")):
@@ -258,16 +266,15 @@ def _sandbox_agent(
             current /= part
             result.extend(("--dir", str(current)))
         break
+    for path in agent_paths:
+        result.extend(("--ro-bind", str(path), str(path)))
     result.extend(
         (
-            "--ro-bind",
-            str(agent_path),
-            str(agent_path),
             "--tmpfs",
             "/mnt",
             "--dir",
             "/mnt/work",
-            "--bind",
+            "--bind" if workspace_writable else "--ro-bind",
             str(workspace),
             "/mnt/work",
             "--dir",
@@ -538,6 +545,51 @@ def _sum_metric(calls: list[dict[str, Any]], name: str) -> int | float | None:
     return sum(values) if values else None
 
 
+def _manifest_command(run: dict[str, Any], field: str) -> list[str]:
+    command = run.get(field)
+    if not (
+        isinstance(command, list)
+        and command
+        and all(isinstance(item, str) and item for item in command)
+    ):
+        raise StudyRunError(f"run {field} must be a non-empty argv array")
+    return command
+
+
+def _run_workspace_check(
+    args: argparse.Namespace,
+    command: list[str],
+    *,
+    workspace: Path,
+    run_dir: Path,
+    study_root: Path,
+    name: str,
+    writable: bool,
+) -> subprocess.CompletedProcess[str]:
+    native_home = run_dir / f"{name}-home"
+    native_home.mkdir(mode=0o700, exist_ok=True)
+    sandboxed = _sandbox_agent(
+        command,
+        executable=args.sandbox_executable,
+        workspace=workspace,
+        native_home=native_home,
+        hidden_paths=[ROOT, study_root],
+        credential_source=None,
+        network=False,
+        workspace_writable=writable,
+    )
+    env = {key: os.environ[key] for key in BASE_ENV if key in os.environ}
+    env.update(HOME="/mnt/native", TMPDIR="/mnt/tmp")
+    return subprocess.run(
+        sandboxed,
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _judge_payload(
     run: dict[str, Any], *, blind_id: str, task_success: bool
 ) -> dict[str, Any]:
@@ -549,6 +601,8 @@ def _judge_payload(
             "continuation": "continuation.txt",
             "repository_diff": "workspace.diff",
             "verification": "verify.stdout",
+            "acceptance": "acceptance.stdout",
+            "acceptance_errors": "acceptance.stderr",
             "trace": "trace.json",
         },
         "facts": [
@@ -615,6 +669,8 @@ def _export_blinded_bundle(
         "workspace.diff",
         "verify.stdout",
         "verify.stderr",
+        "acceptance.stdout",
+        "acceptance.stderr",
         "trace.json",
     ):
         shutil.copy2(run_dir / name, blind_dir / name)
@@ -767,6 +823,9 @@ def _prepare_context(
 def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, transcript: str) -> dict[str, Any]:
     template = _inside(study_root, run["workspace_template"], directory=True)
     oracle_path = _inside(study_root, f"{args.case}/oracle.md")
+    verify_command = _manifest_command(run, "verify_command")
+    acceptance_command = _manifest_command(run, "acceptance_command")
+    evaluation_path = Path(getattr(args, "evaluation", study_root / "evaluation.json"))
     run_id = _run_id(args)
     run_dir = args.output.resolve() / run_id
     state_path = run_dir / "state.json"
@@ -821,6 +880,13 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "continuation_prompt_sha256": _sha256(CONTINUATION_PROMPT),
                 "source_sha256": _sha256(transcript),
                 "oracle_sha256": _sha256(oracle_path.read_bytes()),
+                "evaluation_sha256": _sha256(evaluation_path.read_bytes()),
+                "verify_command_sha256": _sha256(
+                    json.dumps(verify_command, ensure_ascii=False, separators=(",", ":"))
+                ),
+                "acceptance_command_sha256": _sha256(
+                    json.dumps(acceptance_command, ensure_ascii=False, separators=(",", ":"))
+                ),
                 "workspace_template_sha256": _tree_sha256(template),
                 "runner_sha256": _sha256(runner_path.read_bytes()),
                 "runner_git_revision": _git_revision(),
@@ -927,23 +993,33 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             state.update(status="continuation_complete", stage="verification", calls=calls)
             _write_json(state_path, state)
 
-        verify_command = run.get("verify_command")
-        if not (
-            isinstance(verify_command, list)
-            and verify_command
-            and all(isinstance(item, str) and item for item in verify_command)
-        ):
-            raise StudyRunError("run verify_command must be a non-empty argv array")
-        verification = subprocess.run(
+        verification = _run_workspace_check(
+            args,
             verify_command,
-            cwd=workspace,
-            text=True,
-            capture_output=True,
-            check=False,
+            workspace=workspace,
+            run_dir=run_dir,
+            study_root=study_root,
+            name="verification",
+            writable=True,
         )
         (run_dir / "verify.stdout").write_text(verification.stdout or "", encoding="utf-8")
         (run_dir / "verify.stderr").write_text(verification.stderr or "", encoding="utf-8")
-        task_success = verification.returncode == 0
+        acceptance = _run_workspace_check(
+            args,
+            acceptance_command,
+            workspace=workspace,
+            run_dir=run_dir,
+            study_root=study_root,
+            name="acceptance",
+            writable=False,
+        )
+        (run_dir / "acceptance.stdout").write_text(
+            acceptance.stdout or "", encoding="utf-8"
+        )
+        (run_dir / "acceptance.stderr").write_text(
+            acceptance.stderr or "", encoding="utf-8"
+        )
+        task_success = verification.returncode == 0 and acceptance.returncode == 0
         (run_dir / "workspace.diff").write_text(_snapshot_diff(template, workspace), encoding="utf-8")
         evaluation_run = dict(run)
         evaluation_run["dod"] = [dict(item, passed=task_success) for item in run["dod"]]

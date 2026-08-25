@@ -184,6 +184,7 @@ else:
 def write_fake_migration(path: Path) -> None:
     path.write_text(
         """#!/usr/bin/env python3
+import hashlib
 import json
 import sys
 
@@ -195,11 +196,29 @@ source = args[args.index("--from") + 1]
 target = args[args.index("--to") + 1]
 session_id = args[args.index("--session-id") + 1]
 home = args[args.index("--home") + 1]
+output = None
+manifest = None
 if "--dry-run" not in args:
     from pathlib import Path
     root = Path(home)
     root.mkdir(parents=True, exist_ok=True)
     (root / (".fake-session-" + session_id)).write_text("ready", encoding="utf-8")
+    if target == "codex":
+        output_path = root / "sessions/2026/08/25" / ("rollout-fake-" + session_id + ".jsonl")
+        output_path.parent.mkdir(parents=True)
+        records = [
+            {"type": "session_meta", "payload": {"id": session_id, "session_id": session_id}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fixture"}]}},
+        ]
+        output_path.write_text("\\n".join(json.dumps(record) for record in records) + "\\n", encoding="utf-8")
+        manifest_path = root / "session-migrate/manifests" / (session_id + ".json")
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(json.dumps({"target": {"session_id": session_id, "path": str(output_path), "records": len(records), "sha256": hashlib.sha256(output_path.read_bytes()).hexdigest()}}), encoding="utf-8")
+        output = str(output_path)
+        manifest = str(manifest_path)
+    else:
+        output = "synthetic-target"
+        manifest = "synthetic-manifest"
 print(json.dumps({
     "source_format": source,
     "target_format": target,
@@ -207,8 +226,8 @@ print(json.dumps({
     "dry_run": "--dry-run" in args,
     "warnings": [],
     "dropped_events": {},
-    "output": "synthetic-target",
-    "manifest": "synthetic-manifest",
+    "output": output,
+    "manifest": manifest,
 }))
 """,
         encoding="utf-8",
@@ -319,6 +338,42 @@ def test_execute_requires_separate_provider_cost_acknowledgment(tmp_path):
     assert "--acknowledge-provider-cost" in result.stderr
 
 
+def test_invalid_hidden_acceptance_fails_before_provider_call(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    selected = next(
+        run
+        for run in payload["runs"]
+        if (run["case"], run["band"], run["condition"], run["replicate"])
+        == ("superseded-decision", "short", "full", 1)
+    )
+    selected["acceptance_command"] = []
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+
+    result = subprocess.run(
+        [
+            *command(evaluation, output, "full", "codex", claude, codex, migration),
+            "--execute",
+            "--acknowledge-provider-cost",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "acceptance_command" in result.stderr
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     ("client", "condition", "expected_calls"),
     [
@@ -404,6 +459,9 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert state["provenance"]["source_sha256"]
     assert state["provenance"]["workspace_template_sha256"]
     assert state["provenance"]["runner_sha256"]
+    assert state["provenance"]["evaluation_sha256"]
+    assert state["provenance"]["acceptance_command_sha256"]
+    assert state["provenance"]["verify_command_sha256"]
     assert state["provenance"]["prompt_version"] == 1
     private_dir = output / "private"
     mapping_path = private_dir / "blind-map.json"
@@ -418,6 +476,111 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
             migration.read_bytes()
         ).hexdigest()
         assert provenance["migration_version"] == "migration-fake 1.0"
+
+
+def test_hidden_acceptance_controls_automated_task_success(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    selected = next(
+        run
+        for run in payload["runs"]
+        if (run["case"], run["band"], run["condition"], run["replicate"])
+        == ("superseded-decision", "short", "oracle", 1)
+    )
+    selected["acceptance_command"] = [
+        "python3",
+        "-c",
+        "raise AssertionError('hidden stale-state rejection')",
+    ]
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+
+    result = subprocess.run(
+        [
+            *command(evaluation, output, "oracle", "codex", claude, codex, migration),
+            "--execute",
+            "--acknowledge-provider-cost",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["task_success"] is False
+    run_dir = output / summary["run_id"]
+    assert "hidden stale-state rejection" in (run_dir / "acceptance.stderr").read_text()
+    evaluation_run = json.loads((run_dir / "evaluation-run.json").read_text())
+    assert evaluation_run["task_success"] is False
+    assert all(item["passed"] is False for item in evaluation_run["dod"])
+    state = json.loads((run_dir / "state.json").read_text())
+    judge = json.loads(
+        (output / "blinded" / state["blind_id"] / "judge.json").read_text()
+    )
+    assert judge["artifacts"]["acceptance"] == "acceptance.stdout"
+
+
+def test_hidden_acceptance_runs_without_host_environment_or_files(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    outside = tmp_path / "outside-secret"
+    outside.write_text("must stay hidden", encoding="utf-8")
+    selected = next(
+        run
+        for run in payload["runs"]
+        if (run["case"], run["band"], run["condition"], run["replicate"])
+        == ("superseded-decision", "short", "oracle", 1)
+    )
+    selected["acceptance_command"] = [
+        "python3",
+        "-c",
+        (
+            "import os\n"
+            "from pathlib import Path\n"
+            "from cache.config import NEGATIVE_CACHE_TTL\n"
+            "assert NEGATIVE_CACHE_TTL == 15\n"
+            "assert 'SHOULD_NOT_REACH_AGENT' not in os.environ\n"
+            f"assert not Path({str(outside)!r}).exists()\n"
+        ),
+    ]
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+
+    result = subprocess.run(
+        [
+            *command(
+                evaluation,
+                tmp_path / "results",
+                "oracle",
+                "codex",
+                claude,
+                codex,
+                migration,
+            ),
+            "--execute",
+            "--acknowledge-provider-cost",
+        ],
+        env={**os.environ, "SHOULD_NOT_REACH_AGENT": "secret"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["task_success"] is True
 
 
 def test_non_fixture_source_needs_its_own_explicit_flag(tmp_path):
@@ -606,6 +769,7 @@ def test_verification_checkpoint_resumes_without_another_provider_call(
         if (run["case"], run["band"], run["condition"], run["replicate"])
         == ("superseded-decision", "short", condition, 1)
     )
+    valid_verify_command = selected["verify_command"]
     selected["verify_command"] = ["missing-verifier-for-resume-test"]
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
     claude = tmp_path / "claude-fake"
@@ -638,7 +802,7 @@ def test_verification_checkpoint_resumes_without_another_provider_call(
 
     if condition == "migrate":
         migration.unlink()
-    selected["verify_command"] = ["python3", "-m", "pytest", "-q"]
+    selected["verify_command"] = valid_verify_command
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
     resumed = subprocess.run(
         [*argv, "--resume"],
@@ -724,6 +888,27 @@ print(json.dumps({'readable': readable, 'writable': writable}))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"readable": True, "writable": False}
     assert source.read_text(encoding="utf-8") == "opaque-synthetic-credential"
+
+
+def test_bubblewrap_exposes_codex_code_mode_companion(tmp_path):
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "codex"
+    companion = bin_dir / "codex-code-mode-host"
+    for path in (executable, companion):
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    command = _sandbox_agent(
+        [str(executable), "--version"],
+        executable="bwrap",
+        workspace=tmp_path / "workspace",
+        native_home=tmp_path / "native",
+        hidden_paths=[],
+        credential_source=None,
+    )
+
+    assert command.count(str(companion.resolve())) == 2
 
 
 def test_handoff_generation_sandbox_cannot_read_fixture_repository(tmp_path):

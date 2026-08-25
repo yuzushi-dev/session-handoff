@@ -103,6 +103,7 @@ def main() -> int:
                     run = evaluation_run(case, band, condition, replicate)
                     run["workspace_template"] = f"{case['id']}/workspace"
                     run["verify_command"] = fixture["verify_command"]
+                    run["acceptance_command"] = fixture["acceptance_command"]
                     evaluation["runs"].append(run)
 
     (args.output / "evaluation.json").write_text(

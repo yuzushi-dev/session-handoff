@@ -39,12 +39,30 @@ def _seed_codex(
             "session_id": session_id,
             "timestamp": TIMESTAMP,
             "cwd": str(workspace),
+            "originator": "session-handoff-benchmark",
             "cli_version": "0.149.1",
+            "source": "cli",
             "model_provider": "openai",
-            "history_mode": "paginated",
+            "history_mode": "legacy",
         },
     }
-    _private_text(rollout, json.dumps(metadata, separators=(",", ":")) + "\n")
+    user_message = {
+        "timestamp": TIMESTAMP,
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": transcript}],
+        },
+    }
+    _private_text(
+        rollout,
+        "\n".join(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            for record in (metadata, user_message)
+        )
+        + "\n",
+    )
     database = home / "thread_history_1.sqlite"
     database.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     connection = sqlite3.connect(database)
