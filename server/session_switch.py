@@ -656,6 +656,7 @@ class SessionSupervisor:
                         "target": target_client,
                         "session_id": migration["session_id"],
                         "dropped_events": migration.get("dropped_events", {}),
+                        "context_loss": migration.get("context_loss", {}),
                         "warnings": migration.get("warnings", []),
                     }
                     print(
