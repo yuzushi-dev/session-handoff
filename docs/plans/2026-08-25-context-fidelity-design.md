@@ -14,11 +14,12 @@ These contracts stay separate. A migration does not masquerade as a clean semant
 
 The installed skill remains the command surface: `$session-handoff` in Codex and `/session-handoff` in Claude. `handoff_create` validates, redacts, writes atomically, and asks the managed launcher for a fresh same-harness session. `handoff_migrate` sends an authenticated control request; the supervisor stops the source, invokes `session-migrate`, and resumes either the target or the original source after failure.
 
-The fidelity benchmark gains three deterministic layers before any provider run:
+The fidelity benchmark has four deterministic layers around provider runs:
 
 1. A strict study manifest defines cases, size bands, conditions, replications, gold facts, stale traps, and Definition of Done.
 2. Runnable fixture workspaces make continuation outcomes testable instead of relying on prose-only judgment.
 3. Scoring validates exact study coverage, types, identifiers, non-negative counters, and critical-fact gates before reporting metrics.
+4. A fail-closed importer joins completed blinded judgments to run results only after judging, validates the private mapping and evidence, and writes a new evaluation without mutating either source.
 
 Provider adapters are opt-in. They receive only generated synthetic transcripts and temporary workspaces by default. Model, client version, prompt, repository snapshot, and seed are recorded. Real historical transcripts require a separate explicit authorization and never enter the repository.
 

@@ -199,10 +199,24 @@ threshold with `SESSION_HANDOFF_REAL_MIN_ITEMS`. Do not pass an active session.
 
 ## Scoring
 
-Fill the judge labels and continuation outcomes in the generated `evaluation.json`, following `benchmark/JUDGE.md`. Unjudged counters are deliberately `null`, so scoring refuses incomplete evidence. Then run:
+Complete the blinded `judge.json` files and study-level judging metadata,
+following `benchmark/JUDGE.md`. Import them into a new evaluation; the command
+fails on missing runs, mismatched mappings, altered definitions, or empty
+evidence:
 
 ```bash
-python3 benchmark/score.py benchmark/generated/evaluation.json --pretty
+python3 benchmark/import_judgments.py \
+  benchmark/generated/evaluation.json \
+  benchmark/results/<study> \
+  --judging benchmark/generated/judging.json \
+  --output benchmark/generated/evaluation.judged.json
+```
+
+Unjudged counters are deliberately `null`, so scoring refuses incomplete
+evidence. Then run:
+
+```bash
+python3 benchmark/score.py benchmark/generated/evaluation.judged.json --pretty
 ```
 
 `handoff_fidelity_gate` checks the semantic thresholds on the available handoff

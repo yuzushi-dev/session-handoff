@@ -86,7 +86,24 @@ The release gate requires at least 18 calibration samples and agreement of at
 least `0.8`; the reported coverage must include every required case, band, and
 condition.
 
-After judgment, transfer the labels and evidence into the matching `evaluation-run.json` entry, including all three counters. Merge complete entries into the prepared `evaluation.json`. The scorer intentionally rejects `null` labels or counters.
+After judgment, save each completed `judge.json` in its original blinded
+directory. Keep the private map hidden until all labels are final. Put the
+study-level `judging` object above in a separate JSON file, then import the
+complete set without overwriting the prepared evaluation:
+
+```bash
+python3 benchmark/import_judgments.py \
+  benchmark/generated/evaluation.json \
+  benchmark/results/<study> \
+  --judging benchmark/generated/judging.json \
+  --output benchmark/generated/evaluation.judged.json
+```
+
+The importer validates exact run coverage, blind/run mappings, unchanged IDs
+and statements, non-empty evidence, automatic test results, counters, and
+per-run calibration metadata. It derives final task success from automatic
+acceptance plus judged DoD and writes a new mode-0600 file. The scorer
+intentionally rejects remaining `null` labels or counters.
 
 ## Context-rot focus
 
