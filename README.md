@@ -61,7 +61,15 @@ uv tool install session-migrate
 
 Normal Markdown handoffs do not depend on `session-migrate` and keep working
 when the backend is absent. Migrate mode currently exposes only Claude Code ↔
-Codex even though the upstream migrator supports more formats.
+Codex even though the upstream migrator supports more formats. For current Codex
+sessions using paginated history, `session-handoff` reads the canonical
+`thread_history_1.sqlite` items and projects them into a private temporary view
+before invoking the native Claude writer. User/assistant messages, shell
+executions, and web searches are preserved; private reasoning and unknown item
+types are omitted and reported in `dropped_events`. The Codex source is opened
+read-only and is never rewritten. The migration result also exposes
+`context_loss.normalized_fields` for source fields that were intentionally
+flattened rather than copied verbatim.
 
 ## Safety
 
