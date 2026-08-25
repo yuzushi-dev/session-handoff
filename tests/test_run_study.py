@@ -2,9 +2,12 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+from benchmark.run_study import _credential_mount, _sandbox_agent
 
 
 ROOT = Path(__file__).parents[1]
@@ -46,13 +49,21 @@ if "--version" in args:
     raise SystemExit(0)
 
 prompt = sys.stdin.read()
-with open(os.environ["FAKE_AGENT_LOG"], "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({
-        "argv": args,
-        "stdin_chars": len(prompt),
-        "codex_home": bool(os.environ.get("CODEX_HOME")),
-        "claude_home": bool(os.environ.get("CLAUDE_CONFIG_DIR")),
-    }) + "\\n")
+generation = "--tools" in args or (
+    "--sandbox" in args and args[args.index("--sandbox") + 1] == "read-only"
+)
+client = "claude" if "--safe-mode" in args else "codex"
+print(json.dumps({
+    "type": "fake_meta",
+    "argv": args,
+    "stdin_chars": len(prompt),
+    "cwd": os.getcwd(),
+    "generation": generation,
+    "workspace_entries": sorted(path.name for path in Path.cwd().iterdir()),
+    "codex_home": bool(os.environ.get("CODEX_HOME")),
+    "claude_home": bool(os.environ.get("CLAUDE_CONFIG_DIR")),
+    "unrelated_secret_present": "SHOULD_NOT_REACH_AGENT" in os.environ,
+}))
 if os.environ.get("FAKE_AGENT_FAIL"):
     print("PRIVATE_PROVIDER_OUTPUT", file=sys.stderr)
     raise SystemExit(9)
@@ -91,21 +102,68 @@ Finish the fixture task.
 1. Update the focused test to 15.
 2. Run pytest.
 """
-generation = "--tools" in args or (
-    "--sandbox" in args and args[args.index("--sandbox") + 1] == "read-only"
-)
 if not generation:
+    if "resume" in args or "--resume" in args:
+        session_id = args[args.index("resume") + 1] if "resume" in args else args[args.index("--resume") + 1]
+        native_home = Path(os.environ["CODEX_HOME"] if client == "codex" else os.environ["CLAUDE_CONFIG_DIR"])
+        marker = native_home / (".fake-session-" + session_id)
+        if not marker.exists():
+            if client == "codex":
+                import sqlite3
+                connection = sqlite3.connect(native_home / "thread_history_1.sqlite")
+                try:
+                    found = connection.execute(
+                        "SELECT 1 FROM thread_items WHERE thread_id = ?", (session_id,)
+                    ).fetchone()
+                finally:
+                    connection.close()
+                if not found:
+                    raise SystemExit(8)
+            elif not list(native_home.rglob(session_id + ".jsonl")):
+                raise SystemExit(8)
     target = Path.cwd() / "tests/cache/test_negative_ttl.py"
     text = target.read_text(encoding="utf-8")
     target.write_text(text.replace("== 60", "== 15"), encoding="utf-8")
 
 message = canonical if generation else "Implemented and verified the focused change."
-if Path(sys.argv[0]).name.startswith("claude"):
+if client == "claude":
+    if not generation:
+        print(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "Read",
+                "input": {"file_path": "tests/cache/test_negative_ttl.py"},
+            }]},
+        }))
+        print(json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": "focused file read",
+                "is_error": False,
+            }]},
+        }))
     print(json.dumps({
+        "type": "result",
+        "subtype": "success",
         "result": message,
         "usage": {"input_tokens": 101, "output_tokens": 23},
     }))
 else:
+    if not generation:
+        print(json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "sed -n '1,80p' tests/cache/test_negative_ttl.py",
+                "aggregated_output": "focused file read",
+                "exit_code": 0,
+                "status": "completed",
+            },
+        }))
     print(json.dumps({
         "type": "item.completed",
         "item": {"type": "agent_message", "text": message},
@@ -130,6 +188,12 @@ args = sys.argv[1:]
 source = args[args.index("--from") + 1]
 target = args[args.index("--to") + 1]
 session_id = args[args.index("--session-id") + 1]
+home = args[args.index("--home") + 1]
+if "--dry-run" not in args:
+    from pathlib import Path
+    root = Path(home)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / (".fake-session-" + session_id)).write_text("ready", encoding="utf-8")
 print(json.dumps({
     "source_format": source,
     "target_format": target,
@@ -150,6 +214,7 @@ def command(
     evaluation: Path,
     output: Path,
     condition: str,
+    client: str,
     claude: Path,
     codex: Path,
     migration: Path,
@@ -159,7 +224,7 @@ def command(
         str(RUNNER),
         str(evaluation),
         "--client",
-        "claude" if condition == "oracle" else "codex",
+        client,
         "--model",
         "synthetic-model",
         "--case",
@@ -178,7 +243,24 @@ def command(
         str(codex),
         "--migration-executable",
         str(migration),
+        "--credential-mode",
+        "environment",
+        "--pass-env",
+        "FAKE_AGENT_FAIL",
     ]
+
+
+def fake_calls(run_dir: Path) -> list[dict]:
+    calls = []
+    for name in ("handoff-generation.stdout", "continuation.stdout"):
+        path = run_dir / name
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            payload = json.loads(line)
+            if payload.get("type") == "fake_meta":
+                calls.append(payload)
+    return calls
 
 
 def test_default_is_a_content_free_plan_with_no_provider_call(tmp_path):
@@ -189,11 +271,10 @@ def test_default_is_a_content_free_plan_with_no_provider_call(tmp_path):
     write_fake_agent(claude)
     write_fake_agent(codex)
     write_fake_migration(migration)
-    log = tmp_path / "calls.jsonl"
-    env = {**os.environ, "FAKE_AGENT_LOG": str(log)}
+    env = os.environ.copy()
 
     result = subprocess.run(
-        command(evaluation, tmp_path / "results", "handoff", claude, codex, migration),
+        command(evaluation, tmp_path / "results", "handoff", "codex", claude, codex, migration),
         env=env,
         text=True,
         capture_output=True,
@@ -205,7 +286,6 @@ def test_default_is_a_content_free_plan_with_no_provider_call(tmp_path):
     assert payload["mode"] == "plan"
     assert payload["provider_calls"] == 2
     assert "Initial decision" not in result.stdout
-    assert not log.exists()
     assert not (tmp_path / "results").exists()
 
 
@@ -217,14 +297,13 @@ def test_execute_requires_separate_provider_cost_acknowledgment(tmp_path):
     write_fake_agent(claude)
     write_fake_agent(codex)
     write_fake_migration(migration)
-    log = tmp_path / "calls.jsonl"
 
     result = subprocess.run(
         [
-            *command(evaluation, tmp_path / "results", "full", claude, codex, migration),
+            *command(evaluation, tmp_path / "results", "full", "codex", claude, codex, migration),
             "--execute",
         ],
-        env={**os.environ, "FAKE_AGENT_LOG": str(log)},
+        env=os.environ.copy(),
         text=True,
         capture_output=True,
         check=False,
@@ -232,15 +311,19 @@ def test_execute_requires_separate_provider_cost_acknowledgment(tmp_path):
 
     assert result.returncode != 0
     assert "--acknowledge-provider-cost" in result.stderr
-    assert not log.exists()
 
 
 @pytest.mark.parametrize(
-    ("condition", "expected_calls"),
-    [("full", 1), ("handoff", 2), ("migrate", 1), ("oracle", 1)],
+    ("client", "condition", "expected_calls"),
+    [
+        (client, condition, 2 if condition == "handoff" else 1)
+        for client in ("claude", "codex")
+        for condition in ("full", "handoff", "migrate", "oracle")
+    ],
 )
 def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     tmp_path,
+    client,
     condition,
     expected_calls,
 ):
@@ -252,15 +335,17 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     write_fake_agent(codex)
     write_fake_migration(migration)
     output = tmp_path / "results"
-    log = tmp_path / "calls.jsonl"
 
     result = subprocess.run(
         [
-            *command(evaluation, output, condition, claude, codex, migration),
+            *command(evaluation, output, condition, client, claude, codex, migration),
             "--execute",
             "--acknowledge-provider-cost",
         ],
-        env={**os.environ, "FAKE_AGENT_LOG": str(log)},
+        env={
+            **os.environ,
+            "SHOULD_NOT_REACH_AGENT": "secret",
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -275,27 +360,42 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
         "provider_calls": expected_calls,
         "task_success": True,
     }
-    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    run_dir = output / summary["run_id"]
+    calls = fake_calls(run_dir)
     assert len(calls) == expected_calls
     assert all(call["stdin_chars"] > 0 for call in calls)
     assert all("Initial decision" not in json.dumps(call["argv"]) for call in calls)
     assert all(call["codex_home"] or call["claude_home"] for call in calls)
+    assert all(call["unrelated_secret_present"] is False for call in calls)
+    generation_calls = [call for call in calls if call["generation"]]
+    if condition == "handoff":
+        assert len(generation_calls) == 1
+        assert generation_calls[0]["workspace_entries"] == []
 
-    run_dir = output / summary["run_id"]
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    judge = json.loads((run_dir / "judge.json").read_text(encoding="utf-8"))
+    blind_dir = output / "blinded" / state["blind_id"]
+    judge = json.loads((blind_dir / "judge.json").read_text(encoding="utf-8"))
     evaluation_run = json.loads(
         (run_dir / "evaluation-run.json").read_text(encoding="utf-8")
     )
     assert state["status"] == "completed"
     assert "continuation_prompt" not in state
-    assert (run_dir / "supplied-context.md").is_file()
+    assert (blind_dir / "supplied-context.md").is_file()
     assert "condition" not in judge
     assert judge["calibration"]["human_reviewed"] is False
     assert all("evidence" in item for item in judge["facts"])
     assert all(item["statement"] for item in judge["facts"])
+    assert judge["artifacts"]["trace"] == "trace.json"
+    trace = json.loads((blind_dir / "trace.json").read_text(encoding="utf-8"))
+    assert trace and trace[0]["kind"] == "tool"
     assert evaluation_run["task_success"] is True
     assert all(item["passed"] is True for item in evaluation_run["dod"])
+    assert state["provenance"]["source_sha256"]
+    assert state["provenance"]["workspace_template_sha256"]
+    assert state["provenance"]["runner_sha256"]
+    assert state["provenance"]["prompt_version"] == 1
+    mapping = json.loads((output / "blind-map.json").read_text(encoding="utf-8"))
+    assert mapping[state["blind_id"]]["condition"] == condition
 
 
 def test_non_fixture_source_needs_its_own_explicit_flag(tmp_path):
@@ -311,13 +411,13 @@ def test_non_fixture_source_needs_its_own_explicit_flag(tmp_path):
 
     result = subprocess.run(
         [
-            *command(evaluation, tmp_path / "results", "full", claude, codex, migration),
+            *command(evaluation, tmp_path / "results", "full", "codex", claude, codex, migration),
             "--source",
             str(source),
             "--execute",
             "--acknowledge-provider-cost",
         ],
-        env={**os.environ, "FAKE_AGENT_LOG": str(tmp_path / "calls.jsonl")},
+        env=os.environ.copy(),
         text=True,
         capture_output=True,
         check=False,
@@ -325,7 +425,6 @@ def test_non_fixture_source_needs_its_own_explicit_flag(tmp_path):
 
     assert result.returncode != 0
     assert "--allow-non-fixture-source" in result.stderr
-    assert not (tmp_path / "calls.jsonl").exists()
 
 
 def test_provider_failure_is_content_free_and_never_retried(tmp_path):
@@ -337,15 +436,13 @@ def test_provider_failure_is_content_free_and_never_retried(tmp_path):
     write_fake_agent(codex)
     write_fake_migration(migration)
     output = tmp_path / "results"
-    log = tmp_path / "calls.jsonl"
     argv = [
-        *command(evaluation, output, "full", claude, codex, migration),
+        *command(evaluation, output, "full", "codex", claude, codex, migration),
         "--execute",
         "--acknowledge-provider-cost",
     ]
     env = {
         **os.environ,
-        "FAKE_AGENT_LOG": str(log),
         "FAKE_AGENT_FAIL": "1",
     }
 
@@ -353,8 +450,8 @@ def test_provider_failure_is_content_free_and_never_retried(tmp_path):
 
     assert failed.returncode != 0
     assert "PRIVATE_PROVIDER_OUTPUT" not in failed.stderr
-    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
     run_dir = next(output.iterdir())
+    assert len(fake_calls(run_dir)) == 1
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "failed"
     assert state["retry_safe"] is False
@@ -368,4 +465,159 @@ def test_provider_failure_is_content_free_and_never_retried(tmp_path):
     )
     assert resumed.returncode != 0
     assert "not at a retry-free resumable checkpoint" in resumed.stderr
-    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(fake_calls(run_dir)) == 1
+
+
+def test_verification_checkpoint_resumes_without_another_provider_call(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    selected = next(
+        run
+        for run in payload["runs"]
+        if (run["case"], run["band"], run["condition"], run["replicate"])
+        == ("superseded-decision", "short", "full", 1)
+    )
+    selected["verify_command"] = ["missing-verifier-for-resume-test"]
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+    argv = [
+        *command(evaluation, output, "full", "codex", claude, codex, migration),
+        "--execute",
+        "--acknowledge-provider-cost",
+    ]
+
+    interrupted = subprocess.run(
+        argv,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert interrupted.returncode != 0
+    run_dir = next(output.iterdir())
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "continuation_complete"
+    assert state["retry_safe"] is True
+    assert len(fake_calls(run_dir)) == 1
+
+    selected["verify_command"] = ["python3", "-m", "pytest", "-q"]
+    evaluation.write_text(json.dumps(payload), encoding="utf-8")
+    resumed = subprocess.run(
+        [*argv, "--resume"],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout)["task_success"] is True
+    assert len(fake_calls(run_dir)) == 1
+
+
+@pytest.mark.parametrize(
+    ("client", "home_env", "credential_name"),
+    [
+        ("codex", "CODEX_HOME", "auth.json"),
+        ("claude", "CLAUDE_CONFIG_DIR", ".credentials.json"),
+    ],
+)
+def test_oauth_credentials_use_an_empty_read_only_mount_point(
+    tmp_path,
+    monkeypatch,
+    client,
+    home_env,
+    credential_name,
+):
+    source_home = tmp_path / "source-home"
+    source_home.mkdir()
+    source = source_home / credential_name
+    source.write_text("opaque-synthetic-credential", encoding="utf-8")
+    monkeypatch.setenv(home_env, str(source_home))
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+
+    mode, mount_source = _credential_mount(
+        SimpleNamespace(credential_mode="auto"),
+        client,
+        isolated,
+    )
+
+    assert mode == "read_only_mount"
+    assert mount_source == source
+    placeholder = isolated / credential_name
+    assert placeholder.is_file()
+    assert not placeholder.is_symlink()
+    assert placeholder.read_bytes() == b""
+    assert source.read_text(encoding="utf-8") == "opaque-synthetic-credential"
+
+
+def test_bubblewrap_exposes_oauth_credential_read_only(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    native_home = tmp_path / "native"
+    native_home.mkdir()
+    source = tmp_path / "synthetic-auth.json"
+    source.write_text("opaque-synthetic-credential", encoding="utf-8")
+    (native_home / source.name).write_text("", encoding="utf-8")
+    script = """
+import json
+from pathlib import Path
+p = Path('/mnt/native/synthetic-auth.json')
+readable = p.read_text(encoding='utf-8') == 'opaque-synthetic-credential'
+try:
+    p.write_text('changed', encoding='utf-8')
+    writable = True
+except OSError:
+    writable = False
+print(json.dumps({'readable': readable, 'writable': writable}))
+"""
+    command = _sandbox_agent(
+        [sys.executable, "-c", script],
+        executable="bwrap",
+        workspace=workspace,
+        native_home=native_home,
+        hidden_paths=[ROOT],
+        credential_source=source,
+    )
+
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"readable": True, "writable": False}
+    assert source.read_text(encoding="utf-8") == "opaque-synthetic-credential"
+
+
+def test_handoff_generation_sandbox_cannot_read_fixture_repository(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    hidden = fixture / "gold-bearing-test.py"
+    hidden.write_text("authoritative_fact = 15\n", encoding="utf-8")
+    workspace = tmp_path / "empty-input"
+    workspace.mkdir()
+    native_home = tmp_path / "native"
+    native_home.mkdir()
+    command = _sandbox_agent(
+        [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; print(Path({str(hidden)!r}).exists())",
+        ],
+        executable="bwrap",
+        workspace=workspace,
+        native_home=native_home,
+        hidden_paths=[fixture, ROOT],
+        credential_source=None,
+    )
+
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"

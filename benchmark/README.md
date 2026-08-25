@@ -139,9 +139,11 @@ python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --acknowledge-provider-cost
 ```
 
-Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the real migration backend, then resumes the target; `handoff` first generates and validates the canonical Markdown handoff, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, never retries a provider failure, and prints only a content-free summary. Raw model output, the supplied context, verification output, native session data, and the workspace diff remain in the ignored run directory.
+Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the real migration backend, then resumes the target; `handoff` generates and validates the canonical Markdown handoff in a repository-blind sandbox, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not retry provider failures. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
 
-Because native homes are isolated, provider authentication must be available through the client's supported environment. The runner does not copy credentials from the normal Claude or Codex home. A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so never use that mode for secrets or commit its artifacts.
+On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolated client home while hiding the study source, host home, repository, and unrelated temporary files. It mounts an existing Claude or Codex OAuth credential read-only into the isolated home and never copies its content. Use `--credential-mode environment` to disable that mount. The runner passes a small environment allowlist; add a required provider variable with `--pass-env NAME`. Handoff generation fails closed when `bwrap` is unavailable.
+
+A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so do not use that mode for secrets or commit its artifacts.
 
 `--resume` is accepted only at a recorded retry-free checkpoint. It refuses completed, failed, or ambiguous runs rather than risking a duplicate billed call.
 
@@ -149,13 +151,14 @@ The default matrix is 144 continuations. The 36 `handoff` cells also need a gene
 
 ### Run artifacts
 
-- `state.json`: content-free selection, versions, session IDs, phase, and call counters.
+- `state.json`: content-free selection, versions, session IDs, phase, call counters, prompt hashes, seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
-- `continuation.txt`, `workspace.diff`, `verify.stdout`, `verify.stderr`: Stage B evidence.
+- `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
 - `migration.json`: content-free loss report for the migrate condition.
 - `evaluation-run.json`: deterministic outcomes and blank manual counters.
-- `judge.json`: condition-blinded reference payload with evidence fields and calibration metadata.
+- `blinded/<blind-id>/judge.json`: condition-free review bundle with evidence fields and calibration metadata.
+- `blind-map.json`: private mapping from blind IDs to run conditions; do not give it to judges.
 
 The offline pilot uses fake executables and no provider:
 

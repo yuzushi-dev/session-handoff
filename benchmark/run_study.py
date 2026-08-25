@@ -30,6 +30,19 @@ from server.migration import MigrationError, migrate_session
 
 CLIENTS = ("claude", "codex")
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
+PROMPT_VERSION = 1
+BASE_ENV = {
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+}
+AUTH_ENV = {
+    "claude": {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"},
+    "codex": {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"},
+}
 CONTINUATION_PROMPT = (
     "Continue the task from the supplied authoritative state. Work in the "
     "repository, make the required change, and run the verification tests. "
@@ -103,8 +116,170 @@ def _run_id(args: argparse.Namespace) -> str:
     )
 
 
-def _provider_calls(condition: str) -> int:
-    return 2 if condition == "handoff" else 1
+def _sha256(data: bytes | str) -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _tree_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _git_revision() -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _client_executable(client: str, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    state_path = Path.home() / ".config/session-handoff/state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    targets = state.get("targets") if isinstance(state, dict) else None
+    target = targets.get(client) if isinstance(targets, dict) else None
+    if isinstance(target, str) and (Path(target).is_file() or Path(target).is_symlink()):
+        return target
+    return shutil.which(client) or client
+
+
+def _auth_source(client: str) -> Path:
+    if client == "codex":
+        return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / ".credentials.json"
+
+
+def _credential_mount(
+    args: argparse.Namespace, client: str, native_home: Path
+) -> tuple[str, Path | None]:
+    if args.credential_mode == "environment":
+        return "environment", None
+    source = _auth_source(client).expanduser().resolve()
+    if not source.is_file():
+        return "environment", None
+    target = native_home / source.name
+    if not target.exists():
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+    if target.is_symlink() or target.stat().st_size:
+        raise StudyRunError(f"isolated {client} credential mount point is not empty")
+    return "read_only_mount", source
+
+
+def _agent_env(args: argparse.Namespace, client: str, native_home: Path) -> dict[str, str]:
+    native_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    names = BASE_ENV | AUTH_ENV[client] | set(args.pass_env)
+    env = {name: os.environ[name] for name in names if name in os.environ}
+    env["HOME"] = str(native_home)
+    if client == "claude":
+        env["CLAUDE_CONFIG_DIR"] = str(native_home)
+    else:
+        env["CODEX_HOME"] = str(native_home)
+    return env
+
+
+def _sandbox_agent(
+    command: list[str],
+    *,
+    executable: str,
+    workspace: Path,
+    native_home: Path,
+    hidden_paths: list[Path],
+    credential_source: Path | None,
+) -> list[str]:
+    sandbox = shutil.which(executable)
+    if not sandbox:
+        raise StudyRunError(
+            "handoff generation requires bubblewrap so the model cannot read fixture files"
+        )
+    agent_executable = shutil.which(command[0]) or command[0]
+    agent_path = Path(agent_executable).resolve()
+    if not agent_path.is_file():
+        raise StudyRunError("agent executable is not a readable file")
+    command = [str(agent_path), *command[1:]]
+
+    masked: list[Path] = []
+    candidates = {
+        Path.home().resolve(),
+        Path("/tmp"),
+        *(path.resolve() for path in hidden_paths),
+    }
+    for candidate in sorted(candidates, key=lambda path: len(path.parts)):
+        if any(candidate == parent or parent in candidate.parents for parent in masked):
+            continue
+        if candidate.is_dir():
+            masked.append(candidate)
+    result = [
+        sandbox,
+        "--die-with-parent",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]
+    for path in masked:
+        result.extend(("--tmpfs", str(path)))
+    for root in (Path.home().resolve(), Path("/tmp")):
+        try:
+            relative_parent = agent_path.parent.relative_to(root)
+        except ValueError:
+            continue
+        current = root
+        for part in relative_parent.parts:
+            current /= part
+            result.extend(("--dir", str(current)))
+        break
+    result.extend(
+        (
+            "--ro-bind",
+            str(agent_path),
+            str(agent_path),
+            "--tmpfs",
+            "/mnt",
+            "--dir",
+            "/mnt/work",
+            "--bind",
+            str(workspace),
+            "/mnt/work",
+            "--dir",
+            "/mnt/native",
+            "--bind",
+            str(native_home),
+            "/mnt/native",
+            "--dir",
+            "/mnt/tmp",
+        )
+    )
+    if credential_source is not None:
+        result.extend(
+            (
+                "--ro-bind",
+                str(credential_source),
+                f"/mnt/native/{credential_source.name}",
+            )
+        )
+    result.extend(("--chdir", "/mnt/work", "--", *command))
+    return result
 
 
 def _agent_command(
@@ -121,7 +296,9 @@ def _agent_command(
             executable,
             "--print",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
+            "--safe-mode",
             "--model",
             model,
         ]
@@ -148,6 +325,8 @@ def _agent_command(
         "exec",
         "--json",
         "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules",
         "--sandbox",
         "read-only" if mode == "generate" else "workspace-write",
         "--model",
@@ -164,40 +343,64 @@ def _agent_command(
     return [*command, "--ephemeral", "-"]
 
 
-def _agent_env(client: str, native_home: Path) -> dict[str, str]:
-    native_home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    env = os.environ.copy()
-    if client == "claude":
-        env["CLAUDE_CONFIG_DIR"] = str(native_home)
-    else:
-        env["CODEX_HOME"] = str(native_home)
-    return env
-
-
 def _parse_agent_output(client: str, stdout: str) -> dict[str, Any]:
-    if client == "claude":
-        try:
-            payload = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise StudyRunError("Claude returned invalid JSON; inspect the run artifact") from exc
-        if not isinstance(payload, dict) or not isinstance(payload.get("result"), str):
-            raise StudyRunError("Claude returned no final result; inspect the run artifact")
-        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-        return {
-            "text": payload["result"],
-            "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-        }
-
-    message = None
-    usage: dict[str, Any] = {}
+    events: list[dict[str, Any]] = []
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(event, dict):
-            continue
+        if isinstance(event, dict):
+            events.append(event)
+
+    if client == "claude":
+        message = None
+        usage: dict[str, Any] = {}
+        trace: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("type") == "result" and isinstance(event.get("result"), str):
+                message = event["result"]
+                if isinstance(event.get("usage"), dict):
+                    usage = event["usage"]
+            content = event.get("message", {}).get("content") if isinstance(event.get("message"), dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    trace.append(
+                        {
+                            "kind": "tool",
+                            "phase": "call",
+                            "id": block.get("id"),
+                            "name": block.get("name"),
+                            "input": block.get("input"),
+                        }
+                    )
+                elif block.get("type") == "tool_result":
+                    trace.append(
+                        {
+                            "kind": "tool",
+                            "phase": "result",
+                            "id": block.get("tool_use_id"),
+                            "is_error": bool(block.get("is_error")),
+                            "content": block.get("content"),
+                        }
+                    )
+        if message is None:
+            raise StudyRunError("Claude returned no final result; inspect the run artifact")
+        return {
+            "text": message,
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "trace": trace,
+        }
+
+    message = None
+    usage: dict[str, Any] = {}
+    trace = []
+    for event in events:
         item = event.get("item")
         if (
             event.get("type") == "item.completed"
@@ -206,6 +409,12 @@ def _parse_agent_output(client: str, stdout: str) -> dict[str, Any]:
             and isinstance(item.get("text"), str)
         ):
             message = item["text"]
+        if (
+            event.get("type") == "item.completed"
+            and isinstance(item, dict)
+            and item.get("type") not in {"agent_message", "reasoning"}
+        ):
+            trace.append({"kind": "tool", "item": item})
         if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
             usage = event["usage"]
     if message is None:
@@ -214,6 +423,7 @@ def _parse_agent_output(client: str, stdout: str) -> dict[str, Any]:
         "text": message,
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
+        "trace": trace,
     }
 
 
@@ -303,6 +513,7 @@ def _judge_payload(run: dict[str, Any], *, task_success: bool) -> dict[str, Any]
             "continuation": "continuation.txt",
             "repository_diff": "workspace.diff",
             "verification": "verify.stdout",
+            "trace": "trace.json",
         },
         "facts": [
             {
@@ -348,10 +559,58 @@ def _judge_payload(run: dict[str, Any], *, task_success: bool) -> dict[str, Any]
     }
 
 
+def _export_blinded_bundle(
+    output: Path,
+    run_dir: Path,
+    state: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    task_success: bool,
+) -> None:
+    blind_id = state["blind_id"]
+    blind_dir = output / "blinded" / blind_id
+    blind_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    context = (run_dir / "supplied-context.md").read_text(encoding="utf-8")
+    if run["condition"] == "oracle":
+        context = re.sub(r"^# Oracle continuation state:", "# Continuation state:", context)
+    (blind_dir / "supplied-context.md").write_text(context, encoding="utf-8")
+    for name in (
+        "continuation.txt",
+        "workspace.diff",
+        "verify.stdout",
+        "verify.stderr",
+        "trace.json",
+    ):
+        shutil.copy2(run_dir / name, blind_dir / name)
+    _write_json(blind_dir / "judge.json", _judge_payload(run, task_success=task_success))
+
+    mapping_path = output / "blind-map.json"
+    if mapping_path.exists():
+        try:
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise StudyRunError("blind-map.json is invalid") from exc
+    else:
+        mapping = {}
+    existing = mapping.get(blind_id)
+    entry = {
+        "run_id": state["run_id"],
+        "case": run["case"],
+        "band": run["band"],
+        "condition": run["condition"],
+        "replicate": run["replicate"],
+    }
+    if existing not in (None, entry):
+        raise StudyRunError("blind id already maps to a different run")
+    mapping[blind_id] = entry
+    _write_json(mapping_path, mapping)
+
+
 def _prepare_context(
     args: argparse.Namespace,
     transcript: str,
     oracle: str,
+    study_root: Path,
     workspace: Path,
     run_dir: Path,
     state: dict[str, Any],
@@ -406,13 +665,35 @@ def _prepare_context(
         return f"{oracle}\n\n{CONTINUATION_PROMPT}\n", None, target_home, calls
 
     analysis_home = run_dir / "native-analysis"
+    generation_workspace = run_dir / "handoff-input"
+    generation_workspace.mkdir(mode=0o700)
+    analysis_home.mkdir(mode=0o700)
+    generation_access, generation_credential = _credential_mount(
+        args, args.client, analysis_home
+    )
+    state.setdefault("credential_access", {})["generation"] = generation_access
     generation_command = _agent_command(
         args.client,
         args.claude_executable if args.client == "claude" else args.codex_executable,
         args.model,
-        workspace,
+        Path("/mnt/work"),
         mode="generate",
     )
+    generation_command = _sandbox_agent(
+        generation_command,
+        executable=args.sandbox_executable,
+        workspace=generation_workspace,
+        native_home=analysis_home,
+        hidden_paths=[ROOT, study_root, workspace],
+        credential_source=generation_credential,
+    )
+    generation_env = _agent_env(args, args.client, analysis_home)
+    generation_env["HOME"] = "/mnt/native"
+    generation_env["TMPDIR"] = "/mnt/tmp"
+    if args.client == "claude":
+        generation_env["CLAUDE_CONFIG_DIR"] = "/mnt/native"
+    else:
+        generation_env["CODEX_HOME"] = "/mnt/native"
     state["status"] = "provider_call_started"
     state["stage"] = "handoff_generation"
     state["provider_calls_started"] += 1
@@ -421,10 +702,13 @@ def _prepare_context(
         client=args.client,
         command=generation_command,
         prompt=HANDOFF_PROMPT + transcript,
-        cwd=workspace,
-        env=_agent_env(args.client, analysis_home),
+        cwd=generation_workspace,
+        env=generation_env,
         artifact_prefix=run_dir / "handoff-generation",
     )
+    generation_trace = generated.pop("trace")
+    if generation_trace:
+        raise StudyRunError("handoff generator used a tool despite the isolated no-tool contract")
     redacted, redactions = redact_secrets(generated["text"])
     missing = validate_handoff(redacted)
     if missing:
@@ -463,12 +747,15 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         workspace = run_dir / "workspace"
         shutil.copytree(template, workspace)
         seed = f"{run_id}:native"
+        runner_path = Path(__file__).resolve()
         state = {
             "schema_version": 1,
             "run_id": run_id,
             "status": "prepared",
             "stage": "context",
             "provider_calls_started": 0,
+            "blind_id": str(uuid.uuid4()),
+            "seed": seed,
             "source_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, seed + ":source")),
             "target_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, seed + ":target")),
             "client": args.client,
@@ -477,6 +764,29 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "band": args.band,
             "condition": args.condition,
             "replicate": args.replicate,
+            "provenance": {
+                "prompt_version": PROMPT_VERSION,
+                "handoff_prompt_sha256": _sha256(HANDOFF_PROMPT),
+                "continuation_prompt_sha256": _sha256(CONTINUATION_PROMPT),
+                "source_sha256": _sha256(transcript),
+                "oracle_sha256": _sha256(oracle_path.read_bytes()),
+                "workspace_template_sha256": _tree_sha256(template),
+                "runner_sha256": _sha256(runner_path.read_bytes()),
+                "runner_git_revision": _git_revision(),
+                "sandbox_executable": args.sandbox_executable,
+                "credential_mode": args.credential_mode,
+                "client_executable": (
+                    args.claude_executable
+                    if args.client == "claude"
+                    else args.codex_executable
+                ),
+                "client_profile": {
+                    "customizations": "disabled",
+                    "generation_tools": "disabled",
+                    "generation_sandbox": "read_only",
+                    "continuation_sandbox": "workspace_write",
+                },
+            },
         }
         _write_json(state_path, state)
 
@@ -488,6 +798,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 args,
                 transcript,
                 oracle_path.read_text(encoding="utf-8"),
+                study_root,
                 workspace,
                 run_dir,
                 state,
@@ -514,14 +825,33 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         if state["status"] == "context_ready":
             executable = args.claude_executable if args.client == "claude" else args.codex_executable
             mode = "resume" if args.condition in {"full", "migrate"} else "fresh"
+            credential_access, credential_source = _credential_mount(
+                args, args.client, target_home
+            )
+            state.setdefault("credential_access", {})["continuation"] = credential_access
             command = _agent_command(
                 args.client,
                 executable,
                 args.model,
-                workspace,
+                Path("/mnt/work"),
                 mode=mode,
                 session_id=session_id,
             )
+            command = _sandbox_agent(
+                command,
+                executable=args.sandbox_executable,
+                workspace=workspace,
+                native_home=target_home,
+                hidden_paths=[ROOT, study_root],
+                credential_source=credential_source,
+            )
+            agent_env = _agent_env(args, args.client, target_home)
+            agent_env["HOME"] = "/mnt/native"
+            agent_env["TMPDIR"] = "/mnt/tmp"
+            if args.client == "claude":
+                agent_env["CLAUDE_CONFIG_DIR"] = "/mnt/native"
+            else:
+                agent_env["CODEX_HOME"] = "/mnt/native"
             state.update(status="provider_call_started", stage="continuation")
             state["provider_calls_started"] += 1
             _write_json(state_path, state)
@@ -530,9 +860,11 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 command=command,
                 prompt=prompt,
                 cwd=workspace,
-                env=_agent_env(args.client, target_home),
+                env=agent_env,
                 artifact_prefix=run_dir / "continuation",
             )
+            trace = continuation.pop("trace")
+            _write_json(run_dir / "trace.json", trace)
             (run_dir / "continuation.txt").write_text(continuation.pop("text"), encoding="utf-8")
             calls.append(continuation)
             state.update(status="continuation_complete", stage="verification", calls=calls)
@@ -568,7 +900,13 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             wall_seconds=time.monotonic() - started,
         )
         _write_json(run_dir / "evaluation-run.json", evaluation_run)
-        _write_json(run_dir / "judge.json", _judge_payload(run, task_success=task_success))
+        _export_blinded_bundle(
+            args.output.resolve(),
+            run_dir,
+            state,
+            run,
+            task_success=task_success,
+        )
         state.update(
             status="completed",
             stage="done",
@@ -587,7 +925,10 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "task_success": task_success,
         }
     except Exception:
-        state.update(status="failed", retry_safe=False)
+        if state.get("status") == "continuation_complete":
+            state.update(retry_safe=True, last_error_stage="verification")
+        else:
+            state.update(status="failed", retry_safe=False)
         _write_json(state_path, state)
         raise
 
@@ -607,8 +948,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--execute", action="store_true")
     result.add_argument("--acknowledge-provider-cost", action="store_true")
     result.add_argument("--resume", action="store_true")
-    result.add_argument("--claude-executable", default="claude")
-    result.add_argument("--codex-executable", default="codex")
+    result.add_argument("--credential-mode", choices=("auto", "environment"), default="auto")
+    result.add_argument("--pass-env", action="append", default=[], metavar="NAME")
+    result.add_argument("--sandbox-executable", default="bwrap")
+    result.add_argument("--claude-executable")
+    result.add_argument("--codex-executable")
     result.add_argument("--migration-executable", default="session-migrate")
     return result
 
@@ -616,6 +960,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
+        args.claude_executable = _client_executable("claude", args.claude_executable)
+        args.codex_executable = _client_executable("codex", args.codex_executable)
         evaluation = args.evaluation.resolve()
         payload = json.loads(evaluation.read_text(encoding="utf-8"))
         validate_study_manifest(payload)
@@ -635,9 +981,18 @@ def main() -> int:
             "band": args.band,
             "condition": args.condition,
             "replicate": args.replicate,
-            "provider_calls": _provider_calls(args.condition),
+            "provider_calls": 2 if args.condition == "handoff" else 1,
             "synthetic_fixture": not bool(args.source),
         }
+        if args.resume:
+            state_path = args.output.resolve() / _run_id(args) / "state.json"
+            try:
+                resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
+                started = resumed_state.get("provider_calls_started", 0)
+                if isinstance(started, int) and not isinstance(started, bool):
+                    plan["provider_calls"] = max(0, plan["provider_calls"] - started)
+            except (OSError, json.JSONDecodeError):
+                pass
         if not args.execute:
             print(json.dumps(plan, sort_keys=True))
             return 0
