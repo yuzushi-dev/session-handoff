@@ -18,7 +18,7 @@ For Stage B you also receive:
 
 The condition label (`full`, `handoff`, `migrate`, `oracle`) should be hidden from the judge when practical.
 
-`run_study.py` writes `blinded/<blind-id>/judge.json` without the condition label. Give the judge that directory only. It contains the supplied context, continuation, normalized tool trace, workspace diff, and verification output. Keep `blind-map.json`, condition-named run directories, and `state.json` private until scoring.
+`run_study.py` writes `blinded/<blind-id>/judge.json` without the condition label. Give the judge that directory only. It contains the supplied context, continuation, normalized tool trace, workspace diff, and verification output. Keep `private/blind-map.json`, condition-named run directories, and `state.json` private until scoring.
 
 ## Gold-fact labels
 

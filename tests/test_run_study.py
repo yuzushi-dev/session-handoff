@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import benchmark.run_study as study_runner
 from benchmark.run_study import _credential_mount, _sandbox_agent
 
 
@@ -185,6 +188,9 @@ import json
 import sys
 
 args = sys.argv[1:]
+if "--version" in args:
+    print("migration-fake 1.0")
+    raise SystemExit(0)
 source = args[args.index("--from") + 1]
 target = args[args.index("--to") + 1]
 session_id = args[args.index("--session-id") + 1]
@@ -386,6 +392,7 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert "continuation_prompt" not in state
     assert (blind_dir / "supplied-context.md").is_file()
     assert "condition" not in judge
+    assert judge["blind_id"] == state["blind_id"]
     assert judge["calibration"]["human_reviewed"] is False
     assert all("evidence" in item for item in judge["facts"])
     assert all(item["statement"] for item in judge["facts"])
@@ -398,8 +405,19 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert state["provenance"]["workspace_template_sha256"]
     assert state["provenance"]["runner_sha256"]
     assert state["provenance"]["prompt_version"] == 1
-    mapping = json.loads((output / "blind-map.json").read_text(encoding="utf-8"))
+    private_dir = output / "private"
+    mapping_path = private_dir / "blind-map.json"
+    assert stat.S_IMODE(private_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(mapping_path.stat().st_mode) == 0o600
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     assert mapping[state["blind_id"]]["condition"] == condition
+    if condition == "migrate":
+        provenance = state["provenance"]
+        assert provenance["migration_executable"] == str(migration.resolve())
+        assert provenance["migration_sha256"] == hashlib.sha256(
+            migration.read_bytes()
+        ).hexdigest()
+        assert provenance["migration_version"] == "migration-fake 1.0"
 
 
 def test_non_fixture_source_needs_its_own_explicit_flag(tmp_path):
@@ -472,14 +490,121 @@ def test_provider_failure_is_content_free_and_never_retried(tmp_path):
     assert len(fake_calls(run_dir)) == 1
 
 
-def test_verification_checkpoint_resumes_without_another_provider_call(tmp_path):
+def test_pre_provider_failure_resumes_from_prepared_checkpoint(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+    base = command(
+        evaluation, output, "handoff", "codex", claude, codex, migration
+    )
+    cost_flags = ["--execute", "--acknowledge-provider-cost"]
+
+    interrupted = subprocess.run(
+        [*base, *cost_flags, "--sandbox-executable", "missing-bwrap"],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert interrupted.returncode != 0
+    run_dir = next(output.iterdir())
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "prepared"
+    assert state["provider_calls_started"] == 0
+    assert state["retry_safe"] is True
+    assert state["last_error_stage"] == "context"
+    assert fake_calls(run_dir) == []
+
+    resumed = subprocess.run(
+        [*base, *cost_flags, "--sandbox-executable", "bwrap", "--resume"],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout)["provider_calls"] == 2
+    assert len(fake_calls(run_dir)) == 2
+
+
+def test_context_ready_remains_resumable_after_handoff_generation(
+    tmp_path, monkeypatch
+):
+    evaluation = prepare_study(tmp_path)
+    payload = json.loads(evaluation.read_text(encoding="utf-8"))
+    run = next(
+        item
+        for item in payload["runs"]
+        if (item["case"], item["band"], item["condition"], item["replicate"])
+        == ("superseded-decision", "short", "handoff", 1)
+    )
+    source = evaluation.parent / "superseded-decision/session-short.md"
+    args = SimpleNamespace(
+        output=tmp_path / "results",
+        resume=False,
+        client="codex",
+        model="synthetic-model",
+        case="superseded-decision",
+        band="short",
+        condition="handoff",
+        replicate=1,
+        migration_executable="migration-fake",
+        sandbox_executable="bwrap",
+        credential_mode="environment",
+        pass_env=[],
+        claude_executable="claude-fake",
+        codex_executable="codex-fake",
+    )
+
+    def generated_context(*call_args):
+        run_dir = call_args[5]
+        state = call_args[6]
+        target_home = run_dir / "native-target"
+        target_home.mkdir()
+        (run_dir / "supplied-context.md").write_text("handoff", encoding="utf-8")
+        state["provider_calls_started"] = 1
+        return "continue", None, target_home, [{"input_tokens": 1}]
+
+    monkeypatch.setattr(study_runner, "_prepare_context", generated_context)
+    monkeypatch.setattr(
+        study_runner,
+        "_credential_mount",
+        lambda *unused: (_ for _ in ()).throw(study_runner.StudyRunError("setup")),
+    )
+
+    with pytest.raises(study_runner.StudyRunError, match="setup"):
+        study_runner.execute(
+            args,
+            run,
+            evaluation.parent,
+            source.read_text(encoding="utf-8"),
+        )
+
+    run_dir = next(args.output.iterdir())
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "context_ready"
+    assert state["provider_calls_started"] == 1
+    assert state["retry_safe"] is True
+
+
+@pytest.mark.parametrize("condition", ["full", "migrate"])
+def test_verification_checkpoint_resumes_without_another_provider_call(
+    tmp_path, condition
+):
     evaluation = prepare_study(tmp_path)
     payload = json.loads(evaluation.read_text(encoding="utf-8"))
     selected = next(
         run
         for run in payload["runs"]
         if (run["case"], run["band"], run["condition"], run["replicate"])
-        == ("superseded-decision", "short", "full", 1)
+        == ("superseded-decision", "short", condition, 1)
     )
     selected["verify_command"] = ["missing-verifier-for-resume-test"]
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
@@ -491,7 +616,7 @@ def test_verification_checkpoint_resumes_without_another_provider_call(tmp_path)
     write_fake_migration(migration)
     output = tmp_path / "results"
     argv = [
-        *command(evaluation, output, "full", "codex", claude, codex, migration),
+        *command(evaluation, output, condition, "codex", claude, codex, migration),
         "--execute",
         "--acknowledge-provider-cost",
     ]
@@ -511,6 +636,8 @@ def test_verification_checkpoint_resumes_without_another_provider_call(tmp_path)
     assert state["retry_safe"] is True
     assert len(fake_calls(run_dir)) == 1
 
+    if condition == "migrate":
+        migration.unlink()
     selected["verify_command"] = ["python3", "-m", "pytest", "-q"]
     evaluation.write_text(json.dumps(payload), encoding="utf-8")
     resumed = subprocess.run(

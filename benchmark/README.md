@@ -145,20 +145,20 @@ On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolate
 
 A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so do not use that mode for secrets or commit its artifacts.
 
-`--resume` is accepted only at a recorded retry-free checkpoint. It refuses completed, failed, or ambiguous runs rather than risking a duplicate billed call.
+`--resume` is accepted only at a recorded retry-free checkpoint, including a handoff setup failure before any provider call. It refuses completed, provider-failed, or ambiguous runs rather than risking a duplicate billed call.
 
-The default matrix is 144 continuations. The 36 `handoff` cells also need a generation call, so execution is 180 provider calls before any automated judging. Run a small synthetic pilot and inspect costs before authorizing the matrix.
+For one client/model study, the default matrix is 144 continuations. The 36 `handoff` cells also need a generation call, so execution is 180 provider calls before any automated judging. Run a small synthetic pilot and inspect costs before authorizing the matrix.
 
 ### Run artifacts
 
-- `state.json`: content-free selection, versions, session IDs, phase, call counters, prompt hashes, seed, and snapshot hashes.
+- `state.json`: content-free selection, client and migration executable provenance, session IDs, phase, call counters, prompt hashes, seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
 - `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
 - `migration.json`: content-free loss report for the migrate condition.
 - `evaluation-run.json`: deterministic outcomes and blank manual counters.
 - `blinded/<blind-id>/judge.json`: condition-free review bundle with evidence fields and calibration metadata.
-- `blind-map.json`: private mapping from blind IDs to run conditions; do not give it to judges.
+- `private/blind-map.json`: mode-0600 mapping from blind IDs to run conditions inside a mode-0700 directory; do not give it to judges.
 
 The offline pilot uses fake executables and no provider:
 

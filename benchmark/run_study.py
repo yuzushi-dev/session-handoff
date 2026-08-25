@@ -78,6 +78,15 @@ def _write_json(path: Path, payload: Any) -> None:
     os.replace(temporary, path)
 
 
+def _write_private_json(path: Path, payload: Any) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+    path.chmod(0o600)
+
+
 def _inside(root: Path, relative: str, *, directory: bool = False) -> Path:
     candidate = (root / relative).resolve()
     try:
@@ -479,6 +488,24 @@ def _version(executable: str, cwd: Path) -> str | None:
     return result.stdout.strip()[:200] if result.returncode == 0 else None
 
 
+def _migration_provenance(executable: str, cwd: Path) -> dict[str, str]:
+    resolved = shutil.which(executable)
+    if resolved is None:
+        candidate = Path(executable).expanduser()
+        resolved = str(candidate) if candidate.is_file() else None
+    if resolved is None:
+        raise StudyRunError("session-migrate executable is not a readable file")
+    path = Path(resolved).resolve()
+    version = _version(str(path), cwd)
+    if version is None:
+        raise StudyRunError("session-migrate version could not be recorded")
+    return {
+        "migration_executable": str(path),
+        "migration_sha256": _sha256(path.read_bytes()),
+        "migration_version": version,
+    }
+
+
 def _snapshot_diff(template: Path, workspace: Path) -> str:
     ignored = {"__pycache__", ".pytest_cache"}
     relatives = {
@@ -511,10 +538,12 @@ def _sum_metric(calls: list[dict[str, Any]], name: str) -> int | float | None:
     return sum(values) if values else None
 
 
-def _judge_payload(run: dict[str, Any], *, task_success: bool) -> dict[str, Any]:
+def _judge_payload(
+    run: dict[str, Any], *, blind_id: str, task_success: bool
+) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "blind_id": str(uuid.uuid4()),
+        "blind_id": blind_id,
         "artifacts": {
             "supplied_context": "supplied-context.md",
             "continuation": "continuation.txt",
@@ -589,9 +618,15 @@ def _export_blinded_bundle(
         "trace.json",
     ):
         shutil.copy2(run_dir / name, blind_dir / name)
-    _write_json(blind_dir / "judge.json", _judge_payload(run, task_success=task_success))
+    _write_json(
+        blind_dir / "judge.json",
+        _judge_payload(run, blind_id=blind_id, task_success=task_success),
+    )
 
-    mapping_path = output / "blind-map.json"
+    private_dir = output / "private"
+    private_dir.mkdir(mode=0o700, exist_ok=True)
+    private_dir.chmod(0o700)
+    mapping_path = private_dir / "blind-map.json"
     if mapping_path.exists():
         try:
             mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
@@ -610,7 +645,7 @@ def _export_blinded_bundle(
     if existing not in (None, entry):
         raise StudyRunError("blind id already maps to a different run")
     mapping[blind_id] = entry
-    _write_json(mapping_path, mapping)
+    _write_private_json(mapping_path, mapping)
 
 
 def _prepare_context(
@@ -673,8 +708,8 @@ def _prepare_context(
 
     analysis_home = run_dir / "native-analysis"
     generation_workspace = run_dir / "handoff-input"
-    generation_workspace.mkdir(mode=0o700)
-    analysis_home.mkdir(mode=0o700)
+    generation_workspace.mkdir(mode=0o700, exist_ok=True)
+    analysis_home.mkdir(mode=0o700, exist_ok=True)
     generation_access, generation_credential = _credential_mount(
         args, args.client, analysis_home
     )
@@ -743,7 +778,11 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StudyRunError("existing run has no valid resumable state") from exc
-        if state.get("status") not in {"context_ready", "continuation_complete"}:
+        resumable = state.get("status") in {"context_ready", "continuation_complete"}
+        resumable = resumable or (
+            state.get("status") == "prepared" and state.get("retry_safe") is True
+        )
+        if not resumable:
             raise StudyRunError("run is not at a retry-free resumable checkpoint")
         workspace = run_dir / "workspace"
     else:
@@ -753,6 +792,11 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         run_dir.mkdir(mode=0o700)
         workspace = run_dir / "workspace"
         shutil.copytree(template, workspace)
+        migration_provenance = (
+            _migration_provenance(args.migration_executable, template)
+            if args.condition == "migrate"
+            else {}
+        )
         seed = f"{run_id}:native"
         runner_path = Path(__file__).resolve()
         state = {
@@ -794,6 +838,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                     "continuation_sandbox": "workspace_write",
                     "claude_permission_mode": "bypassPermissions",
                 },
+                **migration_provenance,
             },
         }
         _write_json(state_path, state)
@@ -819,6 +864,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 continuation_session_id=session_id,
                 target_home=str(target_home),
             )
+            state.pop("retry_safe", None)
+            state.pop("last_error_stage", None)
             _write_json(state_path, state)
         else:
             supplied = (run_dir / "supplied-context.md").read_text(encoding="utf-8")
@@ -861,6 +908,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             else:
                 agent_env["CODEX_HOME"] = "/mnt/native"
             state.update(status="provider_call_started", stage="continuation")
+            state.pop("retry_safe", None)
+            state.pop("last_error_stage", None)
             state["provider_calls_started"] += 1
             _write_json(state_path, state)
             continuation = _invoke_agent(
@@ -924,6 +973,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 workspace,
             ),
         )
+        state.pop("retry_safe", None)
+        state.pop("last_error_stage", None)
         _write_json(state_path, state)
         return {
             "mode": "execute",
@@ -935,6 +986,12 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
     except Exception:
         if state.get("status") == "continuation_complete":
             state.update(retry_safe=True, last_error_stage="verification")
+        elif state.get("status") == "context_ready" or (
+            state.get("provider_calls_started") == 0
+            and state.get("status") == "prepared"
+            and args.condition == "handoff"
+        ):
+            state.update(retry_safe=True, last_error_stage=state.get("stage", "context"))
         else:
             state.update(status="failed", retry_safe=False)
         _write_json(state_path, state)
