@@ -96,6 +96,8 @@ def test_project_paginated_codex_reads_canonical_items_without_mutating_source(t
     source_home = tmp_path / "codex"
     rollout = _write_fixture(source_home)
     before = hashlib.sha256(rollout.read_bytes()).hexdigest()
+    database = source_home / "thread_history_1.sqlite"
+    database_before = hashlib.sha256(database.read_bytes()).hexdigest()
 
     projection = project_paginated_codex(
         source_home,
@@ -117,6 +119,7 @@ def test_project_paginated_codex_reads_canonical_items_without_mutating_source(t
     assert projection.dropped == {"reasoning": 1}
     assert projection.normalized_fields == {"commandExecution": ["exitCode", "status"]}
     assert hashlib.sha256(rollout.read_bytes()).hexdigest() == before
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == database_before
 
 
 def test_migrate_session_uses_paginated_projection_and_real_claude_writer(tmp_path, monkeypatch):

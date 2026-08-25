@@ -17,7 +17,9 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
     source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     rollout = find_codex_rollout(source_home, session_id)
     source_hash = hashlib.sha256(rollout.read_bytes()).hexdigest()
-    source_items = count_thread_items(source_home / "thread_history_1.sqlite", session_id)
+    database = source_home / "thread_history_1.sqlite"
+    database_hash = hashlib.sha256(database.read_bytes()).hexdigest()
+    source_items = count_thread_items(database, session_id)
     minimum_items = int(os.environ.get("SESSION_HANDOFF_REAL_MIN_ITEMS", "1000"))
     assert source_items >= minimum_items
 
@@ -45,3 +47,4 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
     assert output.is_file() and output.stat().st_size > 0
     assert any(json.loads(line) for line in output.read_text().splitlines())
     assert hashlib.sha256(rollout.read_bytes()).hexdigest() == source_hash
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == database_hash

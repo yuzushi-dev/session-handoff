@@ -141,6 +141,9 @@ def _run_transfer(
         target_session_id=target_id,
         dry_run=False,
     )
+    for field in ("warnings", "dropped_events"):
+        if (dry_run_result.get(field) or []) != (applied_result.get(field) or []):
+            raise MigrationError("session-migrate loss report changed after dry-run")
 
     warnings = list(projection.warnings) if projection else []
     warnings.extend(dry_run_result.get("warnings", []))
@@ -170,6 +173,7 @@ def migrate_session(
     *,
     executable: str | None = None,
     target_session_id: str | None = None,
+    source_home: str | None = None,
     target_home: str | None = None,
     runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
@@ -185,6 +189,9 @@ def migrate_session(
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
         raise MigrationError(f"workspace is not a directory: {workspace}")
+    source_root = Path(source_home).expanduser().resolve() if source_home else None
+    if source_root is not None and not source_root.is_dir():
+        raise MigrationError(f"source home is not a directory: {source_home}")
 
     migration_executable = _resolve_executable(executable)
     target_id = target_session_id or str(uuid.uuid4())
@@ -210,10 +217,11 @@ def migrate_session(
             target_client=target_client,
             target_id=target_id,
             runner=runner,
+            source_home=source_root,
             target_home=target_home,
         )
 
-    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    codex_home = source_root or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     try:
         paginated = codex_history_mode(codex_home, source_session_id) == "paginated"
         if not paginated:
@@ -224,6 +232,7 @@ def migrate_session(
                 target_client=target_client,
                 target_id=target_id,
                 runner=runner,
+                source_home=source_root,
                 target_home=target_home,
             )
         with tempfile.TemporaryDirectory(prefix="session-handoff-paginated-") as projection_root:

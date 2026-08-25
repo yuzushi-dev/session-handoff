@@ -17,8 +17,8 @@ def test_migrate_session_uses_one_target_id_for_dry_run_and_apply(tmp_path):
             "target_format": "codex",
             "session_id": "target-id",
             "dry_run": dry_run,
-            "warnings": [{"kind": "fixture"}] if dry_run else [],
-            "dropped_events": {"thinking:unsupported": 1} if dry_run else {},
+            "warnings": [{"kind": "fixture"}],
+            "dropped_events": {"thinking:unsupported": 1},
             "manifest": "/tmp/manifest.json" if not dry_run else None,
             "output": "/tmp/target.jsonl" if not dry_run else None,
         }
@@ -77,4 +77,31 @@ def test_migrate_session_rejects_same_client(tmp_path):
             "source-id",
             str(tmp_path),
             executable="smigrate",
+        )
+
+
+def test_migrate_session_rejects_loss_report_changed_after_dry_run(tmp_path):
+    def runner(argv, **_kwargs):
+        dry_run = "--dry-run" in argv
+        payload = {
+            "source_format": "claude",
+            "target_format": "codex",
+            "session_id": "target-id",
+            "dry_run": dry_run,
+            "warnings": [],
+            "dropped_events": {"tool_result:unsupported": 1 if dry_run else 2},
+            "manifest": "/tmp/manifest.json",
+            "output": "/tmp/target.jsonl",
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    with pytest.raises(MigrationError, match="loss report changed"):
+        migrate_session(
+            "claude",
+            "codex",
+            "source-id",
+            str(tmp_path),
+            executable="smigrate",
+            target_session_id="target-id",
+            runner=runner,
         )
