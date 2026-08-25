@@ -18,6 +18,16 @@ Remove the setup with:
 npx session-handoff@latest uninstall
 ```
 
+Check both installed command surfaces without starting a model session or using
+provider quota:
+
+```bash
+npx session-handoff@latest doctor --pretty
+```
+
+`ready: true` requires the managed launcher, installed skill, MCP registration,
+client executable, and optional migration backend for all four documented flows.
+
 ## Clean handoff
 
 Launch Codex or Claude normally after setup, then use:
@@ -91,4 +101,5 @@ not attempt to migrate a live transcript.
 ```bash
 pytest -q
 claude plugin validate --strict .
+python3 bin/session-handoff doctor --pretty
 ```

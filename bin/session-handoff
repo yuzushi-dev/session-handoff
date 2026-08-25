@@ -15,6 +15,7 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 
 from server.session_switch import SessionSupervisor
 from server.setup import SetupError, install_setup, render_plan, restore_setup, setup_plan
+from server.command_matrix import main as doctor_main
 
 
 def _setup(argv: list[str]) -> int:
@@ -71,7 +72,7 @@ def _setup(argv: list[str]) -> int:
     if missing:
         print("Skipped unavailable client(s): " + ", ".join(missing))
     if result.get("already_configured"):
-        print("Existing setup was already valid; nothing changed.")
+        print("Existing setup reconciled with the current package.")
     return 0
 
 
@@ -120,6 +121,8 @@ def main() -> int:
         return _run_supervisor(sys.argv[2:])
     if sys.argv[1:2] == ["uninstall"]:
         return _uninstall(sys.argv[2:])
+    if sys.argv[1:2] == ["doctor"]:
+        return doctor_main(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="Run Codex or Claude and automatically relaunch after a handoff."
     )
