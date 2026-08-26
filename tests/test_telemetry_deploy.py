@@ -31,7 +31,7 @@ def test_shared_backend_files_exist():
 def test_images_are_immutable_and_not_latest():
     compose = (ROOT / "docker-compose.yml").read_text()
     images = re.findall(r"^\s+image:\s+(\S+)$", compose, re.MULTILINE)
-    assert len(images) == 4
+    assert len(images) == 5
     assert all("latest" not in image for image in images)
     assert all(re.search(r"@sha256:[0-9a-f]{64}$", image) for image in images)
 
@@ -73,6 +73,21 @@ def test_gateway_is_loopback_only_and_has_no_access_logs():
     published_ports = re.findall(r'"(\d+\.\d+\.\d+\.\d+):\d+:\d+"', compose)
     assert published_ports
     assert all(ip == "127.0.0.1" for ip in published_ports)
+
+
+def test_cloudflared_is_opt_in_and_has_no_hardcoded_token():
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert "cloudflared" in compose
+    match = re.search(r"cloudflared:\n(?:.+\n)+?(?=\n\S|\Z)", compose)
+    assert match, "cloudflared service block not found"
+    block = match.group(0)
+    assert 'profiles: ["public"]' in block
+    assert "CLOUDFLARE_TUNNEL_TOKEN" in block
+    assert not re.search(r"token[\"']?\s*[:=]\s*[\"']?ey", block, re.IGNORECASE)
+    assert not re.search(r'ports:\s*\n\s*-\s*"', block)
+    env_example = (ROOT / ".env.example").read_text()
+    assert env_example.strip() != "CLOUDFLARE_TUNNEL_TOKEN=" + "placeholder-token"
+    assert "CLOUDFLARE_TUNNEL_TOKEN=" in env_example
 
 
 def test_dashboards_scope_queries_and_sum_counts():
