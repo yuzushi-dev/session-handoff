@@ -1,7 +1,7 @@
 {
   "name": "session-handoff",
-  "version": "0.5.2",
-  "description": "Create clean coding handoffs or migrate active native sessions between Codex and Claude Code.",
+  "version": "0.5.3",
+  "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev"
   },

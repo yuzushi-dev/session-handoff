@@ -1,7 +1,7 @@
 {
   "name": "session-handoff",
-  "version": "0.5.2",
-  "description": "Install and run automatic handoffs for Codex and Claude.",
+  "version": "0.5.3",
+  "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
     "session-handoff": "bin/session-handoff"
