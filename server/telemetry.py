@@ -79,11 +79,15 @@ _IN_FLIGHT_BATCHES = set()
 
 CONFIG_PATH = Path(".config/session-handoff/telemetry.json")
 STATE_PATH = Path(".local/state/session-handoff")
-ENDPOINT = "https://telemetry.session-handoff.example/v1/logs"
-DISCLOSURE = """Anonymous aggregate telemetry is opt-in.
+# Canary phase: points at the local shared backend (loopback only, see
+# deploy/telemetry/). Not a public endpoint yet -- repoint to the real
+# public URL only after the release gates in docs/telemetry-canary-report.md
+# close.
+ENDPOINT = "http://127.0.0.1:4318/v1/logs"
+DISCLOSURE = f"""Anonymous aggregate telemetry is opt-in.
 Collected fields: schema_version, event, day_utc, plugin_version, operation, source_client, target_client, result, failure_stage, duration_bucket, handoff_bytes_bucket, redaction_bucket, dropped_events_bucket, normalized_fields_bucket, feedback_category, feedback_severity.
 No transcript, prompt, handoff text, tool trace, command, diff, path, session ID, installation ID, device ID, account ID, hostname, username, IP address, model name, metadata, exception, credentials, token, cookie, or authorization data is collected.
-Local aggregate data is retained for up to 7 days. The endpoint is https://telemetry.session-handoff.example/v1/logs.
+Local aggregate data is retained for up to 7 days. The endpoint is {ENDPOINT}.
 Telemetry is an opt-in sample and may not represent all users. Aggregate rows cannot be attributed to or deleted for one contributor.
 """
 
