@@ -16,6 +16,49 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 from server.session_switch import SessionSupervisor
 from server.setup import SetupError, install_setup, render_plan, restore_setup, setup_plan
 from server.command_matrix import main as doctor_main
+import server.telemetry as telemetry
+
+
+def _home() -> Path:
+    return Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+
+
+def _telemetry(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="session-handoff telemetry")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status")
+    commands.add_parser("enable")
+    disable = commands.add_parser("disable")
+    disable.add_argument("--purge", action="store_true")
+    args = parser.parse_args(argv)
+    home = _home()
+    try:
+        config = None if args.command == "disable" and args.purge else telemetry.load_config(home)
+        if args.command == "status":
+            if config is None or not config["enabled"]:
+                print("Telemetry: disabled.")
+            else:
+                print("Telemetry: enabled.")
+            return 0
+        if args.command == "enable":
+            if config is not None and config["enabled"]:
+                print("Telemetry is already enabled.")
+                return 0
+            if not sys.stdin.isatty():
+                print("Telemetry enable requires an interactive terminal.", file=sys.stderr)
+                return 2
+            telemetry.request_consent(home, interactive=True, input_fn=input)
+            print("Telemetry consent recorded.")
+            return 0
+        telemetry.disable(home, purge=args.purge)
+        print("Telemetry disabled." if not args.purge else "Telemetry disabled and local data purged.")
+        return 0
+    except telemetry.TelemetryConfigError as exc:
+        print(f"Telemetry configuration error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"Telemetry operation failed: {exc}", file=sys.stderr)
+        return 1
 
 
 def _setup(argv: list[str]) -> int:
@@ -48,12 +91,24 @@ def _setup(argv: list[str]) -> int:
         print("No supported client executable found (codex or claude).", file=sys.stderr)
         return 2
 
-    home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+    home = _home()
+    try:
+        telemetry_config = telemetry.load_config(home)
+    except telemetry.TelemetryConfigError as exc:
+        print(f"Setup failed: {exc}", file=sys.stderr)
+        return 1
     package_root = PACKAGE_ROOT
     plan = setup_plan(package_root, home, list(executable_paths), executable_paths=executable_paths)
     print(render_plan(plan))
     if not args.yes:
-        answer = input("\nProceed with this setup? [y/N] ").strip().lower()
+        if not sys.stdin.isatty():
+            print("Setup requires an interactive terminal.", file=sys.stderr)
+            return 2
+        try:
+            answer = input("\nProceed with this setup? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("Setup cancelled.")
+            return 0
         if answer not in {"y", "yes"}:
             print("Setup cancelled.")
             return 0
@@ -69,6 +124,12 @@ def _setup(argv: list[str]) -> int:
         print(f"Setup failed: {exc}", file=sys.stderr)
         return 1
     print("\nSetup complete. Restart the client and any open shell once.")
+    if telemetry_config is None and not result.get("already_configured") and not args.yes and sys.stdin.isatty():
+        try:
+            telemetry.request_consent(home, interactive=True, input_fn=input)
+        except (telemetry.TelemetryConfigError, OSError) as exc:
+            print(f"Telemetry setup failed: {exc}", file=sys.stderr)
+            return 1
     if missing:
         print("Skipped unavailable client(s): " + ", ".join(missing))
     if result.get("already_configured"):
@@ -96,9 +157,13 @@ def _uninstall(argv: list[str]) -> int:
     )
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
     args = parser.parse_args(argv)
-    home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+    home = _home()
     if not args.yes:
-        answer = input("Restore original launchers and remove session-handoff setup? [y/N] ").strip().lower()
+        try:
+            answer = input("Restore original launchers and remove session-handoff setup? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("Uninstall cancelled.")
+            return 0
         if answer not in {"y", "yes"}:
             print("Uninstall cancelled.")
             return 0
@@ -123,6 +188,8 @@ def main() -> int:
         return _uninstall(sys.argv[2:])
     if sys.argv[1:2] == ["doctor"]:
         return doctor_main(sys.argv[2:])
+    if sys.argv[1:2] == ["telemetry"]:
+        return _telemetry(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="Run Codex or Claude and automatically relaunch after a handoff."
     )

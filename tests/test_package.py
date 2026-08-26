@@ -142,6 +142,7 @@ def test_npx_setup_uses_the_resolved_package_root(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "home/.codex/skills/session-handoff/SKILL.md").is_file()
+    assert not (tmp_path / "home/.config/session-handoff/telemetry.json").exists()
 
 
 def test_setup_reinstall_reports_reconciliation_instead_of_no_change(tmp_path):
