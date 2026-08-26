@@ -63,4 +63,5 @@ def test_plugin_manifest_surfaces_include_session_start_hook():
     assert "CLAUDE_PLUGIN_ROOT" in command
 
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-    assert "hooks/" in package["files"]
+    assert "hooks/hooks.json" in package["files"]
+    assert "hooks/session-start.py" in package["files"]

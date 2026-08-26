@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from server import handoff_mcp
+
 
 ROOT = Path(__file__).parents[1]
 
@@ -19,7 +21,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.5.4"
+    assert portable["version"] == codex["version"] == claude["version"] == "0.5.5"
     assert set(portable) <= {
         "$schema",
         "name",
@@ -98,6 +100,30 @@ def test_npx_installer_exposes_setup_command():
     assert "doctor" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
     assert (ROOT / "server/setup.py").is_file()
     assert (ROOT / "server/command_matrix.py").is_file()
+
+
+def test_npm_install_preflights_python_runtime(tmp_path):
+    package = load_json("package.json")
+    preinstall = package["scripts"]["preinstall"]
+    assert "python3 -c" in preinstall
+    no_python = tmp_path / "bin"
+    no_python.mkdir()
+    result = subprocess.run(
+        ["/bin/sh", "-c", preinstall],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={"PATH": str(no_python)},
+    )
+
+    assert result.returncode == 1
+    assert "Python 3.10+" in result.stderr
+
+
+def test_mcp_server_version_matches_package():
+    package = load_json("package.json")
+
+    assert handoff_mcp.SERVER_VERSION == package["version"]
 
 
 def test_runtime_contains_only_the_internal_migration_engine():
@@ -204,6 +230,7 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
         check=True,
     ).stdout.splitlines()
     assert "package/hooks/hooks.json" in contents
+    assert not any(path.startswith("package/hooks/__pycache__/") for path in contents)
     assert "package/docs/telemetry.md" in contents
     assert "package/server/migration_engine.py" in contents
 

@@ -12,7 +12,7 @@ counts is closed, one bucketed row per event type:
 - **operation_summary**: operation (`handoff`/`migrate`), source/target
   client, result (`success`/`failure`/`fallback`), failure stage, duration
   bucket, handoff-size bucket, redaction/dropped-event/normalized-field
-  counts — all bucketed (`zero`, `one`, `2_to_5`, `6_to_20`, `gt_20`; byte
+  counts, all bucketed (`zero`, `one`, `2_to_5`, `6_to_20`, `gt_20`; byte
   ranges like `16_to_64k`).
 - **context_feedback**: an optional, voluntary category (`constraint`,
   `decision`, `path`, `progress`, `rejected_attempt`, `other`) and severity
@@ -30,17 +30,17 @@ process are never read for telemetry.
 
 ## Where it goes
 
-`https://telemetry.yuzushi.party/v1/logs` — a shared backend (OpenTelemetry
+`https://telemetry.yuzushi.party/v1/logs` is a shared backend (OpenTelemetry
 Collector → Loki → Grafana) also used by the Sando plugin, each with its
 own closed schema. Full data inventory, processor list, and retention
 table: `~/selfhosted/telemetry/docs/telemetry-privacy.md` (separate infra
-repo, shared with Sando). Current release status (canary, independent
-privacy review — both open as of writing):
+repo, shared with Sando). Current release status is a canary with an
+independent privacy review. Both remain open as of this writing:
 `~/selfhosted/telemetry/docs/telemetry-canary-report.md`.
 
 Retention: local counters/queue 7 days; uploaded aggregate rows 13 months.
 The service stores no identifier that can answer "which user sent this
-event" — a contributor's rows can't be individually deleted.
+event". A contributor's rows cannot be individually deleted.
 
 ## Controlling it
 
@@ -57,5 +57,5 @@ session-handoff telemetry report --category constraint --severity recoverable
 session-handoff telemetry disable --purge
 ```
 
-This is an opt-in sample, not a population failure rate — enabled users may
-not be representative of everyone running session-handoff.
+This is an opt-in sample, not a population failure rate. Enabled users may
+not represent everyone running session-handoff.

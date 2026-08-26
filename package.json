@@ -1,12 +1,13 @@
 {
   "name": "session-handoff",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
     "session-handoff": "bin/session-handoff"
   },
   "scripts": {
+    "preinstall": "python3 -c \"import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)\" || { echo \"session-handoff requires Python 3.10+ (python3) on PATH.\" >&2; exit 1; }",
     "postinstall": "python3 bin/session-handoff _telemetry-postinstall || true"
   },
   "files": [
@@ -20,7 +21,8 @@
     "mcp.json",
     "plugin.json",
     "README.md",
-    "hooks/",
+    "hooks/hooks.json",
+    "hooks/session-start.py",
     "docs/telemetry.md"
   ],
   "engines": {

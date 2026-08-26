@@ -33,7 +33,7 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
     )
 
 SERVER_NAME = "session-handoff"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.5.5"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MAX_CONTENT_BYTES = 2_000_000
 MAX_LIST_LIMIT = 100
