@@ -50,7 +50,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:2024.12.2@sha256:0d4dd1e618b7f0aee44c85252c31b2b8964f4bf5872ae4e46f0e6d1ad2b0b57e
-    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}"]
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:-}"]
     profiles: ["public"]
     depends_on: [gateway]
     restart: unless-stopped
