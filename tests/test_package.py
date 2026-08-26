@@ -19,7 +19,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.5.0"
+    assert portable["version"] == codex["version"] == claude["version"] == "0.5.1"
     assert set(portable) <= {
         "$schema",
         "name",
@@ -177,6 +177,14 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
     )
     assert packed.returncode == 0, packed.stderr
     tarball = next(destination.glob("session-handoff-*.tgz"))
+    contents = subprocess.run(
+        ["tar", "-tzf", str(tarball)],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.splitlines()
+    assert "package/hooks/hooks.json" in contents
+    assert "package/docs/telemetry.md" in contents
 
     client_dir = tmp_path / "bin"
     client_dir.mkdir()

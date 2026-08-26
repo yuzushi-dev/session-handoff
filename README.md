@@ -32,7 +32,9 @@ client executable, and optional migration backend for all four documented flows.
 
 `npm install` asks once, interactively, whether to enable anonymous
 aggregate telemetry — opt-in, off by default, no transcript/path/session
-content ever collected. See [docs/telemetry.md](docs/telemetry.md).
+content ever collected. Marketplace plugin installs cannot run npm lifecycle
+scripts, so Claude and Codex show a non-blocking reminder at session start
+until you choose `enable` or `disable`. See [docs/telemetry.md](docs/telemetry.md).
 
 ## Clean handoff
 
