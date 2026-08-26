@@ -80,9 +80,10 @@ _IN_FLIGHT_BATCHES = set()
 CONFIG_PATH = Path(".config/session-handoff/telemetry.json")
 STATE_PATH = Path(".local/state/session-handoff")
 # Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
-# reachable from any of the owner's machines (see deploy/telemetry/).
-# Rate-limited at nginx (30 req/min/IP). Release/broader publication is
-# still gated on the open items in docs/telemetry-canary-report.md.
+# reachable from any of the owner's machines (infra lives in a separate
+# repo: ~/selfhosted/telemetry/). Rate-limited at nginx (30 req/min/IP).
+# Release/broader publication is still gated on the open items in
+# ~/selfhosted/telemetry/docs/telemetry-canary-report.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
 CONSENT_PROMPT = "Enable anonymous telemetry? Full details at: docs/telemetry.md [y/N] "
 

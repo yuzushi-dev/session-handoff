@@ -4,5 +4,3 @@ __pycache__/
 benchmark/generated/
 benchmark/results/
 
-# telemetry canary secrets, never commit
-deploy/telemetry/.env

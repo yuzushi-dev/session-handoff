@@ -109,8 +109,10 @@ constraint --severity recoverable`; categories and severities are fixed enums,
 and `other` has no explanation field. Feedback contains no transcript, path,
 session ID, or free text, and is stored locally until the normal aggregate
 upload lifecycle.
-See the [telemetry privacy notice](docs/telemetry-privacy.md) for the data
-inventory, retention, processing boundary, and release gate.
+See [docs/telemetry.md](docs/telemetry.md) for what's collected, and
+`~/selfhosted/telemetry/docs/telemetry-privacy.md` (separate infra repo,
+shared with Sando) for the full data inventory, retention, processing
+boundary, and release gate.
 
 ## Context fidelity benchmark
 

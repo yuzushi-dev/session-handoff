@@ -6,6 +6,16 @@
 
 **Architecture:** Keep telemetry off by default. The client aggregates allowlisted, bucketed outcomes by UTC day and uploads them only after explicit consent. A first-party OpenTelemetry Collector rejects unknown attributes and forwards OTLP logs to Loki; Grafana sums the aggregate rows without storing per-operation records.
 
+**Shared backend:** The Collector → Loki → Grafana stack deployed in Task 6
+is multi-tenant: it also serves the Sando plugin's telemetry
+(`/home/cristina/Projects/Sando/docs/plans/2026-08-25-sando-telemetry-design.md`),
+which defines its own closed schema (`hook_summary`, `proxy_summary`) under
+`service.name=sando`. One Docker Compose deployment, one set of ops/retention
+work, two independent schemas and Grafana dashboards distinguished by
+`service.name`. session-handoff still owns its own schema, consent, and
+client-side code; Sando owns its own. Neither reads or depends on the
+other's local state.
+
 **Tech Stack:** Python 3.10+ standard library, JSON, pytest, OTLP/HTTP JSON, OpenTelemetry Collector, Loki, Grafana, Docker Compose.
 
 ---
@@ -409,22 +419,31 @@ privacy/security review. Do not present this plan as legal advice.
 - Create: `deploy/telemetry/otel-collector.yaml`
 - Create: `deploy/telemetry/loki.yaml`
 - Create: `deploy/telemetry/nginx.conf`
-- Create: `deploy/telemetry/grafana-dashboard.json`
+- Create: `deploy/telemetry/grafana-dashboard-session-handoff.json`
+- Create: `deploy/telemetry/grafana-dashboard-sando.json`
 - Create: `deploy/telemetry/README.md`
 - Create: `tests/test_telemetry_deploy.py`
 
+This backend is multi-tenant: the Collector allowlist and Grafana carry two
+independent schemas, `service.name=session-handoff` (this plan) and
+`service.name=sando` (see the Sando design doc referenced above). Neither
+tenant can read the other's rows; Loki labels include `service.name` so
+queries stay scoped per product.
+
 1. Add standard-library static tests that inspect the configuration, assert
-   the attribute allowlist, reject debug/logging exporters, check retention
-   values, and confirm that dashboard queries sum `count` over bounded labels.
+   the attribute allowlist for **both** service names, reject debug/logging
+   exporters, check retention values, and confirm that dashboard queries sum
+   `count` over bounded labels.
 2. Pin container image digests after a security review. Do not use `latest`.
-3. Configure OTLP/HTTP ingest, allowlist processing, Loki's native OTLP
-   endpoint, private Grafana access, 13-month aggregate retention, and disabled
-   proxy access logs.
+3. Configure OTLP/HTTP ingest, allowlist processing for both schemas, Loki's
+   native OTLP endpoint, private Grafana access, 13-month aggregate retention,
+   and disabled proxy access logs.
 4. Run `rtk pytest -q tests/test_telemetry_deploy.py`; expect static checks to
    pass.
 5. In an opt-in integration test, run the stack on loopback with synthetic
-   aggregates; prove rejected payloads do not reach Loki.
-6. Commit: `ops: add aggregate telemetry backend`.
+   aggregates from both service names; prove rejected payloads (including an
+   unrecognized `service.name`) do not reach Loki.
+6. Commit: `ops: add shared multi-tenant telemetry backend`.
 
 ### Task 7: Privacy, abuse, and retention tests
 

@@ -33,9 +33,10 @@ process are never read for telemetry.
 `https://telemetry.yuzushi.party/v1/logs` — a shared backend (OpenTelemetry
 Collector → Loki → Grafana) also used by the Sando plugin, each with its
 own closed schema. Full data inventory, processor list, and retention
-table: `docs/telemetry-privacy.md`. Current release status (canary,
-independent privacy review — both open as of writing):
-`docs/telemetry-canary-report.md`.
+table: `~/selfhosted/telemetry/docs/telemetry-privacy.md` (separate infra
+repo, shared with Sando). Current release status (canary, independent
+privacy review — both open as of writing):
+`~/selfhosted/telemetry/docs/telemetry-canary-report.md`.
 
 Retention: local counters/queue 7 days; uploaded aggregate rows 13 months.
 The service stores no identifier that can answer "which user sent this
