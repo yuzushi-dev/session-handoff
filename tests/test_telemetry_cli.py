@@ -1327,3 +1327,79 @@ def test_telemetry_flush_does_not_inherit_provider_environment(tmp_path, monkeyp
     assert observed["env"] == {}
     assert observed["command"][-4] == "--queue-path"
     assert observed["command"][-2] == "--config-path"
+
+
+def _recent_operation_event():
+    return {
+        "schema_version": 1,
+        "event": "operation_summary",
+        "day_utc": telemetry.datetime.now(telemetry.timezone.utc).date().isoformat(),
+        "plugin_version": "0.5",
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "codex",
+        "result": "success",
+        "failure_stage": "none",
+        "duration_bucket": "lt_1s",
+        "handoff_bytes_bucket": "lt_4k",
+        "redaction_bucket": "zero",
+        "dropped_events_bucket": "zero",
+        "normalized_fields_bucket": "zero",
+    }
+
+
+def test_telemetry_report_records_enum_only_feedback_without_upload(tmp_path, monkeypatch, capsys):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(_recent_operation_event(), tmp_path)
+    monkeypatch.setattr(telemetry, "spawn_detached_flush", lambda *_args: pytest.fail("report uploaded"))
+
+    assert cli._telemetry(["report", "--category", "constraint", "--severity", "recoverable"]) == 0
+    event = json.loads(capsys.readouterr().out)
+    assert event == {
+        "schema_version": 1,
+        "event": "context_feedback",
+        "day_utc": event["day_utc"],
+        "plugin_version": "0.5",
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "codex",
+        "feedback_category": "constraint",
+        "feedback_severity": "recoverable",
+    }
+    assert not (tmp_path / telemetry.STATE_PATH / telemetry._QUEUE_NAME).exists()
+
+
+def test_telemetry_report_is_disabled_and_rejects_free_text(tmp_path, monkeypatch, capsys):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.disabled_config())
+
+    assert cli._telemetry(["report", "--category", "other", "--severity", "blocked"]) == 1
+    assert "disabled" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli._telemetry(
+            ["report", "--category", "other", "--severity", "blocked", "--text", "secret"]
+        )
+
+
+def test_last_operation_summary_expires_and_is_removed(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(
+        _recent_operation_event(), tmp_path, now="2026-08-24T00:00:00Z"
+    )
+
+    assert telemetry.load_last_operation_summary(tmp_path, now="2026-08-26T00:00:01Z") is None
+    assert not (tmp_path / telemetry.STATE_PATH / telemetry._LAST_SUMMARY_NAME).exists()
+
+
+def test_telemetry_report_deduplicates_same_feedback(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(_recent_operation_event(), tmp_path)
+    args = ["report", "--category", "constraint", "--severity", "recoverable"]
+
+    assert cli._telemetry(args) == 0
+    assert cli._telemetry(args) == 1

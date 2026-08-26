@@ -103,6 +103,13 @@ The automatic switch and migration flows require the managed launcher. A client
 started through a direct binary path uses the manual handoff fallback and does
 not attempt to migrate a live transcript.
 
+Anonymous telemetry is opt-in. After a recent operation, voluntary context
+feedback may be recorded with `session-handoff telemetry report --category
+constraint --severity recoverable`; categories and severities are fixed enums,
+and `other` has no explanation field. Feedback contains no transcript, path,
+session ID, or free text, and is stored locally until the normal aggregate
+upload lifecycle.
+
 ## Context fidelity benchmark
 
 The [benchmark protocol](benchmark/README.md) keeps two claims separate:

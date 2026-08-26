@@ -31,6 +31,9 @@ def _telemetry(argv: list[str]) -> int:
     commands.add_parser("enable")
     commands.add_parser("preview")
     commands.add_parser("flush")
+    report = commands.add_parser("report")
+    report.add_argument("--category", choices=sorted(telemetry.FEEDBACK_CATEGORIES), required=True)
+    report.add_argument("--severity", choices=sorted(telemetry.FEEDBACK_SEVERITIES), required=True)
     detached = commands.add_parser("_detached-flush")
     detached.add_argument("--queue-path", required=True)
     detached.add_argument("--config-path", required=True)
@@ -79,6 +82,10 @@ def _telemetry(argv: list[str]) -> int:
                 telemetry.config_path(home),
             )
             print("Telemetry flush started.")
+            return 0
+        if args.command == "report":
+            event = telemetry.record_context_feedback(args.category, args.severity, home=home)
+            print(json.dumps(event, sort_keys=True, separators=(",", ":")))
             return 0
         telemetry.disable(home, purge=args.purge)
         print("Telemetry disabled." if not args.purge else "Telemetry disabled and local data purged.")

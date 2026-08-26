@@ -37,7 +37,8 @@ COUNT_BUCKETS = frozenset({"zero", "one", "2_to_5", "6_to_20", "gt_20"})
 HANDOFF_BYTES_BUCKETS = frozenset({"lt_4k", "4_to_16k", "16_to_64k", "gte_64k"})
 _LEASE_NAME = "telemetry-batch-lease.json"
 _GENERATION_NAME = "telemetry-generation"
-_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", "last-operation-summary.json", _LEASE_NAME)
+_LAST_SUMMARY_NAME = "last-operation-summary.json"
+_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", _LAST_SUMMARY_NAME, _LEASE_NAME)
 FEEDBACK_CATEGORIES = frozenset({"constraint", "decision", "path", "progress", "rejected_attempt", "other"})
 FEEDBACK_SEVERITIES = frozenset({"recoverable", "blocked"})
 
@@ -885,6 +886,20 @@ def _as_day(value=None):
     raise ValueError("invalid UTC timestamp")
 
 
+def _as_datetime(value=None):
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    elif isinstance(value, datetime):
+        parsed = value
+    else:
+        raise ValueError("invalid UTC timestamp")
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
 def _empty_counters():
     return {"schema_version": 1, "dropped_events": 0, "days": {}}
 
@@ -973,7 +988,7 @@ def _read_json_state(state_directory, state_fd, name, default, limit):
         return default
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise TelemetryConfigError(f"invalid telemetry state: {state_directory / name}") from exc
 
 
@@ -1067,12 +1082,64 @@ def increment_counter(event, home=None, now=None):
         key = _event_key(event)
         for entry in entries:
             if entry.get("key") == key:
+                if event["event"] == "context_feedback":
+                    return 0
                 entry["count"] = min(10000, entry["count"] + 1)
                 break
         else:
             entries.append({"key": key, "event": dict(event), "count": 1})
         _write_state(state_directory, state_fd, _COUNTERS_NAME, json.dumps(counters, sort_keys=True, separators=(",", ":")) + "\n")
+        if event["event"] == "operation_summary":
+            _write_state(
+                state_directory,
+                state_fd,
+                _LAST_SUMMARY_NAME,
+                json.dumps(
+                    {"recorded_at": _as_datetime(now).isoformat().replace("+00:00", "Z"), "event": event},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+            )
         return next(entry["count"] for entry in entries if entry["key"] == key)
+
+
+def load_last_operation_summary(home=None, now=None):
+    missing = object()
+    with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+        saved = _read_json_state(state_directory, state_fd, _LAST_SUMMARY_NAME, missing, 16 * 1024)
+        if saved is missing:
+            return None
+        if not isinstance(saved, dict) or set(saved) != {"recorded_at", "event"}:
+            raise TelemetryConfigError("invalid last operation summary")
+        try:
+            recorded_at = _as_datetime(saved["recorded_at"])
+            event = dict(saved["event"])
+            validate_event(event)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TelemetryConfigError("invalid last operation summary") from exc
+        if event["event"] != "operation_summary":
+            raise TelemetryConfigError("invalid last operation summary")
+        age = _as_datetime(now) - recorded_at
+        if age < timedelta(0) or age > timedelta(hours=24):
+            _remove_state(state_directory, state_fd, _LAST_SUMMARY_NAME)
+            return None
+        return event
+
+
+def record_context_feedback(category, severity, home=None, now=None):
+    config = load_config(home)
+    if config is None or not config["enabled"]:
+        raise TelemetryConfigError("telemetry is disabled")
+    operation = load_last_operation_summary(home, now=now)
+    if operation is None:
+        raise TelemetryConfigError("no recent operation summary")
+    event = {field: operation[field] for field in _COMMON_FIELDS}
+    event.update({"event": "context_feedback", "feedback_category": category, "feedback_severity": severity})
+    validate_event(event)
+    if increment_counter(event, home=home, now=now) == 0:
+        raise TelemetryConfigError("feedback was already recorded or telemetry was disabled")
+    return event
 
 
 def _aggregate_row(event, count):
