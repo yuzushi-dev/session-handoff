@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-handoff",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Create clean coding handoffs or migrate active native sessions between Codex and Claude Code.",
   "author": {
     "name": "yuzushi-dev"

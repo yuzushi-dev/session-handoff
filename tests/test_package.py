@@ -19,7 +19,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.5.1"
+    assert portable["version"] == codex["version"] == claude["version"] == "0.5.2"
     assert set(portable) <= {
         "$schema",
         "name",
