@@ -113,6 +113,8 @@ def test_runtime_contains_only_the_internal_migration_engine():
         ROOT / "server/handoff_mcp.py",
         ROOT / "server/migration.py",
         ROOT / "server/migration_engine.py",
+        ROOT / "server/command_matrix.py",
+        ROOT / "server/session_switch.py",
         ROOT / "server/session_switch.py",
         ROOT / "plugin.json",
         ROOT / ".claude-plugin/plugin.json",
@@ -121,6 +123,8 @@ def test_runtime_contains_only_the_internal_migration_engine():
     text = "\n".join(path.read_text(encoding="utf-8") for path in active_files)
     assert "session" + "-migrate" not in text.lower()
     assert "xhl" + "uca" not in text.lower()
+    assert "migration_executable" not in text
+    assert "smigrate" not in text
 
 
 def test_entrypoint_resolves_package_root_when_called_through_npm_bin(tmp_path):

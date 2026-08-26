@@ -592,7 +592,6 @@ class SessionSupervisor:
         executable: str | None = None,
         draft: bool = True,
         client_executables: dict[str, str] | None = None,
-        migration_executable: str | None = None,
         migrate: Callable[..., dict[str, Any]] = migrate_session,
     ) -> None:
         if client not in SUPPORTED_CLIENTS:
@@ -607,7 +606,6 @@ class SessionSupervisor:
         self.client_executables = dict(client_executables or {})
         if executable:
             self.client_executables[client] = executable
-        self.migration_executable = migration_executable
         self.migrate = migrate
 
     def _client_executable(self, client: str) -> str | None:
@@ -770,7 +768,6 @@ class SessionSupervisor:
                             target_client,
                             source_session_id,
                             workspace,
-                            executable=self.migration_executable,
                         )
                     except (MigrationError, OSError, subprocess.SubprocessError) as exc:
                         print(

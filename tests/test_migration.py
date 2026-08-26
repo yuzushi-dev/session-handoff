@@ -41,7 +41,7 @@ def test_internal_writer_removes_partial_target_after_write_failure(tmp_path, mo
     assert not manifest.exists()
 
 
-def test_migrate_session_is_self_contained_and_does_not_invoke_external_backend(tmp_path):
+def test_migrate_session_uses_the_internal_engine(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source_home = tmp_path / "claude"
@@ -53,19 +53,14 @@ def test_migrate_session_is_self_contained_and_does_not_invoke_external_backend(
         "bundled migration marker",
     )
 
-    def external_backend_must_not_run(*_args, **_kwargs):
-        raise AssertionError("migrate must not invoke an external backend")
-
     result = migrate_session(
         "claude",
         "codex",
         "50000000-0000-4000-8000-000000000010",
         str(workspace),
-        executable="does-not-exist",
         source_home=str(source_home),
         target_session_id="60000000-0000-4000-8000-000000000010",
         target_home=str(tmp_path / "codex"),
-        runner=external_backend_must_not_run,
     )
 
     assert result["source_format"] == "claude"
@@ -231,7 +226,6 @@ def test_migrate_session_rejects_same_client(tmp_path):
             "codex",
             "source-id",
             str(tmp_path),
-            executable="smigrate",
         )
 
 

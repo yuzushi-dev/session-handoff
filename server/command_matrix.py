@@ -32,16 +32,10 @@ def _load_state(home: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _migration_available(explicit: str | None) -> bool:
-    del explicit
-    return True
-
-
 def probe_command_matrix(
     home: str | Path,
     *,
     runner: Callable[..., Any] = subprocess.run,
-    migration_executable: str | None = None,
 ) -> dict[str, Any]:
     """Check setup artifacts and CLI registrations without starting a model session."""
 
@@ -89,10 +83,9 @@ def probe_command_matrix(
         status["ready"] = all(status.values())
         clients[client] = status
 
-    backend = _migration_available(migration_executable)
     codex_ready = clients["codex"]["ready"]
     claude_ready = clients["claude"]["ready"]
-    migration_ready = codex_ready and claude_ready and backend
+    migration_ready = codex_ready and claude_ready
     flows = {
         "claude_handoff": {"command": "/session-handoff", "ready": claude_ready},
         "codex_handoff": {"command": "$session-handoff", "ready": codex_ready},
@@ -108,7 +101,7 @@ def probe_command_matrix(
     return {
         "schema_version": 1,
         "provider_calls": 0,
-        "migration_backend": backend,
+        "migration_engine": "internal",
         "clients": clients,
         "flows": flows,
         "ready": all(flow["ready"] for flow in flows.values()),
@@ -125,13 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))),
     )
-    parser.add_argument("--migration-executable")
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args(argv)
-    result = probe_command_matrix(
-        args.home,
-        migration_executable=args.migration_executable,
-    )
+    result = probe_command_matrix(args.home)
     print(json.dumps(result, indent=2 if args.pretty else None, sort_keys=True))
     return 0 if result["ready"] else 1
 

@@ -4,13 +4,13 @@
 
 **Goal:** Execute and verify the benchmark's `migrate` condition against a native-format Codex paginated fixture and a real temporary Claude target.
 
-**Architecture:** Bring the already-merged migration backend into this benchmark branch, then add one deterministic native Codex fixture builder and an integration test that invokes the internal migration writer. Keep the long context-rot cases as semantic benchmark inputs; do not use live sessions or credentials.
+**Architecture:** Use the internal migration engine in this benchmark branch, then add one deterministic native Codex fixture builder and an integration test that invokes the internal migration writer. Keep the long context-rot cases as semantic benchmark inputs; do not use live sessions or credentials.
 
 **Tech Stack:** Python 3.12, stdlib `sqlite3`/`json`, pytest, bundled migration engine.
 
 ---
 
-### Task 1: Align the benchmark branch with the current migration backend
+### Task 1: Align the benchmark branch with the current internal migration engine
 
 **Files:**
 - Cherry-pick: `dc2be4f` from local `main`

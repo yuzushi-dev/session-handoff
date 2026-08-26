@@ -8,7 +8,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     from .migration_engine import EngineError, convert_native_session
@@ -283,18 +283,11 @@ def migrate_session(
     source_session_id: str,
     workspace: str,
     *,
-    executable: str | None = None,
     target_session_id: str | None = None,
     source_home: str | None = None,
     target_home: str | None = None,
-    runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Migrate Claude↔Codex without invoking an external executable.
-
-    The executable and runner parameters remain accepted for compatibility
-    with older callers; the internal engine deliberately ignores both.
-    """
-    del executable, runner
+    """Migrate a native Claude or Codex session with the internal engine."""
     if source_client not in SUPPORTED_CLIENTS or target_client not in SUPPORTED_CLIENTS:
         raise MigrationError("migrate mode currently supports only Claude and Codex")
     if source_client == target_client:

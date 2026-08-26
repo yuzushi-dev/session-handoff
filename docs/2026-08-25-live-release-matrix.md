@@ -58,7 +58,7 @@ Python compilation, and `git diff --check`.
 
 ## Installed command matrix
 
-The provider-free doctor checked the installed clients and migration backend:
+The provider-free doctor checked the installed clients and internal migration engine:
 
 | Flow | Command | Ready |
 |---|---|---|
