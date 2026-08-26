@@ -87,3 +87,12 @@ Raw model output, native homes, credentials, and session identifiers remain in
 gitignored local result directories. A scan of 196 blinded judge bundles found
 no host-home paths, UUIDs, API-key shapes, or bearer tokens. The repository and
 vault contain none of those artifacts.
+
+## Telemetry release gate
+
+The local telemetry gates are recorded in
+[`telemetry-canary-report.md`](telemetry-canary-report.md). They pass without
+provider calls, but no canary enrollment, packet capture, public endpoint,
+hosting approval, or release approval exists yet. Telemetry publication remains
+blocked pending owner approval, independent privacy/security review, and the
+retention/purge evidence listed in that report.
