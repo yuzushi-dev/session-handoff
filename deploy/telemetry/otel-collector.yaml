@@ -11,38 +11,32 @@ processors:
     limit_mib: 256
     spike_limit_mib: 64
   filter/session-handoff:
-    error_mode: drop
+    error_mode: ignore
     logs:
       include:
         match_type: strict
         resource_attributes:
-          - service.name: session-handoff
+          - key: service.name
+            value: session-handoff
   filter/session-schema:
-    error_mode: drop
+    error_mode: ignore
     logs:
       log_record:
         - 'resource.attributes["service.name"] == "session-handoff" and attributes["event"] != "daily_aggregate"'
         - 'resource.attributes["service.name"] == "session-handoff" and attributes["aggregate"] != "operation" and attributes["aggregate"] != "context_feedback"'
   filter/sando:
-    error_mode: drop
+    error_mode: ignore
     logs:
       include:
         match_type: strict
         resource_attributes:
-          - service.name: sando
+          - key: service.name
+            value: sando
   filter/sando-schema:
-    error_mode: drop
+    error_mode: ignore
     logs:
       log_record:
         - 'resource.attributes["service.name"] == "sando" and attributes["event"] != "hook_summary" and attributes["event"] != "proxy_summary"'
-  filter/unknown-service:
-    error_mode: ignore
-    logs:
-      exclude:
-        match_type: strict
-        resource_attributes:
-          - service.name: session-handoff
-          - service.name: sando
   transform/session-handoff-allowlist:
     error_mode: ignore
     log_statements:
