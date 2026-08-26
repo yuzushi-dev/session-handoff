@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/session-handoff-mark.png" alt="session-handoff logo" width="96">
+</p>
+
 # session-handoff
 
 `session-handoff` creates handoff documents and migrates active sessions between Claude Code and Codex.
