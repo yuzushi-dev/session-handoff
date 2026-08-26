@@ -37,9 +37,12 @@ services:
     image: nginx:1.29.0@sha256:3ab4ed065a1437cbbd45e65617b1285bdf6523c6bf56a121e00df41720e09a89
     ports:
       - "127.0.0.1:4318:4318"
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:13000:3000"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
     depends_on: [collector, grafana]
     restart: unless-stopped
     read_only: true

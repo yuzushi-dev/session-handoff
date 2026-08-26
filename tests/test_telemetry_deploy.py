@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -37,8 +38,8 @@ def test_images_are_immutable_and_not_latest():
 
 def test_collector_has_two_closed_service_allowlists():
     collector = (ROOT / "otel-collector.yaml").read_text()
-    assert "service.name: session-handoff" in collector
-    assert "service.name: sando" in collector
+    assert "value: session-handoff" in collector
+    assert "value: sando" in collector
     assert "X-Scope-OrgID: session-handoff" in collector
     assert "X-Scope-OrgID: sando" in collector
     assert 'attributes["event"] != "daily_aggregate"' in collector
@@ -62,10 +63,16 @@ def test_loki_retention_and_bounded_limits():
 
 
 def test_gateway_is_loopback_only_and_has_no_access_logs():
+    # Docker's userland proxy rewrites the peer address for published ports, so an
+    # nginx-level `allow 127.0.0.1` never matches and would 403 all real traffic.
+    # The loopback boundary is enforced by the host port bind in docker-compose.yml
+    # instead (asserted below); it's the only control that actually sees 127.0.0.1.
     nginx = (ROOT / "nginx.conf").read_text()
     assert "access_log off;" in nginx
-    assert "allow 127.0.0.1;" in nginx
-    assert "deny all;" in nginx
+    compose = (ROOT / "docker-compose.yml").read_text()
+    published_ports = re.findall(r'"(\d+\.\d+\.\d+\.\d+):\d+:\d+"', compose)
+    assert published_ports
+    assert all(ip == "127.0.0.1" for ip in published_ports)
 
 
 def test_dashboards_scope_queries_and_sum_counts():
@@ -128,31 +135,44 @@ def test_loopback_stack_routes_two_tenants_and_drops_unknown_service():
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            assert response.status in {200, 202}
+        # `up --wait` only waits for the container to be running, not for the
+        # collector's OTLP receiver to accept connections; retry through that gap.
+        last_error = None
+        for _ in range(15):
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    assert response.status in {200, 202}
+                    return
+            except (urllib.error.URLError, OSError) as error:
+                last_error = error
+                time.sleep(1)
+        raise last_error
 
     try:
         send("session-handoff")
         send("sando")
         send("unknown-service")
-        for service in ("session-handoff", "sando"):
-            query = urllib.parse.quote(f'{{service_name="{service}"}}')
+        def loki_series(org, match):
+            query = urllib.parse.quote(f"match[]={match}", safe="=")
             result = subprocess.run(
-                [*compose, "exec", "-T", "loki", "wget", "-qO-", f"--header=X-Scope-OrgID: {service}", f"http://127.0.0.1:3100/loki/api/v1/query?query={query}"],
+                [*compose, "exec", "-T", "loki", "wget", "-qO-", f"--header=X-Scope-OrgID: {org}", f"http://127.0.0.1:3100/loki/api/v1/series?{query}"],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            assert service in result.stdout
+            return result.stdout
+
+        # the Collector batches for up to 5s (`batch.timeout`) before exporting to Loki.
+        for service in ("session-handoff", "sando"):
+            match = f'{{service_name="{service}"}}'
+            for attempt in range(10):
+                stdout = loki_series(service, match)
+                if service in stdout:
+                    break
+                time.sleep(1)
+            assert service in stdout
 
         for service in ("session-handoff", "sando"):
-            query = urllib.parse.quote('{service_name="unknown-service"}')
-            result = subprocess.run(
-                [*compose, "exec", "-T", "loki", "wget", "-qO-", f"--header=X-Scope-OrgID: {service}", f"http://127.0.0.1:3100/loki/api/v1/query?query={query}"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            assert "unknown-service" not in result.stdout
+            assert "unknown-service" not in loki_series(service, '{service_name="unknown-service"}')
     finally:
         subprocess.run([*compose, "down", "-v"], check=True)
