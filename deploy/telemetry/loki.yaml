@@ -1,0 +1,67 @@
+auth_enabled: true
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: error
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 11232h # 13 months at 30.75 days/month
+  max_query_series: 100
+  max_query_parallelism: 8
+  max_entries_limit_per_query: 1000
+  allow_structured_metadata: true
+  volume_enabled: false
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.name
+        - action: structured_metadata
+          attributes:
+            - event
+            - aggregate
+            - operation
+            - result
+            - failure_stage
+            - day_utc
+            - host
+            - mode
+            - tool_calls_bucket
+            - redactions_bucket
+            - capped_outputs_bucket
+            - bytes_saved_bucket
+            - rewrites_applied_bucket
+            - rewrites_skipped_cache_bucket
+            - input_tokens_saved_bucket
+            - prompt_cache_hit
+
+compactor:
+  working_directory: /loki/retention
+  retention_enabled: true
+  delete_request_store: filesystem
+
+ruler:
+  enable_api: false

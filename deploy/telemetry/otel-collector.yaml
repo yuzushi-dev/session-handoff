@@ -1,0 +1,90 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 1048576
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  filter/session-handoff:
+    error_mode: drop
+    logs:
+      include:
+        match_type: strict
+        resource_attributes:
+          - service.name: session-handoff
+  filter/session-schema:
+    error_mode: drop
+    logs:
+      log_record:
+        - 'resource.attributes["service.name"] == "session-handoff" and attributes["event"] != "daily_aggregate"'
+        - 'resource.attributes["service.name"] == "session-handoff" and attributes["aggregate"] != "operation" and attributes["aggregate"] != "context_feedback"'
+  filter/sando:
+    error_mode: drop
+    logs:
+      include:
+        match_type: strict
+        resource_attributes:
+          - service.name: sando
+  filter/sando-schema:
+    error_mode: drop
+    logs:
+      log_record:
+        - 'resource.attributes["service.name"] == "sando" and attributes["event"] != "hook_summary" and attributes["event"] != "proxy_summary"'
+  filter/unknown-service:
+    error_mode: ignore
+    logs:
+      exclude:
+        match_type: strict
+        resource_attributes:
+          - service.name: session-handoff
+          - service.name: sando
+  transform/session-handoff-allowlist:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - 'keep_keys(attributes, ["schema_version", "event", "aggregate", "day_utc", "plugin_version", "operation", "source_client", "target_client", "count", "result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket", "feedback_category", "feedback_severity"]) where resource.attributes["service.name"] == "session-handoff"'
+          - 'keep_keys(resource.attributes, ["service.name"])'
+  transform/sando-allowlist:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - 'keep_keys(attributes, ["schema_version", "event", "day_utc", "plugin_version", "host", "mode", "tool_calls_bucket", "redactions_bucket", "capped_outputs_bucket", "bytes_saved_bucket", "rewrites_applied_bucket", "rewrites_skipped_cache_bucket", "input_tokens_saved_bucket", "prompt_cache_hit"]) where resource.attributes["service.name"] == "sando"'
+          - 'keep_keys(resource.attributes, ["service.name"])'
+  batch:
+    timeout: 5s
+    send_batch_size: 32
+
+exporters:
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    headers:
+      X-Scope-OrgID: session-handoff
+    tls:
+      insecure: true
+  otlphttp/loki-sando:
+    endpoint: http://loki:3100/otlp
+    headers:
+      X-Scope-OrgID: sando
+    tls:
+      insecure: true
+
+service:
+  telemetry:
+    logs:
+      level: error
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/session-handoff, filter/session-schema, transform/session-handoff-allowlist, batch]
+      exporters: [otlphttp/loki]
+    logs/sando:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/sando, filter/sando-schema, transform/sando-allowlist, batch]
+      exporters: [otlphttp/loki-sando]

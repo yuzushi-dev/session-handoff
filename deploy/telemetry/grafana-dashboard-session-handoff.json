@@ -1,0 +1,31 @@
+{
+  "title": "Session Handoff Telemetry",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["session-handoff", "aggregate", "opt-in"],
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Operations by result",
+      "datasource": {"type": "loki", "uid": "loki-session-handoff"},
+      "targets": [{"expr": "sum by (operation, result) (sum_over_time({service_name=\"session-handoff\"} | json | aggregate=\"operation\" | unwrap count [1d]))", "queryType": "range"}],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Context feedback",
+      "datasource": {"type": "loki", "uid": "loki-session-handoff"},
+      "targets": [{"expr": "sum by (feedback_category, feedback_severity) (sum_over_time({service_name=\"session-handoff\"} | json | aggregate=\"context_feedback\" | unwrap count [1d]))", "queryType": "range"}],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "type": "text",
+      "title": "Sampling notice",
+      "options": {"mode": "markdown", "content": "Telemetry is opt-in aggregate data and may not represent all users."}
+    }
+  ]
+}
