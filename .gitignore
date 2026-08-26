@@ -1,3 +1,6 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
+benchmark/generated/
+benchmark/results/
+

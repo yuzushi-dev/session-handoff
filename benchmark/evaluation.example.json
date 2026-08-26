@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "study": {
+    "cases": ["compound-rot"],
+    "bands": ["long"],
+    "conditions": ["handoff"],
+    "runs_per_condition": 1
+  },
+  "runs": [
+    {
+      "case": "compound-rot",
+      "band": "long",
+      "condition": "handoff",
+      "replicate": 1,
+      "facts": [
+        {"id": "F1", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F2", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F3", "weight": 3, "critical": true, "status": "missing"},
+        {"id": "F4", "weight": 2, "critical": true, "status": "preserved"},
+        {"id": "F5", "weight": 3, "critical": true, "status": "preserved"},
+        {"id": "F6", "weight": 2, "critical": true, "status": "preserved"}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "activated": false},
+        {"id": "T2", "weight": 3, "activated": false},
+        {"id": "T3", "weight": 1, "activated": false}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "passed": true},
+        {"id": "D2", "weight": 3, "passed": true},
+        {"id": "D3", "weight": 3, "passed": true},
+        {"id": "D4", "weight": 2, "passed": true}
+      ],
+      "task_success": true,
+      "repeated_failed_attempts": 0,
+      "stale_decisions_acted_on": 0,
+      "recovery_reads": 1,
+      "input_tokens": null,
+      "output_tokens": null,
+      "wall_seconds": null
+    }
+  ]
+}

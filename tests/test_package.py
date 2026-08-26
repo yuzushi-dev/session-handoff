@@ -95,7 +95,9 @@ def test_npx_installer_exposes_setup_command():
     assert package["os"] == ["linux", "darwin"]
     assert package["engines"]["python"] == ">=3.10"
     assert "setup" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
+    assert "doctor" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
     assert (ROOT / "server/setup.py").is_file()
+    assert (ROOT / "server/command_matrix.py").is_file()
 
 
 def test_entrypoint_resolves_package_root_when_called_through_npm_bin(tmp_path):
@@ -140,6 +142,27 @@ def test_npx_setup_uses_the_resolved_package_root(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "home/.codex/skills/session-handoff/SKILL.md").is_file()
+    assert not (tmp_path / "home/.config/session-handoff/telemetry.json").exists()
+
+
+def test_setup_reinstall_reports_reconciliation_instead_of_no_change(tmp_path):
+    fake_client = tmp_path / "bin/codex"
+    fake_client.parent.mkdir()
+    fake_client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_client.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": str(fake_client.parent),
+        "SESSION_HANDOFF_HOME": str(tmp_path / "home"),
+    }
+    command = [sys.executable, str(ROOT / "bin/session-handoff"), "setup", "--client", "codex", "--yes"]
+
+    first = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
+    second = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
+
+    assert first.returncode == second.returncode == 0
+    assert "reconciled" in second.stdout
+    assert "nothing changed" not in second.stdout
 
 
 def test_packed_tarball_runs_through_npx_setup(tmp_path):

@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "bands": {
+    "short": 32000,
+    "long": 160000,
+    "very_long": 320000
+  },
+  "cases": [
+    {
+      "id": "buried-constraint",
+      "title": "Buried compatibility constraint",
+      "task": "Finish the refresh-token bugfix without changing the public API, then run the focused regression test.",
+      "anchors": [
+        {"at": 0.04, "role": "user", "content": "Hard constraint: public function refresh_session(user_id, token) must remain synchronous and keep the same signature because two external integrations call it directly."},
+        {"at": 0.20, "role": "assistant", "content": "I will preserve refresh_session(user_id, token) exactly and work inside src/auth/session.py."},
+        {"at": 0.54, "role": "assistant", "content": "A side investigation suggested converting refresh_session to async, but that would break the compatibility constraint, so I am not doing it."},
+        {"at": 0.88, "role": "assistant", "content": "Current state: src/auth/session.py reproduces the expired-refresh-token bug. tests/auth/test_refresh.py::test_expired_refresh_token still fails. The next change belongs in validate_refresh()."},
+        {"at": 0.97, "role": "user", "content": "Continue from here and finish the bugfix."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "constraint", "weight": 3, "critical": true, "statement": "refresh_session(user_id, token) must remain synchronous and keep the same public signature."},
+        {"id": "F2", "category": "location", "weight": 2, "critical": true, "statement": "The implementation target is src/auth/session.py, specifically validate_refresh()."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "statement": "Convert refresh_session to async or change its signature."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "Public refresh_session signature and sync behavior remain unchanged."},
+        {"id": "D2", "weight": 3, "statement": "test_expired_refresh_token passes."}
+      ]
+    },
+    {
+      "id": "superseded-decision",
+      "title": "Superseded configuration decision",
+      "task": "Complete the cache configuration change and update the focused tests using the final agreed TTL.",
+      "anchors": [
+        {"at": 0.05, "role": "assistant", "content": "Initial decision: use a 60 second negative-cache TTL in cache/config.py."},
+        {"at": 0.31, "role": "user", "content": "Keep 60 seconds for now while we investigate the production trace."},
+        {"at": 0.61, "role": "assistant", "content": "The trace shows 60 seconds delays recovery after a transient permission change."},
+        {"at": 0.83, "role": "user", "content": "Final decision: replace the earlier 60 second choice with 15 seconds. Treat 15 seconds as authoritative from now on."},
+        {"at": 0.91, "role": "assistant", "content": "I changed cache/config.py to 15 seconds. tests/cache/test_negative_ttl.py still expects 60 and is the remaining work."},
+        {"at": 0.98, "role": "user", "content": "Finish the change and verify it."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "decision", "weight": 3, "critical": true, "statement": "The authoritative negative-cache TTL is 15 seconds; 60 seconds was superseded."},
+        {"id": "F2", "category": "progress", "weight": 2, "critical": true, "statement": "cache/config.py already uses 15 seconds."},
+        {"id": "F3", "category": "pending", "weight": 2, "critical": true, "statement": "tests/cache/test_negative_ttl.py still needs its 60-second expectation updated."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "statement": "Use or restore the obsolete 60 second TTL."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "Runtime config and focused test both use 15 seconds."},
+        {"id": "D2", "weight": 2, "statement": "Focused cache test passes."}
+      ]
+    },
+    {
+      "id": "failed-attempt-trap",
+      "title": "Previously failed plausible fix",
+      "task": "Fix Unicode slug normalization without repeating the rejected regex-only approach.",
+      "anchors": [
+        {"at": 0.08, "role": "assistant", "content": "The bug is in src/slug/normalize.py: decomposed Unicode input is mishandled."},
+        {"at": 0.28, "role": "assistant", "content": "Attempt A: I replaced the sanitizer with a larger ASCII regex."},
+        {"at": 0.36, "role": "assistant", "content": "Attempt A failed. tests/slug/test_unicode.py::test_decomposed_accent still fails because regex alone does not normalize canonical Unicode forms. Do not retry the regex-only fix."},
+        {"at": 0.79, "role": "assistant", "content": "The remaining direction is to normalize with unicodedata.normalize('NFC', value) before applying the existing sanitizer. No code for that direction has been committed yet."},
+        {"at": 0.97, "role": "user", "content": "Continue and implement the correct fix."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "failed_attempt", "weight": 3, "critical": true, "statement": "A regex-only sanitizer change was already tried and failed; it must not be repeated."},
+        {"id": "F2", "category": "direction", "weight": 3, "critical": true, "statement": "The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "statement": "Retry or expand the regex-only sanitizer as the primary fix."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "NFC normalization is applied before sanitization."},
+        {"id": "D2", "weight": 3, "statement": "test_decomposed_accent passes."}
+      ]
+    },
+    {
+      "id": "partial-state",
+      "title": "Mixed completed and pending work",
+      "task": "Finish the migration without redoing completed files and verify the remaining compatibility test.",
+      "anchors": [
+        {"at": 0.06, "role": "user", "content": "Migrate the serializer from v2 to v3 while keeping old payloads readable."},
+        {"at": 0.34, "role": "assistant", "content": "Completed: src/codec/writer.py now emits v3 and tests/codec/test_writer_v3.py passes."},
+        {"at": 0.57, "role": "assistant", "content": "Completed: fixtures/v3/basic.json was regenerated and validated."},
+        {"at": 0.86, "role": "assistant", "content": "Still pending: src/codec/reader.py must accept both v2 and v3. tests/codec/test_reader_compat.py currently fails on v2 payloads. Do not touch writer.py again unless the reader test proves it necessary."},
+        {"at": 0.98, "role": "user", "content": "Finish the remaining migration work."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "done", "weight": 2, "critical": true, "statement": "src/codec/writer.py is already complete and its v3 writer test passes."},
+        {"id": "F2", "category": "done", "weight": 1, "critical": true, "statement": "fixtures/v3/basic.json is already regenerated and validated."},
+        {"id": "F3", "category": "pending", "weight": 3, "critical": true, "statement": "src/codec/reader.py still needs dual v2/v3 compatibility."},
+        {"id": "F4", "category": "test", "weight": 2, "critical": true, "statement": "tests/codec/test_reader_compat.py fails on v2 payloads."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 2, "statement": "Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "Reader accepts both v2 and v3 payloads."},
+        {"id": "D2", "weight": 3, "statement": "test_reader_compat passes."}
+      ]
+    },
+    {
+      "id": "late-correction",
+      "title": "Late correction against repeated stale context",
+      "task": "Apply the final endpoint correction and finish the client test.",
+      "anchors": [
+        {"at": 0.05, "role": "assistant", "content": "The integration endpoint appears to be /api/v1/export."},
+        {"at": 0.19, "role": "assistant", "content": "Several logs and examples also reference /api/v1/export."},
+        {"at": 0.47, "role": "assistant", "content": "I am still tracing failures against /api/v1/export."},
+        {"at": 0.89, "role": "user", "content": "Correction from the current API contract: /api/v1/export is obsolete. The supported endpoint is /api/v2/exports, plural. Use /api/v2/exports from this point onward."},
+        {"at": 0.94, "role": "assistant", "content": "Current code in src/client/export.py still has /api/v1/export. tests/client/test_export_endpoint.py must assert /api/v2/exports after the change."},
+        {"at": 0.98, "role": "user", "content": "Finish it."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "correction", "weight": 3, "critical": true, "statement": "The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."},
+        {"id": "F2", "category": "location", "weight": 2, "critical": true, "statement": "src/client/export.py still contains the obsolete endpoint."},
+        {"id": "F3", "category": "test", "weight": 2, "critical": true, "statement": "tests/client/test_export_endpoint.py must assert /api/v2/exports."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "statement": "Continue using /api/v1/export because it appears repeatedly in older context."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "Client uses /api/v2/exports."},
+        {"id": "D2", "weight": 2, "statement": "Endpoint test passes with the v2 plural path."}
+      ]
+    },
+    {
+      "id": "compound-rot",
+      "title": "Compound long-session rot",
+      "task": "Finish the retry fix using the current state, without reverting superseded decisions or repeating failed approaches.",
+      "anchors": [
+        {"at": 0.03, "role": "user", "content": "Constraint: keep RetryPolicy.should_retry(error) public and synchronous."},
+        {"at": 0.15, "role": "assistant", "content": "Initial retry cap chosen as 5 attempts."},
+        {"at": 0.29, "role": "assistant", "content": "Tried catching every Exception in should_retry. That made programming errors retryable and failed tests/retry/test_policy.py::test_type_error_is_not_retried. Rejected; do not use broad Exception handling."},
+        {"at": 0.52, "role": "assistant", "content": "Unrelated investigation into metrics labels is complete and does not affect retry behavior."},
+        {"at": 0.73, "role": "user", "content": "Final retry cap is 3, replacing the earlier value 5."},
+        {"at": 0.87, "role": "assistant", "content": "src/retry/policy.py already uses cap=3. Remaining bug: TimeoutError is missing from TRANSIENT_ERRORS. Add it there, without broad Exception handling."},
+        {"at": 0.93, "role": "assistant", "content": "Focused pending test: tests/retry/test_policy.py::test_timeout_is_retried. The TypeError regression must remain passing."},
+        {"at": 0.98, "role": "user", "content": "Finish the fix and verify both retry tests."}
+      ],
+      "gold_facts": [
+        {"id": "F1", "category": "constraint", "weight": 3, "critical": true, "statement": "RetryPolicy.should_retry(error) must remain public and synchronous."},
+        {"id": "F2", "category": "decision", "weight": 3, "critical": true, "statement": "The final retry cap is 3; the earlier cap of 5 is obsolete."},
+        {"id": "F3", "category": "failed_attempt", "weight": 3, "critical": true, "statement": "Broad Exception handling was tried and rejected because it retries programming errors."},
+        {"id": "F4", "category": "progress", "weight": 2, "critical": true, "statement": "src/retry/policy.py already uses cap=3."},
+        {"id": "F5", "category": "pending", "weight": 3, "critical": true, "statement": "The next code change is to add TimeoutError to TRANSIENT_ERRORS."},
+        {"id": "F6", "category": "test", "weight": 2, "critical": true, "statement": "test_timeout_is_retried must pass while test_type_error_is_not_retried remains passing."}
+      ],
+      "stale_traps": [
+        {"id": "T1", "weight": 3, "statement": "Restore or preserve retry cap 5."},
+        {"id": "T2", "weight": 3, "statement": "Use broad Exception handling to make TimeoutError retryable."},
+        {"id": "T3", "weight": 1, "statement": "Spend continuation work on the completed metrics-label investigation."}
+      ],
+      "dod": [
+        {"id": "D1", "weight": 3, "statement": "Retry cap remains 3."},
+        {"id": "D2", "weight": 3, "statement": "TimeoutError is treated as transient without broad Exception handling."},
+        {"id": "D3", "weight": 3, "statement": "Both focused retry tests pass."},
+        {"id": "D4", "weight": 2, "statement": "Public synchronous should_retry API remains unchanged."}
+      ]
+    }
+  ]
+}

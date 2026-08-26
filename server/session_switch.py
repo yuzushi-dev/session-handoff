@@ -6,6 +6,7 @@ import errno
 import fcntl
 import hmac
 import json
+import math
 import os
 import pty
 import secrets
@@ -19,18 +20,101 @@ import tempfile
 import termios
 import time
 import tty
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from .migration import MigrationError, migrate_session
+    from .migration import MigrationError, migrate_session, migration_telemetry_summary
+    from . import telemetry
 except ImportError:
-    from migration import MigrationError, migrate_session
+    from migration import MigrationError, migrate_session, migration_telemetry_summary
+    import telemetry  # type: ignore[no-redef]
 
 CONTROL_PATH_ENV = "SESSION_HANDOFF_CONTROL"
 CONTROL_TOKEN_ENV = "SESSION_HANDOFF_CONTROL_TOKEN"
 REQUEST_LIMIT = 64 * 1024
 SUPPORTED_CLIENTS = {"codex", "claude"}
+TELEMETRY_PLUGIN_VERSION = "0.5"
+TELEMETRY_SUMMARY_FIELDS = frozenset(
+    {"handoff_bytes", "redacted_count", "dropped_events", "normalized_fields", "duration_seconds"}
+)
+
+
+def _safe_numeric_summary(summary: dict[str, Any] | None) -> dict[str, int | float]:
+    if summary is None:
+        return {}
+    if not isinstance(summary, dict) or not set(summary) <= TELEMETRY_SUMMARY_FIELDS:
+        raise ValueError("telemetry summary contains an unauthorized numeric field")
+    result: dict[str, int | float] = {}
+    for field, value in summary.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value < 0
+            or (isinstance(value, float) and not math.isfinite(value))
+        ):
+            raise ValueError("telemetry summary fields must be non-negative numeric values")
+        if field != "duration_seconds" and not isinstance(value, int):
+            raise ValueError("telemetry counts and bytes must be integers")
+        result[field] = value
+    return result
+
+
+def _operation_event(summary: dict[str, Any]) -> dict[str, Any]:
+    allowed = TELEMETRY_SUMMARY_FIELDS | {
+        "operation",
+        "source_client",
+        "target_client",
+        "result",
+        "failure_stage",
+    }
+    if not isinstance(summary, dict) or not set(summary) <= allowed:
+        raise ValueError("telemetry summary contains an unauthorized field")
+    safe = _safe_numeric_summary(
+        {field: summary[field] for field in summary if field in TELEMETRY_SUMMARY_FIELDS}
+    )
+    event = {
+        "schema_version": 1,
+        "event": "operation_summary",
+        "day_utc": datetime.now(timezone.utc).date().isoformat(),
+        "plugin_version": TELEMETRY_PLUGIN_VERSION,
+        "operation": summary["operation"],
+        "source_client": summary["source_client"],
+        "target_client": summary["target_client"],
+        "result": summary["result"],
+        "failure_stage": summary["failure_stage"],
+        "duration_bucket": telemetry.bucket_duration(safe.get("duration_seconds", 0)),
+        "handoff_bytes_bucket": telemetry.bucket_handoff_bytes(int(safe.get("handoff_bytes", 0))),
+        "redaction_bucket": telemetry.bucket_count(int(safe.get("redacted_count", 0))),
+        "dropped_events_bucket": telemetry.bucket_count(int(safe.get("dropped_events", 0))),
+        "normalized_fields_bucket": telemetry.bucket_count(int(safe.get("normalized_fields", 0))),
+    }
+    telemetry.validate_event(event)
+    return event
+
+
+def record_terminal_outcome(summary: dict[str, Any]) -> None:
+    """Record one validated, aggregate-only outcome before detached upload."""
+    try:
+        home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+        config = telemetry.load_config(home)
+        if config is None or not config["enabled"]:
+            return
+        event = _operation_event(summary)
+        telemetry.increment_counter(event, home=home)
+        telemetry.spawn_detached_flush(
+            home / telemetry.STATE_PATH / telemetry._QUEUE_NAME,
+            telemetry.config_path(home),
+        )
+    except (KeyError, OSError, TypeError, ValueError, telemetry.TelemetryConfigError):
+        return
+
+
+def _terminal_summary(summary: dict[str, Any], started: float) -> dict[str, Any]:
+    result = dict(summary)
+    result["duration_seconds"] = max(0.0, time.monotonic() - started)
+    return result
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
@@ -75,6 +159,8 @@ def write_switch_request(
     token: str,
     workspace: str,
     handoff_path: str,
+    *,
+    telemetry_summary: dict[str, Any] | None = None,
 ) -> None:
     """Publish an authenticated request for a fresh-session handoff."""
 
@@ -85,14 +171,15 @@ def write_switch_request(
 
     control, token = _control_credentials(control_path, token)
     root, path = _safe_path(workspace, handoff_path, must_exist=True)
-    _atomic_json_write(
-        control,
-        {
-            "token": token,
-            "workspace": str(root),
-            "path": path.relative_to(root).as_posix(),
-        },
-    )
+    payload = {
+        "token": token,
+        "workspace": str(root),
+        "path": path.relative_to(root).as_posix(),
+    }
+    safe_summary = _safe_numeric_summary(telemetry_summary)
+    if safe_summary:
+        payload["telemetry"] = safe_summary
+    _atomic_json_write(control, payload)
 
 
 def write_migration_request(
@@ -131,7 +218,7 @@ def write_migration_request(
     )
 
 
-def _read_switch_request(control: Path, token: str) -> dict[str, str] | None:
+def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
     try:
         from .handoff_mcp import HandoffError, _safe_path, _workspace_root
     except ImportError:
@@ -160,11 +247,14 @@ def _read_switch_request(control: Path, token: str) -> dict[str, str] | None:
             if not isinstance(path, str):
                 raise HandoffError("session switch request is incomplete")
             root, handoff = _safe_path(workspace, path, must_exist=True)
-            return {
+            request: dict[str, Any] = {
                 "mode": "handoff",
                 "workspace": str(root),
                 "path": handoff.relative_to(root).as_posix(),
             }
+            if "telemetry" in payload:
+                request["telemetry"] = _safe_numeric_summary(payload["telemetry"])
+            return request
 
         if mode == "migrate":
             root = _workspace_root(workspace)
@@ -557,6 +647,8 @@ class SessionSupervisor:
         current_executable = self._client_executable(current_client) or current_client
         current_args = _with_control_path(current_client, self.host_args, control)
         process = self._launch(current_client, current_executable, current_args, env)
+        pending_summary: dict[str, Any] | None = None
+        pending_started: float | None = None
 
         try:
             while True:
@@ -569,6 +661,15 @@ class SessionSupervisor:
                     request = None
 
                 if request and request["mode"] == "handoff":
+                    started = time.monotonic()
+                    if pending_summary is not None:
+                        record_terminal_outcome(
+                            _terminal_summary(
+                                pending_summary, pending_started or time.monotonic()
+                            )
+                        )
+                        pending_summary = None
+                        pending_started = None
                     self._terminate(process)
                     fresh_args = _fresh_session_args(
                         current_client,
@@ -576,27 +677,68 @@ class SessionSupervisor:
                         interactive=self.draft,
                     )
                     if self.draft:
-                        process = _DraftProcess(
-                            [current_executable, *fresh_args],
-                            env,
-                            request["workspace"],
-                            handoff_prompt(request["workspace"], request["path"]),
-                        )
-                    else:
-                        process = self._launch(
-                            current_client,
-                            current_executable,
-                            [
-                                *fresh_args,
+                        try:
+                            process = _DraftProcess(
+                                [current_executable, *fresh_args],
+                                env,
+                                request["workspace"],
                                 handoff_prompt(request["workspace"], request["path"]),
-                            ],
-                            env,
-                            cwd=request["workspace"],
-                        )
+                            )
+                        except (OSError, subprocess.SubprocessError):
+                            record_terminal_outcome({
+                                "operation": "handoff", "source_client": current_client,
+                                "target_client": current_client, "result": "failure",
+                                "failure_stage": "target_resume",
+                                **request.get("telemetry", {}),
+                                "duration_seconds": max(0.0, time.monotonic() - started),
+                            })
+                            return 1
+                    else:
+                        try:
+                            process = self._launch(
+                                current_client,
+                                current_executable,
+                                [
+                                    *fresh_args,
+                                    handoff_prompt(request["workspace"], request["path"]),
+                                ],
+                                env,
+                                cwd=request["workspace"],
+                            )
+                        except (OSError, subprocess.SubprocessError):
+                            record_terminal_outcome({
+                                "operation": "handoff", "source_client": current_client,
+                                "target_client": current_client, "result": "failure",
+                                "failure_stage": "target_resume",
+                                **request.get("telemetry", {}),
+                                "duration_seconds": max(0.0, time.monotonic() - started),
+                            })
+                            return 1
+                    pending_summary = {
+                        "operation": "handoff",
+                        "source_client": current_client,
+                        "target_client": current_client,
+                        "result": "success",
+                        "failure_stage": "none",
+                        "handoff_bytes": 0,
+                        "redacted_count": 0,
+                        "dropped_events": 0,
+                        "normalized_fields": 0,
+                        **request.get("telemetry", {}),
+                    }
+                    pending_started = started
                     current_args = fresh_args
                     continue
 
                 if request and request["mode"] == "migrate":
+                    if pending_summary is not None:
+                        record_terminal_outcome(
+                            _terminal_summary(
+                                pending_summary, pending_started or time.monotonic()
+                            )
+                        )
+                        pending_summary = None
+                        pending_started = None
                     source_client = request["source_client"]
                     target_client = request["target_client"]
                     source_session_id = request["source_session_id"]
@@ -607,6 +749,11 @@ class SessionSupervisor:
                             "session-handoff: migration request source does not match the active client",
                             file=sys.stderr,
                         )
+                        record_terminal_outcome({
+                            "operation": "migrate", "source_client": source_client,
+                            "target_client": target_client, "result": "failure",
+                            "failure_stage": "validation", "duration_seconds": 0,
+                        })
                         continue
                     target_executable = self._client_executable(target_client)
                     if not target_executable:
@@ -614,15 +761,26 @@ class SessionSupervisor:
                             f"session-handoff: target client executable not found: {target_client}",
                             file=sys.stderr,
                         )
+                        record_terminal_outcome({
+                            "operation": "migrate", "source_client": source_client,
+                            "target_client": target_client, "result": "failure",
+                            "failure_stage": "control", "duration_seconds": 0,
+                        })
                         continue
                     if not self._migration_available() and self.migrate is migrate_session:
                         print(
                             "session-handoff: session-migrate is not installed; migration was not started",
                             file=sys.stderr,
                         )
+                        record_terminal_outcome({
+                            "operation": "migrate", "source_client": source_client,
+                            "target_client": target_client, "result": "failure",
+                            "failure_stage": "conversion", "duration_seconds": 0,
+                        })
                         continue
 
                     self._terminate(process)
+                    started = time.monotonic()
                     try:
                         migration = self.migrate(
                             source_client,
@@ -641,13 +799,34 @@ class SessionSupervisor:
                             _resume_args(source_client, source_session_id),
                             control,
                         )
-                        process = self._launch(
-                            source_client,
-                            current_executable,
-                            rollback_args,
-                            env,
-                            cwd=workspace,
-                        )
+                        fallback_summary = {
+                            "operation": "migrate",
+                            "source_client": source_client,
+                            "target_client": target_client,
+                            "result": "fallback",
+                            "failure_stage": "conversion",
+                            "dropped_events": 0,
+                            "normalized_fields": 0,
+                            "duration_seconds": 0,
+                        }
+                        try:
+                            process = self._launch(
+                                source_client,
+                                current_executable,
+                                rollback_args,
+                                env,
+                                cwd=workspace,
+                            )
+                        except (OSError, subprocess.SubprocessError):
+                            record_terminal_outcome({
+                                **fallback_summary,
+                                "result": "failure",
+                                "failure_stage": "source_resume",
+                                "duration_seconds": max(0.0, time.monotonic() - started),
+                            })
+                            return 1
+                        pending_summary = fallback_summary
+                        pending_started = started
                         current_args = rollback_args
                         continue
 
@@ -671,17 +850,45 @@ class SessionSupervisor:
                         _resume_args(target_client, migration["session_id"]),
                         control,
                     )
-                    process = self._launch(
-                        current_client,
-                        current_executable,
-                        current_args,
-                        env,
-                        cwd=workspace,
-                    )
+                    pending_summary = {
+                        "operation": "migrate",
+                        "source_client": source_client,
+                        "target_client": target_client,
+                        "result": "success",
+                        "failure_stage": "none",
+                        **migration_telemetry_summary(migration),
+                    }
+                    pending_started = started
+                    try:
+                        process = self._launch(
+                            current_client,
+                            current_executable,
+                            current_args,
+                            env,
+                            cwd=workspace,
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        record_terminal_outcome({
+                            **_terminal_summary(pending_summary, pending_started or time.monotonic()),
+                            "result": "failure",
+                            "failure_stage": "target_resume",
+                        })
+                        return 1
                     continue
 
                 status = process.poll()
                 if status is not None:
+                    if pending_summary is not None:
+                        terminal = _terminal_summary(
+                            pending_summary, pending_started or time.monotonic()
+                        )
+                        if status != 0 and terminal["result"] == "success":
+                            terminal["result"] = "failure"
+                            terminal["failure_stage"] = "target_resume"
+                        elif status != 0 and terminal["result"] == "fallback":
+                            terminal["result"] = "failure"
+                            terminal["failure_stage"] = "source_resume"
+                        record_terminal_outcome(terminal)
                     return status
                 self.sleep(self.poll_interval)
         finally:

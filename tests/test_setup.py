@@ -65,6 +65,28 @@ def test_setup_installs_skill_mcp_registration_and_launcher(tmp_path):
     assert result["installed"] is True
 
 
+def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
+    package = tmp_path / "package"
+    bundle = tmp_path / "bundle"
+    for name in ("bin", "commands", "server", "skills", ".claude-plugin", ".codex-plugin"):
+        path = package / name
+        path.mkdir(parents=True)
+        (path / "kept.txt").write_text("kept", encoding="utf-8")
+    for name in (".mcp.json", "mcp.json", "plugin.json", "README.md"):
+        (package / name).write_text("kept", encoding="utf-8")
+    for name in ("benchmark/results", "benchmark/generated", ".sando", "notes"):
+        path = package / name
+        path.mkdir(parents=True)
+        (path / "excluded.txt").write_text("excluded", encoding="utf-8")
+
+    staging = _setup_impl._stage_bundle(package, bundle)
+
+    assert (staging / "server/kept.txt").is_file()
+    assert not (staging / "benchmark").exists()
+    assert not (staging / ".sando").exists()
+    assert not (staging / "notes").exists()
+
+
 def test_setup_is_idempotent_and_preserves_existing_skill(tmp_path):
     package = Path(__file__).parents[1]
     home = tmp_path / "home"
