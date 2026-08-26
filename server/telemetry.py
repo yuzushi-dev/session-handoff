@@ -84,12 +84,7 @@ STATE_PATH = Path(".local/state/session-handoff")
 # Rate-limited at nginx (30 req/min/IP). Release/broader publication is
 # still gated on the open items in docs/telemetry-canary-report.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
-DISCLOSURE = f"""Anonymous aggregate telemetry is opt-in.
-Collected fields: schema_version, event, day_utc, plugin_version, operation, source_client, target_client, result, failure_stage, duration_bucket, handoff_bytes_bucket, redaction_bucket, dropped_events_bucket, normalized_fields_bucket, feedback_category, feedback_severity.
-No transcript, prompt, handoff text, tool trace, command, diff, path, session ID, installation ID, device ID, account ID, hostname, username, IP address, model name, metadata, exception, credentials, token, cookie, or authorization data is collected.
-Local aggregate data is retained for up to 7 days. The endpoint is {ENDPOINT}.
-Telemetry is an opt-in sample and may not represent all users. Aggregate rows cannot be attributed to or deleted for one contributor.
-"""
+CONSENT_PROMPT = "Enable anonymous telemetry? Full details at: docs/telemetry.md [y/N] "
 
 
 class TelemetryConfigError(ValueError):
@@ -571,9 +566,8 @@ def request_consent(home, *, interactive, input_fn=None):
         return current
     if not interactive:
         raise TelemetryConfigError("telemetry consent requires an interactive terminal")
-    print(DISCLOSURE)
     try:
-        answer = (input if input_fn is None else input_fn)("Enable anonymous aggregate telemetry? [y/N] ")
+        answer = (input if input_fn is None else input_fn)(CONSENT_PROMPT)
     except (EOFError, KeyboardInterrupt):
         answer = ""
         print()

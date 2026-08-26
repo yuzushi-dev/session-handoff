@@ -67,7 +67,24 @@ def test_enable_requires_interactive_explicit_yes(tmp_path, capsys, monkeypatch)
     assert cli._telemetry(["enable"]) == 0
     config = json.loads((tmp_path / CONFIG).read_text(encoding="utf-8"))
     assert config["enabled"] is True
-    assert "Collected fields" in capsys.readouterr().out
+    assert "Telemetry consent recorded." in capsys.readouterr().out
+
+
+def test_enable_prompt_points_to_docs_instead_of_inline_disclosure(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    seen_prompt = {}
+
+    def input_fn(prompt):
+        seen_prompt["text"] = prompt
+        return "no"
+
+    monkeypatch.setattr(builtins, "input", input_fn)
+
+    assert cli._telemetry(["enable"]) == 0
+    assert "docs/telemetry.md" in seen_prompt["text"]
+    assert "Collected fields" not in seen_prompt["text"]
 
 
 def test_enable_reenables_disabled_marker_with_explicit_yes(tmp_path, monkeypatch):
