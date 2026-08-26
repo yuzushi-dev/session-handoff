@@ -1,10 +1,13 @@
 {
   "name": "session-handoff",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Install and run automatic handoffs for Codex and Claude.",
   "license": "MIT",
   "bin": {
     "session-handoff": "bin/session-handoff"
+  },
+  "scripts": {
+    "postinstall": "python3 bin/session-handoff _telemetry-postinstall || true"
   },
   "files": [
     "bin/session-handoff",

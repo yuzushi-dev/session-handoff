@@ -1420,3 +1420,84 @@ def test_telemetry_report_deduplicates_same_feedback(tmp_path, monkeypatch):
 
     assert cli._telemetry(args) == 0
     assert cli._telemetry(args) == 1
+
+
+class FakeStdout:
+    def __init__(self, interactive):
+        self.interactive = interactive
+        self.buffer = []
+
+    def isatty(self):
+        return self.interactive
+
+    def write(self, text):
+        self.buffer.append(text)
+
+
+def test_postinstall_skips_without_a_real_tty(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(False))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+
+    assert cli._telemetry_postinstall() == 0
+    assert not (tmp_path / CONFIG).exists()
+
+
+def test_postinstall_skip_env_var_short_circuits_even_with_a_real_tty(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setenv("SESSION_HANDOFF_SKIP_TELEMETRY_PROMPT", "1")
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")))
+
+    assert cli._telemetry_postinstall() == 0
+    assert not (tmp_path / CONFIG).exists()
+
+
+def test_postinstall_interactive_yes_enables_telemetry(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: "yes")
+
+    assert cli._telemetry_postinstall() == 0
+    config = json.loads((tmp_path / CONFIG).read_text(encoding="utf-8"))
+    assert config["enabled"] is True
+
+
+def test_postinstall_declined_consent_records_disabled_marker(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: "no")
+
+    assert cli._telemetry_postinstall() == 0
+    config = json.loads((tmp_path / CONFIG).read_text(encoding="utf-8"))
+    assert config["enabled"] is False
+
+
+def test_postinstall_never_reprompts_once_a_config_exists(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+    calls = []
+    monkeypatch.setattr(builtins, "input", lambda _prompt: calls.append(1) or "no")
+
+    assert cli._telemetry_postinstall() == 0
+    assert cli._telemetry_postinstall() == 0
+    assert len(calls) == 1
+
+
+def test_postinstall_swallows_unexpected_errors(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout(True))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert cli._telemetry_postinstall() == 0

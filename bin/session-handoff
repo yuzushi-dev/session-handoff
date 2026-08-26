@@ -98,6 +98,28 @@ def _telemetry(argv: list[str]) -> int:
         return 1
 
 
+def _telemetry_postinstall() -> int:
+    """npm postinstall hook: one-time, local-only consent prompt.
+
+    Never fails or hangs `npm install`: every path returns 0, every error is
+    swallowed. No network call happens here -- upload only ever happens
+    later, if enabled, from the product's own telemetry paths.
+    """
+    if os.environ.get("SESSION_HANDOFF_SKIP_TELEMETRY_PROMPT"):
+        return 0
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return 0  # CI, --ignore-scripts consumers, piped installs, etc.
+    home = _home()
+    try:
+        if telemetry.load_config(home) is not None:
+            return 0  # already prompted at least once; never re-ask on reinstall/upgrade
+        result = telemetry.request_consent(home, interactive=True, input_fn=input)
+        print("telemetry enabled." if result["enabled"] else "telemetry not enabled.")
+    except Exception:
+        pass
+    return 0
+
+
 def _setup(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="session-handoff setup",
@@ -227,6 +249,8 @@ def main() -> int:
         return doctor_main(sys.argv[2:])
     if sys.argv[1:2] == ["telemetry"]:
         return _telemetry(sys.argv[2:])
+    if sys.argv[1:2] == ["_telemetry-postinstall"]:
+        return _telemetry_postinstall()
     parser = argparse.ArgumentParser(
         description="Run Codex or Claude and automatically relaunch after a handoff."
     )
