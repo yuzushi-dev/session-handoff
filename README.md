@@ -28,6 +28,12 @@ npx session-handoff@latest doctor --pretty
 `ready: true` requires the managed launcher, installed skill, MCP registration,
 client executable, and optional migration backend for all four documented flows.
 
+### Telemetry
+
+`npm install` asks once, interactively, whether to enable anonymous
+aggregate telemetry — opt-in, off by default, no transcript/path/session
+content ever collected. See [docs/telemetry.md](docs/telemetry.md).
+
 ## Clean handoff
 
 Launch Codex or Claude normally after setup, then use:
