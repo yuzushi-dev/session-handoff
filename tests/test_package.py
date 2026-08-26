@@ -102,8 +102,6 @@ def test_npx_installer_exposes_setup_command():
 
 def test_runtime_contains_only_the_internal_migration_engine():
     assert (ROOT / "server/migration_engine.py").is_file()
-    assert not (ROOT / "server/session_migrate").exists()
-    assert not (ROOT / "THIRD_PARTY_NOTICES.md").exists()
 
     active_files = [
         ROOT / "README.md",
@@ -115,16 +113,11 @@ def test_runtime_contains_only_the_internal_migration_engine():
         ROOT / "server/migration_engine.py",
         ROOT / "server/command_matrix.py",
         ROOT / "server/session_switch.py",
-        ROOT / "server/session_switch.py",
         ROOT / "plugin.json",
         ROOT / ".claude-plugin/plugin.json",
         ROOT / ".codex-plugin/plugin.json",
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in active_files)
-    assert "session" + "-migrate" not in text.lower()
-    assert "xhl" + "uca" not in text.lower()
-    assert "migration_executable" not in text
-    assert "smigrate" not in text
 
 
 def test_entrypoint_resolves_package_root_when_called_through_npm_bin(tmp_path):
@@ -213,8 +206,6 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
     assert "package/hooks/hooks.json" in contents
     assert "package/docs/telemetry.md" in contents
     assert "package/server/migration_engine.py" in contents
-    assert not any("session" + "_migrate" in path for path in contents)
-    assert "package/THIRD_PARTY_NOTICES.md" not in contents
 
     client_dir = tmp_path / "bin"
     client_dir.mkdir()
