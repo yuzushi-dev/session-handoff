@@ -19,7 +19,9 @@
     ".mcp.json",
     "mcp.json",
     "plugin.json",
-    "README.md"
+    "README.md",
+    "hooks/",
+    "docs/telemetry.md"
   ],
   "engines": {
     "node": ">=18",

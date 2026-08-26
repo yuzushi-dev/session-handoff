@@ -1,0 +1,18 @@
+{
+  "description": "One-time anonymous telemetry opt-in reminder.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking telemetry status"
+          }
+        ]
+      }
+    ]
+  }
+}

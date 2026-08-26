@@ -24,6 +24,8 @@ BUNDLE_ENTRIES = (
     "mcp.json",
     "plugin.json",
     "README.md",
+    "hooks",
+    "docs/telemetry.md",
     "bin",
     "commands",
     "server",
@@ -128,6 +130,7 @@ def _stage_bundle(package_root: Path, bundle: Path) -> Path:
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
                 )
             elif source.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
     except BaseException:
         _remove(staging)

@@ -68,12 +68,13 @@ def test_setup_installs_skill_mcp_registration_and_launcher(tmp_path):
 def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
     package = tmp_path / "package"
     bundle = tmp_path / "bundle"
-    for name in ("bin", "commands", "server", "skills", ".claude-plugin", ".codex-plugin"):
+    for name in ("bin", "commands", "server", "skills", "hooks", "docs", ".claude-plugin", ".codex-plugin"):
         path = package / name
         path.mkdir(parents=True)
         (path / "kept.txt").write_text("kept", encoding="utf-8")
     for name in (".mcp.json", "mcp.json", "plugin.json", "README.md"):
         (package / name).write_text("kept", encoding="utf-8")
+    (package / "docs/telemetry.md").write_text("kept", encoding="utf-8")
     for name in ("benchmark/results", "benchmark/generated", ".sando", "notes"):
         path = package / name
         path.mkdir(parents=True)

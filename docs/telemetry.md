@@ -44,6 +44,10 @@ event" — a contributor's rows can't be individually deleted.
 
 ## Controlling it
 
+For marketplace installs, the plugin shows a non-blocking reminder at session
+start until a choice is recorded. It never opens an interactive prompt from a
+hook and never sends telemetry during the reminder.
+
 ```sh
 session-handoff telemetry status
 session-handoff telemetry enable    # interactive only, asks yes/no
