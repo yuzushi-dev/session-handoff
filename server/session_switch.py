@@ -613,11 +613,6 @@ class SessionSupervisor:
     def _client_executable(self, client: str) -> str | None:
         return self.client_executables.get(client) or shutil.which(client)
 
-    def _migration_available(self) -> bool:
-        if self.migration_executable:
-            return True
-        return bool(shutil.which("smigrate") or shutil.which("session-migrate"))
-
     def _launch(
         self,
         client: str,
@@ -767,18 +762,6 @@ class SessionSupervisor:
                             "failure_stage": "control", "duration_seconds": 0,
                         })
                         continue
-                    if not self._migration_available() and self.migrate is migrate_session:
-                        print(
-                            "session-handoff: session-migrate is not installed; migration was not started",
-                            file=sys.stderr,
-                        )
-                        record_terminal_outcome({
-                            "operation": "migrate", "source_client": source_client,
-                            "target_client": target_client, "result": "failure",
-                            "failure_stage": "conversion", "duration_seconds": 0,
-                        })
-                        continue
-
                     self._terminate(process)
                     started = time.monotonic()
                     try:

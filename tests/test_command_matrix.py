@@ -43,7 +43,6 @@ def test_command_matrix_proves_all_four_provider_free_flows(tmp_path):
     result = probe_command_matrix(
         home,
         runner=successful_runner,
-        migration_executable="session-migrate",
     )
 
     assert result["ready"] is True
@@ -73,7 +72,6 @@ def test_command_matrix_fails_closed_when_one_mcp_registration_is_missing(tmp_pa
     result = probe_command_matrix(
         home,
         runner=runner,
-        migration_executable="session-migrate",
     )
 
     assert result["ready"] is False
@@ -93,8 +91,6 @@ def test_doctor_cli_emits_the_same_content_free_matrix(tmp_path):
             "doctor",
             "--home",
             str(home),
-            "--migration-executable",
-            "session-migrate",
         ],
         text=True,
         capture_output=True,

@@ -56,7 +56,6 @@ def test_real_long_codex_session_migrates_without_mutating_source(tmp_path, monk
         "claude",
         session_id,
         str(tmp_path),
-        executable=os.environ.get("SESSION_HANDOFF_MIGRATOR", "session-migrate"),
         target_session_id=target_id,
         target_home=str(target_home),
     )

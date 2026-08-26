@@ -1,15 +1,76 @@
 import hashlib
 import json
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
+from benchmark.native_seed import seed_native_session
+import server.migration_engine as migration_engine
 from server.migration import (
     MigrationError,
     _normalize_codex_target,
     migrate_session,
     migration_telemetry_summary,
 )
+
+
+def test_internal_writer_removes_partial_target_after_write_failure(tmp_path, monkeypatch):
+    output = tmp_path / "target/session.jsonl"
+    manifest = tmp_path / "manifest/result.json"
+    real_fdopen = migration_engine.os.fdopen
+
+    class FailingHandle:
+        def __init__(self, descriptor, mode):
+            self.handle = real_fdopen(descriptor, mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def write(self, _content):
+            raise OSError("simulated write failure")
+
+    monkeypatch.setattr(migration_engine.os, "fdopen", FailingHandle)
+
+    with pytest.raises(OSError, match="simulated"):
+        migration_engine._write_pair(output, b"target", manifest, b"manifest")
+
+    assert not output.exists()
+    assert not manifest.exists()
+
+
+def test_migrate_session_is_self_contained_and_does_not_invoke_external_backend(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source_home = tmp_path / "claude"
+    seed_native_session(
+        "claude",
+        source_home,
+        "50000000-0000-4000-8000-000000000010",
+        workspace,
+        "bundled migration marker",
+    )
+
+    def external_backend_must_not_run(*_args, **_kwargs):
+        raise AssertionError("migrate must not invoke an external backend")
+
+    result = migrate_session(
+        "claude",
+        "codex",
+        "50000000-0000-4000-8000-000000000010",
+        str(workspace),
+        executable="does-not-exist",
+        source_home=str(source_home),
+        target_session_id="60000000-0000-4000-8000-000000000010",
+        target_home=str(tmp_path / "codex"),
+        runner=external_backend_must_not_run,
+    )
+
+    assert result["source_format"] == "claude"
+    assert result["target_format"] == "codex"
+    assert "bundled migration marker" in Path(result["output"]).read_text(encoding="utf-8")
 
 
 def _write_codex_target(tmp_path, records):
@@ -133,105 +194,34 @@ def test_codex_target_normalization_rejects_manifest_checksum_mismatch(tmp_path)
         )
 
 
-def test_migrate_session_uses_one_target_id_for_dry_run_and_apply(tmp_path):
-    calls = []
-    target_home = tmp_path / "target"
-    output = target_home / "sessions/2026/08/25/rollout-target-id.jsonl"
-    manifest = target_home / "session-migrate/manifests/target-id.json"
+def test_migrate_session_refuses_existing_target_without_overwrite(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source_home = tmp_path / "claude"
+    source_id = "50000000-0000-4000-8000-000000000011"
+    target_id = "60000000-0000-4000-8000-000000000011"
+    seed_native_session("claude", source_home, source_id, workspace, "collision marker")
 
-    def runner(argv, **kwargs):
-        calls.append((argv, kwargs))
-        dry_run = "--dry-run" in argv
-        if not dry_run:
-            output.parent.mkdir(parents=True)
-            records = [
-                {
-                    "type": "session_meta",
-                    "payload": {"id": "target-id", "session_id": "target-id"},
-                },
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "fixture"}],
-                    },
-                },
-            ]
-            output.write_text(
-                "\n".join(json.dumps(record) for record in records) + "\n",
-                encoding="utf-8",
-            )
-            manifest.parent.mkdir(parents=True)
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "target": {
-                            "session_id": "target-id",
-                            "path": str(output),
-                            "records": len(records),
-                            "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-        payload = {
-            "source_format": "claude",
-            "target_format": "codex",
-            "session_id": "target-id",
-            "dry_run": dry_run,
-            "warnings": [{"kind": "fixture"}],
-            "dropped_events": {"thinking:unsupported": 1},
-            "manifest": str(manifest) if not dry_run else None,
-            "output": str(output) if not dry_run else None,
-        }
-        return SimpleNamespace(returncode=0, stdout=json.dumps(payload) + "\n", stderr="")
-
-    result = migrate_session(
+    migrate_session(
         "claude",
         "codex",
-        "source-id",
-        str(tmp_path),
-        executable="smigrate",
-        target_session_id="target-id",
-        target_home=str(target_home),
-        runner=runner,
+        source_id,
+        str(workspace),
+        source_home=str(source_home),
+        target_session_id=target_id,
+        target_home=str(tmp_path / "codex"),
     )
 
-    assert len(calls) == 2
-    assert calls[0][0][0:3] == ["smigrate", "transfer", "source-id"]
-    assert calls[0][0][-1] == "--dry-run"
-    assert "--dry-run" not in calls[1][0]
-    for argv, kwargs in calls:
-        session_index = argv.index("--session-id")
-        assert argv[session_index + 1] == "target-id"
-        assert kwargs["cwd"] == str(tmp_path)
-    assert result["session_id"] == "target-id"
-    assert result["warnings"] == [{"kind": "fixture"}]
-    assert result["dropped_events"] == {"thinking:unsupported": 1}
-
-
-def test_migrate_session_stops_before_apply_when_dry_run_fails(tmp_path):
-    calls = []
-
-    def runner(argv, **kwargs):
-        calls.append(argv)
-        return SimpleNamespace(returncode=2, stdout="", stderr="dry-run failed")
-
-    with pytest.raises(MigrationError, match="dry-run failed"):
+    with pytest.raises(MigrationError, match="existing target"):
         migrate_session(
-            "codex",
             "claude",
-            "source-id",
-            str(tmp_path),
-            executable="smigrate",
-            target_session_id="target-id",
-            runner=runner,
+            "codex",
+            source_id,
+            str(workspace),
+            source_home=str(source_home),
+            target_session_id=target_id,
+            target_home=str(tmp_path / "codex"),
         )
-
-    assert len(calls) == 1
-    assert "--dry-run" in calls[0]
 
 
 def test_migrate_session_rejects_same_client(tmp_path):
@@ -242,33 +232,6 @@ def test_migrate_session_rejects_same_client(tmp_path):
             "source-id",
             str(tmp_path),
             executable="smigrate",
-        )
-
-
-def test_migrate_session_rejects_loss_report_changed_after_dry_run(tmp_path):
-    def runner(argv, **_kwargs):
-        dry_run = "--dry-run" in argv
-        payload = {
-            "source_format": "claude",
-            "target_format": "codex",
-            "session_id": "target-id",
-            "dry_run": dry_run,
-            "warnings": [],
-            "dropped_events": {"tool_result:unsupported": 1 if dry_run else 2},
-            "manifest": "/tmp/manifest.json",
-            "output": "/tmp/target.jsonl",
-        }
-        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
-
-    with pytest.raises(MigrationError, match="loss report changed"):
-        migrate_session(
-            "claude",
-            "codex",
-            "source-id",
-            str(tmp_path),
-            executable="smigrate",
-            target_session_id="target-id",
-            runner=runner,
         )
 
 

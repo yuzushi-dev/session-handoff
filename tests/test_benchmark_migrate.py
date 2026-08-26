@@ -21,7 +21,6 @@ def test_migrate_condition_executes_native_codex_to_claude_transfer(tmp_path, mo
         "claude",
         SESSION_ID,
         str(tmp_path),
-        executable="session-migrate",
         target_session_id=target_id,
         target_home=str(target_home),
     )
@@ -101,7 +100,6 @@ def test_migrate_condition_executes_real_writer_in_both_directions(tmp_path, mon
         "claude",
         SESSION_ID,
         str(tmp_path),
-        executable="session-migrate",
         target_session_id="20000000-0000-4000-8000-000000000003",
         target_home=str(claude_home),
     )
@@ -113,7 +111,6 @@ def test_migrate_condition_executes_real_writer_in_both_directions(tmp_path, mon
         "codex",
         forward["session_id"],
         str(tmp_path),
-        executable="session-migrate",
         source_home=str(claude_home),
         target_session_id="30000000-0000-4000-8000-000000000003",
         target_home=str(tmp_path / "roundtrip-codex"),

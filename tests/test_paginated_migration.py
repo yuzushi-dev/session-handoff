@@ -149,7 +149,6 @@ def test_migrate_session_uses_paginated_projection_and_real_claude_writer(tmp_pa
         "claude",
         SESSION_ID,
         str(tmp_path),
-        executable="session-migrate",
         target_session_id="20000000-0000-4000-8000-000000000001",
         target_home=str(target_home),
     )

@@ -8,7 +8,7 @@ description: Create or resume an exact handoff document, or migrate an active co
 Use this skill to move work between coding-agent sessions. Choose between a semantic handoff and a native migration based on what the user wants to preserve.
 
 - A handoff carries implementation state into a clean session and intentionally leaves old transcript noise behind.
-- A migration preserves the portable native conversation history and moves it between Claude Code and Codex through the optional `session-migrate` backend.
+- A migration preserves the portable native conversation history and moves it between Claude Code and Codex through session-handoff's internal engine.
 
 In Codex, invoke it explicitly as `$session-handoff` or use the installed skill from the slash/menu surface when available. In Claude, the setup command installs a user-scoped `/session-handoff` adapter.
 
@@ -26,7 +26,7 @@ The one-time `npx session-handoff setup` command installs a persistent plugin bu
 
 For create mode, the launcher starts a fresh session after `handoff_create` succeeds and leaves `reference [<handoff-path>] riparti da qui` pre-filled but unsent in the chat.
 
-For migrate mode, the launcher terminates the source client before invoking `session-migrate`, runs a dry-run and apply with the same generated target session ID, then starts the target client with its native resume command. If migration fails after the source client is stopped, the launcher resumes the original source session. The source native session is not modified by the migration backend.
+For migrate mode, the launcher terminates the source client before conversion, creates the target with a generated session ID, then starts the target client with its native resume command. If migration fails after the source client is stopped, the launcher resumes the original source session. The source native session is not modified by conversion.
 
 If the managed launcher is not active, do not claim that an automatic switch or migration occurred.
 
@@ -90,7 +90,7 @@ If a section has no entries, write `- None identified.` rather than removing the
 
 ## Migrate mode
 
-Migrate mode currently supports only Claude Code ↔ Codex. `session-migrate` remains an optional external backend; normal handoffs must continue to work when it is absent.
+Migrate mode currently supports only Claude Code ↔ Codex and requires the managed launcher installed by Managed setup.
 
 1. Identify the active source client from the current harness. The requested target must be the other supported client.
 2. Resolve the exact native ID from the active client process. In Codex, run `printenv CODEX_THREAD_ID`. In Claude Code, run `printenv CLAUDE_CODE_SESSION_ID`.
@@ -98,7 +98,7 @@ Migrate mode currently supports only Claude Code ↔ Codex. `session-migrate` re
 4. Resolve the absolute current workspace.
 5. Call `handoff_migrate` with `workspace`, `source_client`, `target_client`, and `source_session_id`.
 6. If the result has `auto_switch_requested: true`, stop working in the source session. The supervisor will terminate this client, run the native migration, and open the target with its generated session ID.
-7. If `auto_switch_requested` is false, report that migrate mode requires the managed launcher and include the returned reason. Do not invoke `session-migrate` against a transcript that the active client may still be appending to.
+7. If `auto_switch_requested` is false, report that migrate mode requires the managed launcher and include the returned reason. Do not convert a transcript that the active client may still be appending to.
 
 The supervisor prints the migration's content-free `warnings` and `dropped_events` summary before opening the target. Treat any such counters as evidence that some source-native structures were transformed or omitted.
 

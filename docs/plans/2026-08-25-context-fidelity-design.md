@@ -12,7 +12,7 @@ These contracts stay separate. A migration does not masquerade as a clean semant
 
 ## Architecture and data flow
 
-The installed skill remains the command surface: `$session-handoff` in Codex and `/session-handoff` in Claude. `handoff_create` validates, redacts, writes atomically, and asks the managed launcher for a fresh same-harness session. `handoff_migrate` sends an authenticated control request; the supervisor stops the source, invokes `session-migrate`, and resumes either the target or the original source after failure.
+The installed skill remains the command surface: `$session-handoff` in Codex and `/session-handoff` in Claude. `handoff_create` validates, redacts, writes atomically, and asks the managed launcher for a fresh same-harness session. `handoff_migrate` sends an authenticated control request; the supervisor stops the source, invokes the internal migration engine, and resumes either the target or the original source after failure.
 
 The fidelity benchmark has four deterministic layers around provider runs:
 

@@ -420,7 +420,7 @@ TOOLS = [
     },
     {
         "name": "handoff_migrate",
-        "description": "Request a supervised native-session migration from Claude to Codex or Codex to Claude. The launcher stops the source client before invoking session-migrate and resumes the source session if migration fails.",
+        "description": "Request a supervised native-session migration from Claude to Codex or Codex to Claude. The launcher stops the source client before conversion and resumes the source session if migration fails.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,

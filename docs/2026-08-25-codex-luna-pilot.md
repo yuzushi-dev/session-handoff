@@ -35,7 +35,7 @@ latency samples are single-run observations, not comparative estimates.
 3. A visible test could pass after restoring both code and assertion to a stale
    value. Every fixture now supplies a gold-bearing acceptance command hidden
    from the model; malformed acceptance fails before any provider call.
-4. `session-migrate` 0.7.1 emitted adjacent duplicate Claude→Codex user records.
+4. The migration engine emitted adjacent duplicate Claude→Codex user records.
    The adapter retains the native `response_item`, removes the duplicate
    `event_msg`, rehashes the target manifest, and reports the normalization.
 5. Verification inherited host files, environment, and network access. Visible

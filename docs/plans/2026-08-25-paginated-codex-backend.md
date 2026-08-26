@@ -4,9 +4,9 @@
 
 **Goal:** Convert Codex paginated thread history into a new Claude native session without modifying the Codex source.
 
-**Architecture:** Read the canonical `thread_items` projection from `thread_history_1.sqlite`, project supported items into a temporary legacy Codex JSONL view, then delegate the tested Claude writer and installer to `session-migrate`. The source remains read-only; every unsupported paginated item is counted and the generated target uses a fresh UUID.
+**Architecture:** Read the canonical `thread_items` projection from `thread_history_1.sqlite`, project supported items into a temporary legacy Codex JSONL view, then use the internal Claude writer. The source remains read-only; every unsupported paginated item is counted and the generated target uses a fresh UUID.
 
-**Tech Stack:** Python 3.10+, stdlib `sqlite3`/`json`, pytest, installed `session-migrate` CLI.
+**Tech Stack:** Python 3.10+, stdlib `sqlite3`/`json`, pytest, bundled migration engine.
 
 ---
 

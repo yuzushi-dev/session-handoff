@@ -160,13 +160,18 @@ if not generation:
         if not marker.exists():
             if client == "codex":
                 import sqlite3
-                connection = sqlite3.connect(native_home / "thread_history_1.sqlite")
-                try:
-                    found = connection.execute(
-                        "SELECT 1 FROM thread_items WHERE thread_id = ?", (session_id,)
-                    ).fetchone()
-                finally:
-                    connection.close()
+                database = native_home / "thread_history_1.sqlite"
+                found = None
+                if database.is_file():
+                    connection = sqlite3.connect(database)
+                    try:
+                        found = connection.execute(
+                            "SELECT 1 FROM thread_items WHERE thread_id = ?", (session_id,)
+                        ).fetchone()
+                    finally:
+                        connection.close()
+                if not found:
+                    found = list(native_home.rglob("rollout-*.jsonl"))
                 if not found:
                     raise SystemExit(8)
             elif not list(native_home.rglob(session_id + ".jsonl")):
@@ -258,7 +263,7 @@ if "--dry-run" not in args:
             {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fixture"}]}},
         ]
         output_path.write_text("\\n".join(json.dumps(record) for record in records) + "\\n", encoding="utf-8")
-        manifest_path = root / "session-migrate/manifests" / (session_id + ".json")
+        manifest_path = root / "session-handoff/manifests" / (session_id + ".json")
         manifest_path.parent.mkdir(parents=True)
         manifest_path.write_text(json.dumps({"target": {"session_id": session_id, "path": str(output_path), "records": len(records), "sha256": hashlib.sha256(output_path.read_bytes()).hexdigest()}}), encoding="utf-8")
         output = str(output_path)
@@ -313,8 +318,6 @@ def command(
         str(claude),
         "--codex-executable",
         str(codex),
-        "--migration-executable",
-        str(migration),
         "--credential-mode",
         "environment",
         "--pass-env",
@@ -521,11 +524,8 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert mapping[state["blind_id"]]["condition"] == condition
     if condition == "migrate":
         provenance = state["provenance"]
-        assert provenance["migration_executable"] == str(migration.resolve())
-        assert provenance["migration_sha256"] == hashlib.sha256(
-            migration.read_bytes()
-        ).hexdigest()
-        assert provenance["migration_version"] == "migration-fake 1.0"
+        assert provenance["migration_engine"] == "session-handoff"
+        assert provenance["migration_version"] == "0.5.4"
 
 
 def test_hidden_acceptance_controls_automated_task_success(tmp_path):
@@ -768,7 +768,6 @@ def test_context_ready_remains_resumable_after_handoff_generation(
         band="short",
         condition="handoff",
         replicate=1,
-        migration_executable="migration-fake",
         sandbox_executable="bwrap",
         credential_mode="environment",
         pass_env=[],

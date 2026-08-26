@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -34,9 +33,8 @@ def _load_state(home: Path) -> dict[str, Any]:
 
 
 def _migration_available(explicit: str | None) -> bool:
-    if explicit:
-        return bool(shutil.which(explicit) or Path(explicit).is_file())
-    return bool(shutil.which("smigrate") or shutil.which("session-migrate"))
+    del explicit
+    return True
 
 
 def probe_command_matrix(

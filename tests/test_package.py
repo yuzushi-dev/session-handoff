@@ -19,7 +19,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.5.3"
+    assert portable["version"] == codex["version"] == claude["version"] == "0.5.4"
     assert set(portable) <= {
         "$schema",
         "name",
@@ -98,6 +98,29 @@ def test_npx_installer_exposes_setup_command():
     assert "doctor" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
     assert (ROOT / "server/setup.py").is_file()
     assert (ROOT / "server/command_matrix.py").is_file()
+
+
+def test_runtime_contains_only_the_internal_migration_engine():
+    assert (ROOT / "server/migration_engine.py").is_file()
+    assert not (ROOT / "server/session_migrate").exists()
+    assert not (ROOT / "THIRD_PARTY_NOTICES.md").exists()
+
+    active_files = [
+        ROOT / "README.md",
+        ROOT / "package.json",
+        ROOT / "commands/handoff.md",
+        ROOT / "skills/session-handoff/SKILL.md",
+        ROOT / "server/handoff_mcp.py",
+        ROOT / "server/migration.py",
+        ROOT / "server/migration_engine.py",
+        ROOT / "server/session_switch.py",
+        ROOT / "plugin.json",
+        ROOT / ".claude-plugin/plugin.json",
+        ROOT / ".codex-plugin/plugin.json",
+    ]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in active_files)
+    assert "session" + "-migrate" not in text.lower()
+    assert "xhl" + "uca" not in text.lower()
 
 
 def test_entrypoint_resolves_package_root_when_called_through_npm_bin(tmp_path):
@@ -185,6 +208,9 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
     ).stdout.splitlines()
     assert "package/hooks/hooks.json" in contents
     assert "package/docs/telemetry.md" in contents
+    assert "package/server/migration_engine.py" in contents
+    assert not any("session" + "_migrate" in path for path in contents)
+    assert "package/THIRD_PARTY_NOTICES.md" not in contents
 
     client_dir = tmp_path / "bin"
     client_dir.mkdir()

@@ -6,7 +6,7 @@
 
 **Architecture:** Keep semantic handoff and native migration as separate contracts. Harden the deterministic benchmark first, add runnable fixture workspaces, then verify real native writers in both directions and expose an opt-in live-study runner.
 
-**Tech Stack:** Python 3.10+ standard library, pytest, Claude Code, Codex CLI, optional `session-migrate`.
+**Tech Stack:** Python 3.10+ standard library, pytest, Claude Code, Codex CLI, internal migration engine.
 
 ---
 

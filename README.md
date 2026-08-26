@@ -2,30 +2,13 @@
 
 Create handoffs or migrate active sessions between Claude Code and Codex.
 
-## Install the plugin
-
-Claude Code:
-
-```text
-/plugin marketplace add yuzushi-dev/yuzushi-plugins
-/plugin install session-handoff@yuzushi
-```
-
-Codex:
-
-```bash
-codex plugin marketplace add yuzushi-dev/yuzushi-plugins
-```
-
-Then run `/plugins` and install `session-handoff`.
-
 ## Managed setup
-
-Use this alternative when you want managed launchers and automatic switching:
 
 ```bash
 npx session-handoff@latest setup
 ```
+
+This installs the managed launchers, MCP server, skills, and internal Claude↔Codex migration engine. No separate migration package or executable is required.
 
 ## Use
 

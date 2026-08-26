@@ -4,9 +4,9 @@
 
 **Goal:** Execute and verify the benchmark's `migrate` condition against a native-format Codex paginated fixture and a real temporary Claude target.
 
-**Architecture:** Bring the already-merged migration backend into this benchmark branch, then add one deterministic native Codex fixture builder and an integration test that invokes the installed `session-migrate` writer. Keep the long context-rot cases as semantic benchmark inputs; do not use live sessions or credentials.
+**Architecture:** Bring the already-merged migration backend into this benchmark branch, then add one deterministic native Codex fixture builder and an integration test that invokes the internal migration writer. Keep the long context-rot cases as semantic benchmark inputs; do not use live sessions or credentials.
 
-**Tech Stack:** Python 3.12, stdlib `sqlite3`/`json`, pytest, installed `session-migrate` CLI.
+**Tech Stack:** Python 3.12, stdlib `sqlite3`/`json`, pytest, bundled migration engine.
 
 ---
 
@@ -29,7 +29,7 @@ Expected: the paginated backend and its baseline integration test are present on
 
 **Step 1: Write the failing integration test**
 
-Create a temporary Codex home containing a paginated rollout and `thread_history_1.sqlite`, then call `migrate_session` with the real `session-migrate` executable and a temporary Claude home. Assert the target UUID, native Claude JSONL, manifest, source hash, warnings, and `context_loss`.
+Create a temporary Codex home containing a paginated rollout and `thread_history_1.sqlite`, then call `migrate_session` with the internal engine and a temporary Claude home. Assert the target UUID, native Claude JSONL, manifest, source hash, warnings, and `context_loss`.
 
 Run: `python3 -m pytest -q tests/test_benchmark_migrate.py`
 

@@ -504,21 +504,10 @@ def _version(executable: str, cwd: Path) -> str | None:
     return result.stdout.strip()[:200] if result.returncode == 0 else None
 
 
-def _migration_provenance(executable: str, cwd: Path) -> dict[str, str]:
-    resolved = shutil.which(executable)
-    if resolved is None:
-        candidate = Path(executable).expanduser()
-        resolved = str(candidate) if candidate.is_file() else None
-    if resolved is None:
-        raise StudyRunError("session-migrate executable is not a readable file")
-    path = Path(resolved).resolve()
-    version = _version(str(path), cwd)
-    if version is None:
-        raise StudyRunError("session-migrate version could not be recorded")
+def _migration_provenance() -> dict[str, str]:
     return {
-        "migration_executable": str(path),
-        "migration_sha256": _sha256(path.read_bytes()),
-        "migration_version": version,
+        "migration_engine": "session-handoff",
+        "migration_version": "0.5.4",
     }
 
 
@@ -763,7 +752,6 @@ def _prepare_context(
                 args.client,
                 state["source_session_id"],
                 str(workspace),
-                executable=args.migration_executable,
                 target_session_id=target_id,
                 source_home=str(source_home),
                 target_home=str(target_home),
@@ -885,11 +873,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         run_dir.mkdir(mode=0o700)
         workspace = run_dir / "workspace"
         shutil.copytree(template, workspace)
-        migration_provenance = (
-            _migration_provenance(args.migration_executable, template)
-            if args.condition == "migrate"
-            else {}
-        )
+        migration_provenance = _migration_provenance() if args.condition == "migrate" else {}
         seed = f"{run_id}:native"
         runner_path = Path(__file__).resolve()
         state = {
@@ -1128,7 +1112,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--sandbox-executable", default="bwrap")
     result.add_argument("--claude-executable")
     result.add_argument("--codex-executable")
-    result.add_argument("--migration-executable", default="session-migrate")
     return result
 
 

@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev"
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Session Handoff",
     "shortDescription": "Clean handoffs and native session migration.",
-    "longDescription": "Session Handoff creates validated, secret-safe handoff documents or migrates an active native session between Codex and Claude Code through an optional session-migrate backend.",
+    "longDescription": "Session Handoff creates validated, secret-safe handoff documents or migrates an active native session between Codex and Claude Code with its internal migration engine.",
     "developerName": "yuzushi-dev",
     "category": "Productivity",
     "capabilities": [],
