@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.migration import MigrationError, _normalize_codex_target, migrate_session
+from server.migration import (
+    MigrationError,
+    _normalize_codex_target,
+    migrate_session,
+    migration_telemetry_summary,
+)
 
 
 def _write_codex_target(tmp_path, records):
@@ -265,3 +270,21 @@ def test_migrate_session_rejects_loss_report_changed_after_dry_run(tmp_path):
             target_session_id="target-id",
             runner=runner,
         )
+
+
+def test_migration_telemetry_summary_normalizes_loss_to_numeric_counts():
+    summary = migration_telemetry_summary(
+        {
+            "dropped_events": {"reasoning": 2, "tool_result": 1, "session-id": "ignored"},
+            "context_loss": {
+                "normalized_fields": {
+                    "codexTarget": ["deduplicated_user_events", "other"],
+                    "source": ["safe"],
+                }
+            },
+            "session_id": "must-not-escape",
+            "output": "/sensitive/path",
+        }
+    )
+
+    assert summary == {"dropped_events": 3, "normalized_fields": 3}

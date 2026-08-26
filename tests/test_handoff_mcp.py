@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import server.handoff_mcp as handoff_mcp
+
 
 SERVER = Path(__file__).parents[1] / "server" / "handoff_mcp.py"
 
@@ -168,6 +172,35 @@ Continue the feature.
         "token": token,
         "workspace": str(tmp_path),
         "path": "handoffs/feature.md",
+        "telemetry": {"handoff_bytes": len(content.encode("utf-8")), "redacted_count": 0},
+    }
+
+
+def test_create_validation_failure_records_only_safe_summary(monkeypatch, tmp_path):
+    summaries = []
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+
+    with pytest.raises(handoff_mcp.HandoffError, match="missing canonical sections"):
+        handoff_mcp._create(
+            {
+                "workspace": str(tmp_path),
+                "path": "handoffs/invalid.md",
+                "content": "## Goal\ncontains /sensitive/path and session-id\n",
+            }
+        )
+
+    assert len(summaries) == 1
+    assert summaries[0] == {
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "codex",
+        "result": "failure",
+        "failure_stage": "validation",
+        "handoff_bytes": len("## Goal\ncontains /sensitive/path and session-id\n".encode()),
+        "redacted_count": 0,
+        "dropped_events": 0,
+        "normalized_fields": 0,
+        "duration_seconds": 0,
     }
 
 

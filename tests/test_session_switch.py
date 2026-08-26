@@ -5,14 +5,18 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from server.session_switch import (
     CONTROL_PATH_ENV,
     CONTROL_TOKEN_ENV,
     SessionSupervisor,
     _fresh_session_args,
     handoff_prompt,
+    write_migration_request,
     write_switch_request,
 )
+import server.session_switch as session_switch
 
 
 def test_handoff_prompt_is_a_manual_reference():
@@ -180,6 +184,34 @@ def test_write_switch_request_rejects_invalid_handoff(tmp_path):
         raise AssertionError("missing handoff must not trigger a session switch")
 
 
+def test_write_switch_request_accepts_only_numeric_telemetry_summary(tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    control = tmp_path / "request.json"
+
+    write_switch_request(
+        str(control),
+        "token",
+        str(tmp_path),
+        "handoff.md",
+        telemetry_summary={"handoff_bytes": 12, "redacted_count": 1},
+    )
+
+    assert json.loads(control.read_text(encoding="utf-8"))["telemetry"] == {
+        "handoff_bytes": 12,
+        "redacted_count": 1,
+    }
+
+    with pytest.raises(ValueError, match="numeric"):
+        write_switch_request(
+            str(control),
+            "token",
+            str(tmp_path),
+            "handoff.md",
+            telemetry_summary={"path": "/sensitive/path"},
+        )
+
+
 def test_supervisor_without_request_returns_child_status(tmp_path):
     calls = []
 
@@ -204,6 +236,243 @@ def test_supervisor_without_request_returns_child_status(tmp_path):
     assert calls[0][0] == "codex"
     assert calls[0][1] == "-c"
     assert "mcp_servers.session-handoff.env.SESSION_HANDOFF_CONTROL=" in calls[0][2]
+
+
+def test_supervisor_records_handoff_success_after_target_terminal_state(monkeypatch, tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    summaries = []
+    monkeypatch.setattr(session_switch, "record_terminal_outcome", summaries.append)
+    calls = []
+
+    class Process:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 143
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 137
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        process = Process()
+        if len(calls) == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_switch_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                handoff.name,
+                telemetry_summary={"handoff_bytes": 42, "redacted_count": 2},
+            )
+        else:
+            process.returncode = 0
+        return process
+
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=fake_popen,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        executable="codex",
+        draft=False,
+    )
+
+    assert supervisor.run() == 0
+    assert len(summaries) == 1
+    assert summaries[0] == {
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "codex",
+        "result": "success",
+        "failure_stage": "none",
+        "handoff_bytes": 42,
+        "redacted_count": 2,
+        "dropped_events": 0,
+        "normalized_fields": 0,
+        "duration_seconds": summaries[0]["duration_seconds"],
+    }
+    assert summaries[0]["duration_seconds"] >= 0
+
+
+def test_supervisor_records_target_resume_failure(monkeypatch, tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    summaries = []
+    monkeypatch.setattr(session_switch, "record_terminal_outcome", summaries.append)
+
+    class Process:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 143
+
+        def kill(self):
+            pass
+
+    calls = 0
+
+    def fake_popen(argv, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_switch_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                handoff.name,
+            )
+            return Process()
+        raise OSError("target unavailable")
+
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=fake_popen,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        executable="codex",
+        draft=False,
+    )
+
+    assert supervisor.run() == 1
+    assert summaries[0]["failure_stage"] == "target_resume"
+
+
+def test_supervisor_records_source_fallback_after_conversion_failure(monkeypatch, tmp_path):
+    summaries = []
+    monkeypatch.setattr(session_switch, "record_terminal_outcome", summaries.append)
+    calls = 0
+
+    class Process:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 143
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 137
+
+    def fake_popen(argv, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_migration_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                "codex",
+                "claude",
+                "source-id",
+            )
+            return Process()
+        return Process(0)
+
+    def fail_migrate(*args, **kwargs):
+        raise session_switch.MigrationError("conversion failed")
+
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=fake_popen,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        client_executables={"codex": "codex", "claude": "claude"},
+        migrate=fail_migrate,
+    )
+
+    assert supervisor.run() == 0
+    assert len(summaries) == 1
+    assert summaries[0] == {
+        "operation": "migrate",
+        "source_client": "codex",
+        "target_client": "claude",
+        "result": "fallback",
+        "failure_stage": "conversion",
+        "dropped_events": 0,
+        "normalized_fields": 0,
+        "duration_seconds": summaries[0]["duration_seconds"],
+    }
+    assert summaries[0]["duration_seconds"] >= 0
+
+
+def test_supervisor_records_numeric_migration_loss_only(monkeypatch, tmp_path):
+    summaries = []
+    monkeypatch.setattr(session_switch, "record_terminal_outcome", summaries.append)
+    calls = 0
+
+    class Process:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 143
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 137
+
+    def fake_popen(argv, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_migration_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                "claude",
+                "codex",
+                "source-id",
+            )
+            return Process()
+        return Process(0)
+
+    supervisor = SessionSupervisor(
+        "claude",
+        [],
+        popen=fake_popen,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        client_executables={"codex": "codex", "claude": "claude"},
+        migrate=lambda *args, **kwargs: {
+            "session_id": "target-id",
+            "warnings": [],
+            "dropped_events": {"tool_result": 2},
+            "context_loss": {"normalized_fields": {"codex": ["one", "two"]}},
+        },
+    )
+
+    assert supervisor.run() == 0
+    assert summaries[0]["dropped_events"] == 2
+    assert summaries[0]["normalized_fields"] == 2
 
 
 def test_supervisor_relaunches_a_real_fake_host(tmp_path):

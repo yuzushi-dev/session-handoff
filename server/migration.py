@@ -34,6 +34,35 @@ class MigrationError(RuntimeError):
     """A migration failed before a resumable target session was established."""
 
 
+def _numeric_loss_count(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, min(value, 10000))
+    if isinstance(value, dict):
+        return min(10000, sum(_numeric_loss_count(item) for item in value.values()))
+    if isinstance(value, (list, tuple)):
+        return min(10000, len(value))
+    return 0
+
+
+def migration_telemetry_summary(result: dict[str, Any]) -> dict[str, int]:
+    """Return only bounded numeric loss counts from a migration result."""
+    if not isinstance(result, dict):
+        return {"dropped_events": 0, "normalized_fields": 0}
+    context_loss = result.get("context_loss")
+    if not isinstance(context_loss, dict):
+        context_loss = {}
+    return {
+        "dropped_events": _numeric_loss_count(
+            result.get("dropped_events", context_loss.get("dropped_events"))
+        ),
+        "normalized_fields": _numeric_loss_count(
+            context_loss.get("normalized_fields")
+        ),
+    }
+
+
 def _resolve_executable(explicit: str | None = None) -> str:
     if explicit:
         return explicit
