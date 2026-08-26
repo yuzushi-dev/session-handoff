@@ -5,7 +5,6 @@ import multiprocessing
 import os
 import socket
 import stat
-import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -86,6 +85,26 @@ def test_enable_reenables_disabled_marker_with_explicit_yes(tmp_path, monkeypatc
     assert config["prompted_consent_version"] == 1
     assert config["consent_version"] == 1
     assert config["endpoint"] == telemetry.ENDPOINT
+
+
+def test_missing_config_generation_changes_after_create_delete_during_consent(tmp_path):
+    generation_path = tmp_path / CONFIG.parent / telemetry._GENERATION_NAME
+
+    def create_then_delete(_prompt):
+        assert generation_path.exists()
+        telemetry.write_config(tmp_path, telemetry.disabled_config())
+        created_generation = int(generation_path.read_text(encoding="ascii"))
+        (tmp_path / CONFIG).unlink()
+        telemetry.write_config(tmp_path, telemetry.disabled_config())
+        recreated_generation = int(generation_path.read_text(encoding="ascii"))
+        assert recreated_generation > created_generation
+        (tmp_path / CONFIG).unlink()
+        return "yes"
+
+    with pytest.raises(telemetry.TelemetryConfigError, match="changed"):
+        telemetry.request_consent(tmp_path, interactive=True, input_fn=create_then_delete)
+
+    assert not (tmp_path / CONFIG).exists()
 
 
 @pytest.mark.parametrize("answer", ["", "no", "NO", "y"])
@@ -355,6 +374,24 @@ def test_disable_purge_preserves_regular_telemetry_lock(tmp_path):
     assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
 
 
+def test_disable_purge_rejects_hardlinked_state_file_without_unlinking_external_file(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    state = tmp_path / ".local/state/session-handoff"
+    state.mkdir(parents=True)
+    external = tmp_path / "external-state"
+    external.write_text("private", encoding="utf-8")
+    external.chmod(0o600)
+    state_file = state / "telemetry-queue.jsonl"
+    os.link(external, state_file)
+
+    with pytest.raises(telemetry.TelemetryConfigError):
+        telemetry.disable(tmp_path, purge=True)
+
+    assert external.read_text(encoding="utf-8") == "private"
+    assert state_file.exists()
+    assert state_file.stat().st_nlink == 2
+
+
 def test_fencing_epoch_stays_monotonic_across_every_config_mutation(tmp_path):
     telemetry.write_config(tmp_path, telemetry.disabled_config())
     lock = tmp_path / CONFIG.parent / ".telemetry.lock"
@@ -368,6 +405,25 @@ def test_fencing_epoch_stays_monotonic_across_every_config_mutation(tmp_path):
 
     telemetry.disable(tmp_path, purge=True)
     assert lock.read_text(encoding="ascii") == "10"
+
+
+def test_fencing_epoch_high_water_is_scoped_to_canonical_home(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    telemetry._MARKER_HIGH_WATER.clear()
+    telemetry.write_config(first, telemetry.disabled_config())
+    first_lock = first / CONFIG.parent / ".telemetry.lock"
+    first_lock.write_text("7", encoding="ascii")
+    telemetry.write_config(first, telemetry.enabled_config())
+
+    telemetry.write_config(second, telemetry.disabled_config())
+    second_lock = second / CONFIG.parent / ".telemetry.lock"
+    second_lock.write_text("1", encoding="ascii")
+    telemetry._MARKER_HIGH_WATER[(second_lock.stat().st_dev, second_lock.stat().st_ino)] = 7
+
+    telemetry.write_config(second, telemetry.enabled_config())
+
+    assert telemetry.load_config(second)["enabled"] is True
 
 
 def test_marker_mutation_uses_the_already_locked_descriptor(tmp_path, monkeypatch):
@@ -877,6 +933,25 @@ def test_purge_removes_only_stale_telemetry_temps_in_config_directory(tmp_path, 
     assert linked.is_symlink()
 
 
+def test_purge_removes_all_telemetry_state_temps(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    state = tmp_path / telemetry.STATE_PATH
+    state.mkdir(parents=True)
+    names = [
+        ".telemetry.json.state.tmp",
+        ".telemetry-counters.json.state.tmp",
+        ".telemetry-queue.jsonl.state.tmp",
+        ".last-operation-summary.json.state.tmp",
+    ]
+    for name in names:
+        (state / name).write_text("temporary", encoding="utf-8")
+        (state / name).chmod(0o600)
+
+    telemetry.disable(tmp_path, purge=True)
+
+    assert not any((state / name).exists() for name in names)
+
+
 def test_purge_does_not_delete_temp_during_active_config_write(tmp_path, monkeypatch):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     config_parent = tmp_path / CONFIG.parent
@@ -1129,3 +1204,126 @@ def test_replace_uses_dir_fd_rename_api(tmp_path, monkeypatch):
     telemetry.write_config(tmp_path, telemetry.disabled_config())
     assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
     monkeypatch.setattr(telemetry.os, "replace", original_replace)
+
+
+def test_telemetry_preview_renders_otlp_without_upload(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(
+        {
+            "schema_version": 1,
+            "event": "operation_summary",
+            "day_utc": "2026-08-25",
+            "plugin_version": "0.5",
+            "operation": "handoff",
+            "source_client": "codex",
+            "target_client": "claude",
+            "result": "success",
+            "failure_stage": "none",
+            "duration_bucket": "lt_1s",
+            "handoff_bytes_bucket": "lt_4k",
+            "redaction_bucket": "zero",
+            "dropped_events_bucket": "zero",
+            "normalized_fields_bucket": "zero",
+        },
+        tmp_path,
+        now="2026-08-26T00:00:00Z",
+    )
+    telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
+    monkeypatch.setattr(telemetry.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("preview uploaded"))
+
+    assert cli._telemetry(["preview"]) == 0
+    output = capsys.readouterr().out
+    assert "session_handoff.daily_aggregate" in output
+    assert "Idempotency-Key" in output
+    assert "Authorization" not in output
+
+
+def test_telemetry_preview_uses_exact_upload_request_bytes_and_headers(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(
+        {
+            "schema_version": 1,
+            "event": "operation_summary",
+            "day_utc": "2026-08-25",
+            "plugin_version": "0.5",
+            "operation": "handoff",
+            "source_client": "codex",
+            "target_client": "claude",
+            "result": "success",
+            "failure_stage": "none",
+            "duration_bucket": "lt_1s",
+            "handoff_bytes_bucket": "lt_4k",
+            "redaction_bucket": "zero",
+            "dropped_events_bucket": "zero",
+            "normalized_fields_bucket": "zero",
+        },
+        tmp_path,
+        now="2026-08-26T00:00:00Z",
+    )
+    telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
+    expected = telemetry.build_request(
+        telemetry.enabled_config()["endpoint"],
+        telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z"),
+    )
+
+    assert cli._telemetry(["preview"]) == 0
+    output = capsys.readouterr().out
+    assert expected.data.hex() in output
+    assert all(name in output for name in expected.headers)
+
+
+def test_telemetry_preview_with_disabled_config_does_not_leak_endpoint(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.disabled_config())
+    event = {
+        "schema_version": 1,
+        "event": "operation_summary",
+        "day_utc": "2026-08-25",
+        "plugin_version": "0.5",
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "claude",
+        "result": "success",
+        "failure_stage": "none",
+        "duration_bucket": "lt_1s",
+        "handoff_bytes_bucket": "lt_4k",
+        "redaction_bucket": "zero",
+        "dropped_events_bucket": "zero",
+        "normalized_fields_bucket": "zero",
+    }
+    telemetry._store_queue(tmp_path, [telemetry._aggregate_row(event, 1)])
+
+    assert cli._telemetry(["preview"]) == 0
+    output = capsys.readouterr().out
+    assert "Telemetry is disabled; no upload request." in output
+    assert telemetry.ENDPOINT not in output
+
+
+def test_telemetry_flush_does_not_inherit_provider_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(key, "secret")
+    observed = {}
+
+    def popen(command, **kwargs):
+        observed["command"] = command
+        observed["env"] = kwargs["env"]
+        return SimpleNamespace()
+
+    cli = load_cli()
+    monkeypatch.setattr(telemetry.subprocess, "Popen", popen)
+
+    assert cli._telemetry(["flush"]) == 0
+    assert not any(key.endswith(("_API_KEY", "_SECRET_ACCESS_KEY", "_TOKEN")) for key in observed["env"])
+    assert "OPENAI_API_KEY" not in observed["env"]
+    assert "ANTHROPIC_API_KEY" not in observed["env"]
+    assert "AWS_SECRET_ACCESS_KEY" not in observed["env"]
+    assert not any(key in observed["env"] for key in ("PATH", "LANG", "LC_ALL", "PYTHONIOENCODING"))
+    assert observed["env"] == {}
+    assert observed["command"][-4] == "--queue-path"
+    assert observed["command"][-2] == "--config-path"

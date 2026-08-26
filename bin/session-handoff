@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -28,9 +29,16 @@ def _telemetry(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("enable")
+    commands.add_parser("preview")
+    commands.add_parser("flush")
+    detached = commands.add_parser("_detached-flush")
+    detached.add_argument("--queue-path", required=True)
+    detached.add_argument("--config-path", required=True)
     disable = commands.add_parser("disable")
     disable.add_argument("--purge", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "_detached-flush":
+        return telemetry.detached_flush(args.queue_path, args.config_path)
     home = _home()
     try:
         config = None if args.command == "disable" and args.purge else telemetry.load_config(home)
@@ -49,6 +57,28 @@ def _telemetry(argv: list[str]) -> int:
                 return 2
             telemetry.request_consent(home, interactive=True, input_fn=input)
             print("Telemetry consent recorded.")
+            return 0
+        if args.command == "preview":
+            rows = telemetry.load_batch(home)
+            if not rows:
+                print("Telemetry queue is empty.")
+                return 0
+            if config is None or not config["enabled"]:
+                print("Telemetry is disabled; no upload request.")
+                return 0
+            endpoint = config["endpoint"]
+            request = telemetry.build_request(endpoint, rows)
+            print("Headers: " + ", ".join(sorted(request.headers)))
+            print("Body (hex): " + request.data.hex())
+            print(json.dumps(telemetry.to_otlp_logs(rows), sort_keys=True, separators=(",", ":")))
+            print("Idempotency-Key: " + request.headers["Idempotency-key"])
+            return 0
+        if args.command == "flush":
+            telemetry.spawn_detached_flush(
+                home / telemetry.STATE_PATH / telemetry._QUEUE_NAME,
+                telemetry.config_path(home),
+            )
+            print("Telemetry flush started.")
             return 0
         telemetry.disable(home, purge=args.purge)
         print("Telemetry disabled." if not args.purge else "Telemetry disabled and local data purged.")
