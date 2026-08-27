@@ -1,8 +1,9 @@
 # session-handoff telemetry
 
-Opt-in, off by default. Nothing is sent unless you run
-`session-handoff telemetry enable` and answer `yes` at the interactive
-prompt.
+Opt-in, off by default. Nothing is sent unless you answer `yes` at the
+interactive consent prompt -- shown once, either during `session-handoff
+setup` (if run interactively and no choice was recorded yet) or later via
+`session-handoff telemetry enable`.
 
 ## What's collected
 
@@ -44,7 +45,11 @@ event". A contributor's rows cannot be individually deleted.
 
 ## Controlling it
 
-For marketplace installs, the plugin shows a non-blocking reminder at session
+`session-handoff setup` asks the same consent prompt once, right after
+installation finishes, if run interactively (a real TTY) and no choice has
+been recorded yet; reruns and upgrades never re-ask. Non-interactive setup
+runs (CI, `--yes`, piped) never prompt and telemetry stays off. For
+marketplace installs, the plugin shows a non-blocking reminder at session
 start until a choice is recorded. It never opens an interactive prompt from a
 hook and never sends telemetry during the reminder.
 
