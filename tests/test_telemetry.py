@@ -530,6 +530,7 @@ def test_detached_flush_closes_prior_utc_day_and_preserves_current_counter(tmp_p
     assert telemetry.detached_flush(
         tmp_path / telemetry.STATE_PATH / telemetry._QUEUE_NAME,
         tmp_path / telemetry.CONFIG_PATH,
+        now="2026-08-26T00:00:00Z",
     ) == 0
 
     assert called == [tmp_path]

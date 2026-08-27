@@ -1627,14 +1627,14 @@ def flush_queue(home=None, opener=None, now=None):
                 pass
 
 
-def detached_flush(queue_path, config_path):
+def detached_flush(queue_path, config_path, now=None):
     queue_path = Path(queue_path)
     config_path = Path(config_path)
     try:
         home = config_path.resolve().parents[2]
         if queue_path.resolve() != home / STATE_PATH / _QUEUE_NAME:
             return 0
-        close_day(home)
+        close_day(home, now=now)
         return flush_queue(home)
     except Exception:
         return 0
