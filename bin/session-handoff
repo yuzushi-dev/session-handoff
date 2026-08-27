@@ -50,6 +50,10 @@ def _telemetry(argv: list[str]) -> int:
                 print("Telemetry: disabled.")
             else:
                 print("Telemetry: enabled.")
+                error = telemetry.last_flush_error(home)
+                if error:
+                    status = f" (status {error['status']})" if error.get("status") else ""
+                    print(f"Last flush failed at {error['at']}: {error['error']}{status}")
             return 0
         if args.command == "enable":
             if config is not None and config["enabled"]:

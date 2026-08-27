@@ -38,7 +38,8 @@ HANDOFF_BYTES_BUCKETS = frozenset({"lt_4k", "4_to_16k", "16_to_64k", "gte_64k"})
 _LEASE_NAME = "telemetry-batch-lease.json"
 _GENERATION_NAME = "telemetry-generation"
 _LAST_SUMMARY_NAME = "last-operation-summary.json"
-_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", _LAST_SUMMARY_NAME, _LEASE_NAME)
+_LAST_FLUSH_ERROR_NAME = "telemetry-last-flush-error.json"
+_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", _LAST_SUMMARY_NAME, _LEASE_NAME, _LAST_FLUSH_ERROR_NAME)
 FEEDBACK_CATEGORIES = frozenset({"constraint", "decision", "path", "progress", "rejected_attempt", "other"})
 FEEDBACK_SEVERITIES = frozenset({"recoverable", "blocked"})
 
@@ -50,6 +51,7 @@ MAX_RESPONSE_BYTES = 64 * 1024
 MAX_QUEUE_AGE_DAYS = 7
 MAX_COUNTER_BYTES = 256 * 1024
 MAX_CONFIG_BYTES = 16 * 1024
+MAX_FLUSH_ERROR_BYTES = 4 * 1024
 _COUNTERS_NAME = "telemetry-counters.json"
 _QUEUE_NAME = "telemetry-queue.jsonl"
 _TEMP_BASE_NAMES = (*_STATE_TARGETS, "telemetry.json")
@@ -1396,6 +1398,42 @@ def _release_batch_lease(home, batch):
         _release_batch_lease_locked(state_directory, state_fd, batch)
 
 
+def _record_flush_error(home, error, now=None):
+    """Persist a small, non-sensitive marker for the last failed flush.
+
+    Carries only the exception class name and, for HTTP failures, the status
+    code -- never a response body, URL, or exception message, which could
+    embed transport details outside the telemetry allowlist.
+    """
+    status = getattr(error, "code", None)
+    record = {
+        "at": now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "error": type(error).__name__,
+        "status": status if isinstance(status, int) else None,
+    }
+    try:
+        with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+            _write_state(state_directory, state_fd, _LAST_FLUSH_ERROR_NAME, json.dumps(record, sort_keys=True))
+    except Exception:
+        pass
+
+
+def _clear_flush_error(home):
+    try:
+        with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+            _remove_state(state_directory, state_fd, _LAST_FLUSH_ERROR_NAME)
+    except Exception:
+        pass
+
+
+def last_flush_error(home=None):
+    try:
+        with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+            return _read_json_state(state_directory, state_fd, _LAST_FLUSH_ERROR_NAME, None, MAX_FLUSH_ERROR_BYTES)
+    except Exception:
+        return None
+
+
 def _queue_token_locked(state_directory, state_fd):
     try:
         info = _stat_relative(state_fd, state_directory, _QUEUE_NAME)
@@ -1500,11 +1538,15 @@ def idempotency_key(body):
     return hashlib.sha256(body).hexdigest()
 
 
+_USER_AGENT = "session-handoff-telemetry/1"
+
+
 def request_headers(body, encoding=None):
     headers = {
         "Content-Type": "application/json",
         "Content-Length": str(len(body)),
         "Idempotency-Key": idempotency_key(body),
+        "User-Agent": _USER_AGENT,
     }
     if encoding:
         headers["Content-Encoding"] = encoding
@@ -1563,12 +1605,28 @@ def _accepted_count(response, total, deadline):
     payload = json.loads(bytes(data).decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
     if not isinstance(payload, dict):
         raise ValueError("invalid telemetry acceptance response")
-    if set(payload) != {"accepted"}:
+    # OTLP/HTTP JSON success response (ExportLogsServiceResponse): an absent or
+    # empty `partialSuccess` means every row was accepted; otherwise
+    # `rejectedLogRecords` (int64, so proto3 JSON may encode it as a string)
+    # gives the count that was not. Unknown top-level fields are ignored so a
+    # collector upgrade can't turn into a silent, permanent stall.
+    partial_success = payload.get("partialSuccess", payload.get("partial_success"))
+    if partial_success in (None, {}):
+        return total
+    if not isinstance(partial_success, dict):
         raise ValueError("invalid telemetry acceptance response")
-    accepted = payload.get("accepted")
-    if type(accepted) is not int or not 0 <= accepted <= total:
+    rejected = partial_success.get("rejectedLogRecords", partial_success.get("rejected_log_records", 0))
+    if isinstance(rejected, str) and rejected.lstrip("-").isdigit():
+        rejected = int(rejected)
+    if type(rejected) is not int or not 0 <= rejected <= total:
         raise ValueError("invalid telemetry acceptance response")
-    return accepted
+    return total - rejected
+
+
+class _FlushStatusError(Exception):
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 def flush_queue(home=None, opener=None, now=None):
@@ -1603,14 +1661,16 @@ def flush_queue(home=None, opener=None, now=None):
         if status is None:
             status = response.getcode()
         if not 200 <= status < 300:
-            return 0
+            raise _FlushStatusError(f"unexpected telemetry status {status}", code=status)
         geturl = getattr(response, "geturl", None)
         if callable(geturl) and geturl() != endpoint:
-            return 0
+            raise _FlushStatusError("telemetry upload redirected unexpectedly")
         accepted = _accepted_count(response, len(batch), deadline)
         ack_batch(home, batch, accepted=accepted, digest=_batch_digest(batch))
+        _clear_flush_error(home)
         return accepted
-    except Exception:
+    except Exception as exc:
+        _record_flush_error(home, exc, now)
         return 0
     finally:
         if batch is not None and getattr(batch, "_lease_claimed", False) and not getattr(batch, "consumed", False):

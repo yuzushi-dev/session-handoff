@@ -142,7 +142,7 @@ def test_concurrent_flush_burst_claims_one_batch(tmp_path):
             if getattr(self, "done", False):
                 return b""
             self.done = True
-            return b'{"accepted":1}'
+            return b'{"partialSuccess":{}}'
 
         def close(self):
             return None

@@ -625,10 +625,11 @@ def test_empty_success_response_does_not_ack_batch(tmp_path):
 @pytest.mark.parametrize(
     "body",
     [
-        b'{"accepted":1,"extra":0}',
-        b'{"accepted":1,"accepted":1}',
-        b'{"accepted":true}',
-        b'{"accepted":"1"}',
+        b'{"partialSuccess":{"rejectedLogRecords":true}}',
+        b'{"partialSuccess":{"rejectedLogRecords":-1}}',
+        b'{"partialSuccess":{"rejectedLogRecords":2}}',
+        b'{"partialSuccess":"oops"}',
+        b'{"partialSuccess":{},"partialSuccess":{}}',
         b'[]',
     ],
 )
@@ -653,6 +654,47 @@ def test_invalid_acceptance_response_does_not_ack_batch(tmp_path, body):
     assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
 
+def test_flush_records_and_clears_last_flush_error(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(OPERATION, tmp_path, now="2026-08-25T00:00:00Z")
+    telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
+
+    class ForbiddenResponse:
+        status = 403
+
+        def read(self, _size):
+            return b""
+
+        def close(self):
+            return None
+
+    assert telemetry.flush_queue(
+        tmp_path, opener=lambda *_args, **_kwargs: ForbiddenResponse(), now="2026-08-26T00:00:00Z"
+    ) == 0
+    error = telemetry.last_flush_error(tmp_path)
+    assert error["error"] == "_FlushStatusError"
+    assert error["status"] == 403
+    assert error["at"] == "2026-08-26T00:00:00Z"
+    assert "accepted" not in json.dumps(error)
+
+    class OkResponse:
+        status = 200
+
+        def read(self, size):
+            if getattr(self, "done", False):
+                return b""
+            self.done = True
+            return b'{"partialSuccess":{}}'
+
+        def close(self):
+            return None
+
+    assert telemetry.flush_queue(
+        tmp_path, opener=lambda *_args, **_kwargs: OkResponse(), now="2026-08-26T00:00:00Z"
+    ) == 1
+    assert telemetry.last_flush_error(tmp_path) is None
+
+
 def test_flush_closes_response_reads_bounded_body_and_avoids_eager_getcode(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(OPERATION, tmp_path, now="2026-08-25T00:00:00Z")
@@ -668,7 +710,7 @@ def test_flush_closes_response_reads_bounded_body_and_avoids_eager_getcode(tmp_p
             if self.done:
                 return b""
             self.done = True
-            return b'{"accepted":1}'
+            return b'{"partialSuccess":{}}'
 
         def getcode(self):
             raise AssertionError("getcode fallback evaluated eagerly")
@@ -704,7 +746,7 @@ def test_two_flushes_claim_one_batch(tmp_path):
             if getattr(self, "done", False):
                 return b""
             self.done = True
-            return b'{"accepted":1}'
+            return b'{"partialSuccess":{}}'
 
         def close(self):
             return None
@@ -747,7 +789,7 @@ def test_flush_releases_state_lock_during_http_and_preserves_new_rows(tmp_path):
             if getattr(self, "done", False):
                 return b""
             self.done = True
-            return b'{"accepted":1}'
+            return b'{"partialSuccess":{}}'
 
         def close(self):
             return None
@@ -801,7 +843,7 @@ def test_flush_rejects_same_origin_redirect(tmp_path):
             if self.done:
                 return b""
             self.done = True
-            return b'{"accepted":1}'
+            return b'{"partialSuccess":{}}'
 
         def close(self):
             return None
@@ -849,7 +891,7 @@ def test_flush_uses_total_deadline_for_response_read(tmp_path, monkeypatch):
 
 class _TelemetryHandler(http.server.BaseHTTPRequestHandler):
     response_status = 200
-    response_body = b'{"accepted": 1}'
+    response_body = b'{"partialSuccess": {"rejectedLogRecords": "1"}}'
     requests = []
     block = None
 
@@ -891,6 +933,9 @@ def test_flush_queue_supports_partial_acceptance_and_leaves_remainder(tmp_path):
         finally:
             telemetry.ENDPOINT = original_endpoint
         assert len(telemetry.load_batch(tmp_path, limit=2, now="2026-08-03T00:00:00Z")) == 1
+        sent_headers, _sent_body = _TelemetryHandler.requests[-1]
+        assert sent_headers["User-Agent"] == telemetry._USER_AGENT
+        assert "python-urllib" not in sent_headers["User-Agent"].lower()
     finally:
         server.shutdown()
         thread.join(2)
