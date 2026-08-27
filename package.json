@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
