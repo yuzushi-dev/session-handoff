@@ -2,6 +2,7 @@ from pathlib import Path
 
 from server.migration import MigrationError
 from server.session_switch import CONTROL_PATH_ENV, SessionSupervisor, write_migration_request
+from server import telemetry
 
 
 class FakeProcess:
@@ -66,6 +67,13 @@ def test_supervisor_migrates_after_stopping_source_and_resumes_target(tmp_path):
     assert calls[1][0][0] == "codex"
     assert calls[1][0][-2:] == ["resume", "target-id"]
     assert calls[1][1]["cwd"] == str(tmp_path)
+
+
+def test_supervisor_attempts_startup_flush(monkeypatch):
+    calls = []
+    monkeypatch.setattr(telemetry, "session_start_flush", lambda: calls.append(True))
+    SessionSupervisor("codex", [], popen=lambda *_args, **_kwargs: None)
+    assert calls == [True]
 
 
 def test_supervisor_resumes_source_when_migration_fails(tmp_path):

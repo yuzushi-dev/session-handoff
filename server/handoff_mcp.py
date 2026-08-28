@@ -23,6 +23,7 @@ try:
         write_migration_request,
         write_switch_request,
     )
+    from .version import PACKAGE_VERSION
 except ImportError:  # direct `python server/handoff_mcp.py` execution
     from session_switch import (
         CONTROL_PATH_ENV,
@@ -31,9 +32,10 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
         write_migration_request,
         write_switch_request,
     )
+    from version import PACKAGE_VERSION
 
 SERVER_NAME = "session-handoff"
-SERVER_VERSION = "0.5.5"
+SERVER_VERSION = PACKAGE_VERSION
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MAX_CONTENT_BYTES = 2_000_000
 MAX_LIST_LIMIT = 100
@@ -218,7 +220,6 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             "result": "failure", "failure_stage": "validation",
             "handoff_bytes": len(content.encode("utf-8")),
             "redacted_count": 0, "dropped_events": 0, "normalized_fields": 0,
-            "duration_seconds": 0,
         })
         raise HandoffError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     overwrite = arguments.get("overwrite", False)
@@ -236,7 +237,6 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             "result": "failure", "failure_stage": "validation",
             "handoff_bytes": len(redacted.encode("utf-8")),
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-            "duration_seconds": 0,
         })
         raise HandoffError("missing canonical sections: " + ", ".join(missing_sections))
     if path.exists() and not overwrite:
@@ -245,7 +245,6 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             "result": "failure", "failure_stage": "validation",
             "handoff_bytes": len(redacted.encode("utf-8")),
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-            "duration_seconds": 0,
         })
         raise HandoffError(
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
@@ -278,14 +277,12 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
                 "operation": "handoff", "source_client": "codex", "target_client": "codex",
                 "result": "failure", "failure_stage": "control", "handoff_bytes": result["bytes"],
                 "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-                "duration_seconds": 0,
             })
     else:
         record_terminal_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
             "result": "success", "failure_stage": "none", "handoff_bytes": result["bytes"],
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-            "duration_seconds": 0,
         })
     return result
 

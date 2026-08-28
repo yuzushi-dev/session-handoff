@@ -72,7 +72,7 @@ def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
         path = package / name
         path.mkdir(parents=True)
         (path / "kept.txt").write_text("kept", encoding="utf-8")
-    for name in (".mcp.json", "mcp.json", "plugin.json", "README.md"):
+    for name in (".mcp.json", "mcp.json", "plugin.json", "package.json", "README.md"):
         (package / name).write_text("kept", encoding="utf-8")
     (package / "docs/telemetry.md").write_text("kept", encoding="utf-8")
     for name in ("benchmark/results", "benchmark/generated", ".sando", "notes"):
@@ -83,6 +83,7 @@ def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
     staging = _setup_impl._stage_bundle(package, bundle)
 
     assert (staging / "server/kept.txt").is_file()
+    assert (staging / "package.json").is_file()
     assert not (staging / "benchmark").exists()
     assert not (staging / ".sando").exists()
     assert not (staging / "notes").exists()

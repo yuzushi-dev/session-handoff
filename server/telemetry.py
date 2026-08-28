@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import secrets
 import stat
@@ -18,6 +19,12 @@ import time
 from numbers import Real
 from pathlib import Path
 import urllib.request
+import urllib.error
+
+try:
+    from .version import VERSION_PATTERN
+except ImportError:  # direct `python server/handoff_mcp.py` execution
+    from version import VERSION_PATTERN
 
 try:
     import fcntl
@@ -25,22 +32,25 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
 
-EVENTS = frozenset({"operation_summary", "context_feedback"})
+EVENTS = frozenset({"operation_summary", "context_feedback", "active_day"})
 OPERATIONS = frozenset({"handoff", "migrate"})
 CLIENTS = frozenset({"claude", "codex"})
+CLIENT_ROUTES = frozenset(f"{source}_to_{target}" for source in CLIENTS for target in CLIENTS)
 RESULTS = frozenset({"success", "failure", "fallback"})
 FAILURE_STAGES = frozenset(
     {"none", "validation", "control", "source_stop", "conversion", "target_resume", "source_resume", "unknown"}
 )
-DURATION_BUCKETS = frozenset({"lt_1s", "1_to_5s", "5_to_30s", "30_to_120s", "gte_120s"})
+DURATION_BUCKETS = frozenset({"not_measured", "lt_1s", "1_to_5s", "5_to_30s", "30_to_120s", "gte_120s"})
 COUNT_BUCKETS = frozenset({"zero", "one", "2_to_5", "6_to_20", "gt_20"})
 HANDOFF_BYTES_BUCKETS = frozenset({"lt_4k", "4_to_16k", "16_to_64k", "gte_64k"})
 _LEASE_NAME = "telemetry-batch-lease.json"
 _GENERATION_NAME = "telemetry-generation"
 _LAST_SUMMARY_NAME = "last-operation-summary.json"
 _LAST_FLUSH_ERROR_NAME = "telemetry-last-flush-error.json"
-_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", _LAST_SUMMARY_NAME, _LEASE_NAME, _LAST_FLUSH_ERROR_NAME)
-FEEDBACK_CATEGORIES = frozenset({"constraint", "decision", "path", "progress", "rejected_attempt", "other"})
+_RETRY_NAME = "telemetry-retry.json"
+_DIAGNOSTICS_NAME = "telemetry-diagnostics.json"
+_STATE_TARGETS = ("telemetry-counters.json", "telemetry-queue.jsonl", _LAST_SUMMARY_NAME, _LEASE_NAME, _LAST_FLUSH_ERROR_NAME, _RETRY_NAME, _DIAGNOSTICS_NAME)
+FEEDBACK_CATEGORIES = frozenset({"constraint", "decision", "path", "progress", "rejected_attempt"})
 FEEDBACK_SEVERITIES = frozenset({"recoverable", "blocked"})
 
 MAX_QUEUE_ROWS = 256
@@ -48,7 +58,7 @@ MAX_QUEUE_BYTES = 256 * 1024
 MAX_UPLOAD_ROWS = 32
 MAX_UPLOAD_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
-MAX_QUEUE_AGE_DAYS = 7
+MAX_QUEUE_AGE_DAYS = 30
 MAX_COUNTER_BYTES = 256 * 1024
 MAX_CONFIG_BYTES = 16 * 1024
 MAX_FLUSH_ERROR_BYTES = 4 * 1024
@@ -71,7 +81,11 @@ _OPERATION_FIELDS = _COMMON_FIELDS | frozenset(
     {"result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
 )
 _FEEDBACK_FIELDS = _COMMON_FIELDS | frozenset({"feedback_category", "feedback_severity"})
-_VERSION = re.compile(r"[0-9]+\.[0-9]+\Z")
+_ACTIVE_DAY_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version"})
+_RETRY_DELAYS = (60, 300, 1800, 7200, 21600)
+_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+_RETRYABLE_EXCEPTIONS = (OSError, TimeoutError, urllib.error.URLError)
+_VERSION = VERSION_PATTERN
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _CONFIG_THREAD_LOCK = threading.RLock()
 _LOCK_TIMEOUT = 1.0
@@ -87,11 +101,17 @@ STATE_PATH = Path(".local/state/session-handoff")
 # Release/broader publication is still gated on the open items in
 # ~/selfhosted/telemetry/docs/telemetry-canary-report.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
+CONSENT_VERSION = 1
 CONSENT_PROMPT = "Enable anonymous telemetry? Full details at: docs/telemetry.md [y/N] "
 
 
 class TelemetryConfigError(ValueError):
     """The local telemetry consent config is missing or invalid."""
+
+
+def do_not_track_enabled():
+    """Return whether the process-level runtime telemetry override is active."""
+    return os.environ.get("DO_NOT_TRACK") not in (None, "", "0")
 
 
 def _home(home=None):
@@ -103,7 +123,7 @@ def config_path(home=None):
 
 
 def disabled_config():
-    return {"schema_version": 1, "enabled": False, "prompted_consent_version": 1}
+    return {"schema_version": 1, "enabled": False, "prompted_consent_version": CONSENT_VERSION}
 
 
 def enabled_config(consented_at=None):
@@ -112,8 +132,8 @@ def enabled_config(consented_at=None):
     return {
         "schema_version": 1,
         "enabled": True,
-        "prompted_consent_version": 1,
-        "consent_version": 1,
+        "prompted_consent_version": CONSENT_VERSION,
+        "consent_version": CONSENT_VERSION,
         "consented_at": consented_at,
         "endpoint": ENDPOINT,
     }
@@ -127,16 +147,22 @@ def _validate_config(config):
     if type(config.get("enabled")) is not bool:
         raise TelemetryConfigError("invalid telemetry config enabled flag")
     if config["enabled"] is False:
-        if type(config.get("prompted_consent_version")) is not int or config["prompted_consent_version"] != 1:
+        if (
+            type(config.get("prompted_consent_version")) is not int
+            or not 0 <= config["prompted_consent_version"] <= CONSENT_VERSION
+        ):
             raise TelemetryConfigError("invalid telemetry consent version")
-        if config != disabled_config():
+        if set(config) != {"schema_version", "enabled", "prompted_consent_version"}:
             raise TelemetryConfigError("invalid disabled telemetry config")
         return config
     if set(config) != {
         "schema_version", "enabled", "prompted_consent_version", "consent_version", "consented_at", "endpoint"
     }:
         raise TelemetryConfigError("invalid enabled telemetry config fields")
-    if any(type(config[field]) is not int or config[field] != 1 for field in ("prompted_consent_version", "consent_version")):
+    if any(
+        type(config[field]) is not int or config[field] != CONSENT_VERSION
+        for field in ("prompted_consent_version", "consent_version")
+    ):
         raise TelemetryConfigError("invalid telemetry consent version")
     if not isinstance(config["consented_at"], str):
         raise TelemetryConfigError("invalid telemetry consent timestamp")
@@ -564,6 +590,8 @@ def write_config(home, config):
 
 
 def request_consent(home, *, interactive, input_fn=None):
+    if do_not_track_enabled():
+        return None
     current, signature = _load_config_snapshot(home)
     if current is not None and current["enabled"]:
         return current
@@ -776,6 +804,8 @@ def disable(home, *, purge=False):
 
 
 def bucket_duration(seconds):
+    if seconds is None:
+        return "not_measured"
     if isinstance(seconds, bool) or not isinstance(seconds, Real) or not math.isfinite(seconds) or seconds < 0:
         raise ValueError("duration must be a finite non-negative number")
     if seconds < 1:
@@ -820,12 +850,15 @@ def validate_event(payload):
         raise ValueError("event must be a JSON object")
     if set(payload) & DENYLIST:
         raise ValueError("privacy-sensitive field")
-    if not set(payload) <= (_OPERATION_FIELDS | _FEEDBACK_FIELDS):
+    if not set(payload) <= (_OPERATION_FIELDS | _FEEDBACK_FIELDS | _ACTIVE_DAY_FIELDS):
         raise ValueError("unknown field")
     if not isinstance(payload.get("event"), str) or payload["event"] not in EVENTS:
         raise ValueError("invalid event")
 
-    fields = _OPERATION_FIELDS if payload["event"] == "operation_summary" else _FEEDBACK_FIELDS
+    if payload["event"] == "active_day":
+        fields = _ACTIVE_DAY_FIELDS
+    else:
+        fields = _OPERATION_FIELDS if payload["event"] == "operation_summary" else _FEEDBACK_FIELDS
     if set(payload) != fields:
         raise ValueError("wrong event shape")
 
@@ -843,6 +876,8 @@ def validate_event(payload):
         raise ValueError("invalid UTC day") from exc
     if not _VERSION.fullmatch(payload["plugin_version"]):
         raise ValueError("invalid plugin version")
+    if payload["event"] == "active_day":
+        return payload
     if payload["operation"] not in OPERATIONS or payload["source_client"] not in CLIENTS or payload["target_client"] not in CLIENTS:
         raise ValueError("invalid shared enum")
 
@@ -899,6 +934,17 @@ def _as_datetime(value=None):
     if parsed.tzinfo is None:
         raise ValueError("timestamp must be timezone-aware")
     return parsed.astimezone(timezone.utc)
+
+
+def session_start_flush(home=None):
+    """Best-effort consent check and detached flush; never raises to caller."""
+    try:
+        config = load_config(home)
+        if config is not None and config["enabled"]:
+            root = _home(home)
+            spawn_detached_flush(root / STATE_PATH / _QUEUE_NAME, config_path(root))
+    except Exception:
+        pass
 
 
 def _empty_counters():
@@ -1073,12 +1119,22 @@ def _event_key(event):
 
 def increment_counter(event, home=None, now=None):
     validate_event(event)
+    if do_not_track_enabled():
+        return 0
     with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
         config = _locked_config(config_directory, config_fd)
         if config is None or not config["enabled"]:
             return 0
         day = event["day_utc"]
         counters = _load_counters_locked(state_directory, state_fd)
+        if event["event"] != "active_day":
+            marker = {"schema_version": 1, "event": "active_day", "day_utc": day, "plugin_version": event["plugin_version"]}
+            marker_key = _event_key(marker)
+            if not any(entry.get("key") == marker_key for entry in counters["days"].get(day, [])):
+                queued = _read_queue_locked(state_directory, state_fd)
+                queued.append(marker)
+                _store_queue_locked(state_directory, state_fd, queued)
+                counters["days"].setdefault(day, []).append({"key": marker_key, "event": marker, "count": 1})
         entries = counters["days"].setdefault(day, [])
         key = _event_key(event)
         for entry in entries:
@@ -1129,6 +1185,8 @@ def load_last_operation_summary(home=None, now=None):
 
 
 def record_context_feedback(category, severity, home=None, now=None):
+    if do_not_track_enabled():
+        raise TelemetryConfigError("telemetry is disabled by DO_NOT_TRACK")
     config = load_config(home)
     if config is None or not config["enabled"]:
         raise TelemetryConfigError("telemetry is disabled")
@@ -1144,22 +1202,24 @@ def record_context_feedback(category, severity, home=None, now=None):
 
 
 def _aggregate_row(event, count):
+    if event["event"] == "active_day":
+        return dict(event)
     row = {
         "schema_version": 1,
         "event": "daily_aggregate",
         "aggregate": "operation" if event["event"] == "operation_summary" else "context_feedback",
         "day_utc": event["day_utc"],
         "plugin_version": event["plugin_version"],
-        "operation": event["operation"],
-        "source_client": event["source_client"],
-        "target_client": event["target_client"],
         "count": count,
     }
-    fields = (
-        ("result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket")
-        if row["aggregate"] == "operation"
-        else ("feedback_category", "feedback_severity")
-    )
+    if row["aggregate"] == "operation":
+        row.update({
+            "operation": event["operation"],
+            "client_route": f"{event['source_client']}_to_{event['target_client']}",
+        })
+        fields = ("result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "dropped_events_bucket", "normalized_fields_bucket")
+    else:
+        fields = ("feedback_category", "feedback_severity")
     row.update({field: event[field] for field in fields})
     return row
 
@@ -1167,28 +1227,83 @@ def _aggregate_row(event, count):
 def _validate_aggregate(row):
     if not isinstance(row, dict) or type(row.get("schema_version")) is not int or row["schema_version"] != 1:
         raise ValueError("invalid aggregate row")
+    if set(row) == _ACTIVE_DAY_FIELDS and row.get("event") == "active_day":
+        validate_event(row)
+        return row
     if row.get("event") != "daily_aggregate" or type(row.get("count")) is not int or not 1 <= row["count"] <= 10000:
         raise ValueError("invalid aggregate row")
-    common = {"schema_version", "event", "aggregate", "day_utc", "plugin_version", "operation", "source_client", "target_client", "count"}
+    common = {"schema_version", "event", "aggregate", "day_utc", "plugin_version", "count"}
     if row.get("aggregate") == "operation":
-        expected = common | {"result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
+        legacy = common | {"operation", "source_client", "target_client", "result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
+        expected = common | {"operation", "client_route", "result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
+        if set(row) == legacy:
+            row = dict(row)
+            row["client_route"] = f"{row.pop('source_client')}_to_{row.pop('target_client')}"
+            row.pop("redaction_bucket")
         if set(row) != expected:
             raise ValueError("invalid operation aggregate row")
     elif row.get("aggregate") == "context_feedback":
+        legacy = common | {"operation", "source_client", "target_client", "feedback_category", "feedback_severity"}
         expected = common | {"feedback_category", "feedback_severity"}
+        if set(row) == legacy:
+            row = {field: row[field] for field in expected}
         if set(row) != expected:
             raise ValueError("invalid feedback aggregate row")
     else:
         raise ValueError("invalid aggregate row")
     if not isinstance(row.get("day_utc"), str) or not _DAY.fullmatch(row["day_utc"]):
         raise ValueError("invalid aggregate day")
-    event = dict(row)
-    event.pop("event")
-    event.pop("aggregate")
-    event.pop("count")
-    event["event"] = "operation_summary" if row["aggregate"] == "operation" else "context_feedback"
-    validate_event(event)
+    if row["aggregate"] == "operation":
+        if row.get("client_route") not in CLIENT_ROUTES:
+            raise ValueError("invalid operation aggregate row")
+        try:
+            source_client, target_client = row["client_route"].split("_to_", 1)
+        except (AttributeError, ValueError):
+            raise ValueError("invalid operation aggregate row")
+        event = dict(row)
+        event.pop("event")
+        event.pop("aggregate")
+        event.pop("count")
+        event.pop("client_route")
+        event.update({
+            "event": "operation_summary",
+            "source_client": source_client,
+            "target_client": target_client,
+            "redaction_bucket": "zero",
+        })
+        validate_event(event)
+    else:
+        if (
+            type(row.get("count")) is not int
+            or not isinstance(row.get("day_utc"), str)
+            or not isinstance(row.get("plugin_version"), str)
+            or row["feedback_category"] not in FEEDBACK_CATEGORIES
+            or row["feedback_severity"] not in FEEDBACK_SEVERITIES
+        ):
+            raise ValueError("invalid feedback aggregate row")
+        marker = {
+            "schema_version": row["schema_version"],
+            "event": "active_day",
+            "day_utc": row["day_utc"],
+            "plugin_version": row["plugin_version"],
+        }
+        validate_event(marker)
     return row
+
+
+def _is_legacy_feedback_other(row):
+    return (
+        isinstance(row, dict)
+        and row.get("event") == "daily_aggregate"
+        and row.get("aggregate") == "context_feedback"
+        and row.get("feedback_category") == "other"
+    )
+
+
+def _validate_queue_row(row):
+    if _is_legacy_feedback_other(row):
+        return None
+    return _validate_aggregate(row)
 
 
 def _read_queue_snapshot_locked(state_directory, state_fd, limit):
@@ -1230,7 +1345,7 @@ def _read_queue_snapshot_locked(state_directory, state_fd, limit):
             if line.strip():
                 lines.append(bytes(line))
         try:
-            return [_validate_aggregate(json.loads(line)) for line in lines]
+            return [validated for line in lines if (validated := _validate_queue_row(json.loads(line))) is not None]
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise TelemetryConfigError(f"invalid telemetry queue: {state_directory / _QUEUE_NAME}") from exc
     except FileNotFoundError:
@@ -1252,7 +1367,7 @@ def _read_queue_locked(state_directory, state_fd, limit=None):
     if len(lines) > MAX_QUEUE_ROWS:
         raise TelemetryConfigError(f"telemetry queue exceeds row limit: {state_directory / _QUEUE_NAME}")
     try:
-        return [_validate_aggregate(json.loads(line)) for line in lines]
+        return [validated for line in lines if (validated := _validate_queue_row(json.loads(line))) is not None]
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise TelemetryConfigError(f"invalid telemetry queue: {state_directory / _QUEUE_NAME}") from exc
 
@@ -1285,6 +1400,8 @@ def _store_queue(home, rows):
 
 
 def close_day(home=None, now=None):
+    if do_not_track_enabled():
+        return []
     current = _as_day(now)
     with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
         config = _locked_config(config_directory, config_fd)
@@ -1298,7 +1415,11 @@ def close_day(home=None, now=None):
             parsed = date.fromisoformat(day)
             if parsed < current:
                 if parsed >= cutoff:
-                    closed.extend(_aggregate_row(entry["event"], entry["count"]) for entry in entries)
+                    closed.extend(
+                        _aggregate_row(entry["event"], entry["count"])
+                        for entry in entries
+                        if entry["event"]["event"] != "active_day"
+                    )
             else:
                 remaining[day] = entries
         rows = _read_queue_locked(state_directory, state_fd) + closed if closed else []
@@ -1321,6 +1442,8 @@ def close_day(home=None, now=None):
 
 
 def load_batch(home=None, limit=MAX_UPLOAD_ROWS, now=None):
+    if do_not_track_enabled():
+        return _TelemetryBatch([])
     limit = min(MAX_UPLOAD_ROWS, max(0, int(limit)))
     with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
         return _load_batch_locked(state_directory, state_fd, limit, now)
@@ -1426,6 +1549,36 @@ def _clear_flush_error(home):
         pass
 
 
+def _retry_key(row):
+    return hashlib.sha256(json.dumps(row, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _read_retry_state(home):
+    with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+        return _read_json_state(state_directory, state_fd, _RETRY_NAME, {}, MAX_FLUSH_ERROR_BYTES)
+
+
+def _write_retry_state(home, state):
+    with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+        if state:
+            _write_state(state_directory, state_fd, _RETRY_NAME, json.dumps(state, sort_keys=True, separators=(",", ":")))
+        else:
+            _remove_state(state_directory, state_fd, _RETRY_NAME)
+
+
+def _record_diagnostics(home, rejected):
+    with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+        _write_state(state_directory, state_fd, _DIAGNOSTICS_NAME, json.dumps({"rejected_log_records": rejected}))
+
+
+def last_flush_diagnostics(home=None):
+    try:
+        with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
+            return _read_json_state(state_directory, state_fd, _DIAGNOSTICS_NAME, None, MAX_FLUSH_ERROR_BYTES)
+    except Exception:
+        return None
+
+
 def last_flush_error(home=None):
     try:
         with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
@@ -1512,12 +1665,13 @@ def _otlp_value(value):
 def to_otlp_logs(rows):
     records = []
     for row in rows:
-        _validate_aggregate(row)
+        row = _validate_aggregate(row)
         attributes = [
             {"key": key, "value": _otlp_value(row[key])}
             for key in sorted(row)
         ]
-        records.append({"body": {"stringValue": "session_handoff.daily_aggregate"}, "attributes": attributes})
+        body = "session_handoff.active_day" if row["event"] == "active_day" else "session_handoff.daily_aggregate"
+        records.append({"body": {"stringValue": body}, "attributes": attributes})
     return {
         "resourceLogs": [{
             "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "session-handoff"}}]},
@@ -1629,62 +1783,114 @@ class _FlushStatusError(Exception):
         self.code = code
 
 
-def flush_queue(home=None, opener=None, now=None):
-    deadline = time.monotonic() + 3.0
-    response = None
-    batch = None
-    batch_key = None
+def _retry_allowed(row, retry, now):
+    record = retry.get(_retry_key(row))
+    if not record:
+        return True
+    return _as_datetime(now) >= _as_datetime(record["next_attempt_at"])
+
+
+def _retry_after(response, now):
+    value = None
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        value = headers.get("Retry-After")
+    if value is None:
+        return None
     try:
-        with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
-            config = _locked_config(config_directory, config_fd)
-            if config is None or not config["enabled"]:
-                return 0
-            batch = _load_batch_locked(state_directory, state_fd, MAX_UPLOAD_ROWS, now)
-            if not _claim_batch_lease_locked(state_directory, state_fd, batch):
-                return 0
-            batch_key = batch.queue_token
-            if batch_key in _IN_FLIGHT_BATCHES:
-                return 0
-            _IN_FLIGHT_BATCHES.add(batch_key)
-            endpoint = config["endpoint"]
-        request = build_request(endpoint, batch)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return 0
-        if opener is None:
-            response = _NO_REDIRECT_OPENER.open(request, timeout=remaining)
-        elif callable(opener):
-            response = opener(request, timeout=remaining)
-        else:
-            response = opener.open(request, timeout=remaining)
-        status = getattr(response, "status", None)
-        if status is None:
-            status = response.getcode()
-        if not 200 <= status < 300:
-            raise _FlushStatusError(f"unexpected telemetry status {status}", code=status)
-        geturl = getattr(response, "geturl", None)
-        if callable(geturl) and geturl() != endpoint:
-            raise _FlushStatusError("telemetry upload redirected unexpectedly")
-        accepted = _accepted_count(response, len(batch), deadline)
-        ack_batch(home, batch, accepted=accepted, digest=_batch_digest(batch))
-        _clear_flush_error(home)
-        return accepted
-    except Exception as exc:
-        _record_flush_error(home, exc, now)
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _schedule_retry(home, rows, now, response=None):
+    retry = _read_retry_state(home)
+    current = _as_datetime(now)
+    for row in rows:
+        key = _retry_key(row)
+        attempt = int(retry.get(key, {}).get("attempt_count", 0)) + 1
+        delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
+        retry_after = _retry_after(response, now) if response is not None else None
+        if retry_after is not None:
+            delay = max(delay, retry_after)
+        delay = random.uniform(0, delay)
+        retry[key] = {
+            "attempt_count": attempt,
+            "next_attempt_at": (current + timedelta(seconds=delay)).isoformat().replace("+00:00", "Z"),
+        }
+    _write_retry_state(home, retry)
+
+
+def _is_retryable(exc):
+    if isinstance(exc, _FlushStatusError):
+        return exc.code in _RETRYABLE_STATUS
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_STATUS
+    return isinstance(exc, _RETRYABLE_EXCEPTIONS)
+
+
+def flush_queue(home=None, opener=None, now=None):
+    if do_not_track_enabled():
         return 0
-    finally:
-        if batch is not None and getattr(batch, "_lease_claimed", False) and not getattr(batch, "consumed", False):
-            try:
-                _release_batch_lease(home, batch)
-            except Exception:
-                pass
-        if batch_key is not None:
-            _IN_FLIGHT_BATCHES.discard(batch_key)
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                pass
+    deadline = time.monotonic() + 3.0
+    sent = 0
+    for _ in range(4):
+        if time.monotonic() >= deadline:
+            break
+        response = None
+        batch = None
+        batch_key = None
+        try:
+            with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
+                config = _locked_config(config_directory, config_fd)
+                if config is None or not config["enabled"]:
+                    return sent
+                retry = _read_json_state(state_directory, state_fd, _RETRY_NAME, {}, MAX_FLUSH_ERROR_BYTES)
+                rows = _read_queue_locked(state_directory, state_fd)
+                eligible = [row for row in rows if _retry_allowed(row, retry, now)][:MAX_UPLOAD_ROWS]
+                batch = _TelemetryBatch(eligible)
+                batch._queue_snapshot_token = _queue_token_locked(state_directory, state_fd)
+                if not _claim_batch_lease_locked(state_directory, state_fd, batch):
+                    return sent
+                batch_key = batch.queue_token
+                if batch_key in _IN_FLIGHT_BATCHES:
+                    return sent
+                _IN_FLIGHT_BATCHES.add(batch_key)
+                endpoint = config["endpoint"]
+            request = build_request(endpoint, batch)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return sent
+            response = opener(request, timeout=remaining) if callable(opener) else (_NO_REDIRECT_OPENER if opener is None else opener).open(request, timeout=remaining)
+            status = getattr(response, "status", None) or response.getcode()
+            if not 200 <= status < 300:
+                raise _FlushStatusError(f"unexpected telemetry status {status}", code=status)
+            geturl = getattr(response, "geturl", None)
+            if callable(geturl) and geturl() != endpoint:
+                raise _FlushStatusError("telemetry upload redirected unexpectedly")
+            accepted = _accepted_count(response, len(batch), deadline)
+            rejected = len(batch) - accepted
+            if rejected:
+                _record_diagnostics(home, rejected)
+            ack_batch(home, batch, digest=_batch_digest(batch))
+            retry = {key: value for key, value in retry.items() if key not in {_retry_key(row) for row in batch}}
+            _write_retry_state(home, retry)
+            _clear_flush_error(home)
+            sent += len(batch)
+        except Exception as exc:
+            if batch is not None and _is_retryable(exc):
+                _schedule_retry(home, batch, now, response or exc)
+            _record_flush_error(home, exc, now)
+            return sent
+        finally:
+            if batch is not None and getattr(batch, "_lease_claimed", False) and not getattr(batch, "consumed", False):
+                try: _release_batch_lease(home, batch)
+                except Exception: pass
+            if batch_key is not None: _IN_FLIGHT_BATCHES.discard(batch_key)
+            if response is not None:
+                try: response.close()
+                except Exception: pass
+    return sent
 
 
 def detached_flush(queue_path, config_path, now=None):
@@ -1701,10 +1907,12 @@ def detached_flush(queue_path, config_path, now=None):
 
 
 def _sanitized_environment():
-    return {}
+    return {name: os.environ[name] for name in ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE") if name in os.environ}
 
 
 def spawn_detached_flush(queue_path, config_path):
+    if do_not_track_enabled():
+        return
     command = [
         sys.executable,
         str(Path(__file__).parents[1] / "bin/session-handoff"),

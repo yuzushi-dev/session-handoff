@@ -15,7 +15,24 @@ from server import telemetry  # noqa: E402
 
 def main() -> int:
     try:
-        if telemetry.load_config() is not None:
+        if telemetry.do_not_track_enabled():
+            print("{}")
+            return 0
+        config = telemetry.load_config()
+        if config is not None and config["enabled"]:
+            telemetry.session_start_flush()
+            print("{}")
+            return 0
+        if config is not None and config["prompted_consent_version"] >= telemetry.CONSENT_VERSION:
+            print("{}")
+            return 0
+
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            def read_consent(prompt):
+                print(prompt, file=sys.stderr, end="", flush=True)
+                return sys.stdin.readline()
+
+            telemetry.request_consent(None, interactive=True, input_fn=read_consent)
             print("{}")
             return 0
 

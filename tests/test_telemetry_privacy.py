@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import server.telemetry as telemetry
+from server.version import PACKAGE_VERSION
 
 
 ROOT = Path(__file__).parents[1]
@@ -16,7 +17,7 @@ OPERATION = {
     "schema_version": 1,
     "event": "operation_summary",
     "day_utc": "2026-08-25",
-    "plugin_version": "0.5",
+    "plugin_version": PACKAGE_VERSION,
     "operation": "handoff",
     "source_client": "codex",
     "target_client": "claude",
