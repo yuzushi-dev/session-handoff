@@ -23,6 +23,7 @@
     "README.md",
     "hooks/hooks.json",
     "hooks/session-start.py",
+    "hooks/user-prompt-submit.py",
     "docs/telemetry.md"
   ],
   "engines": {

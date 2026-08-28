@@ -112,21 +112,16 @@ def test_enable_prompt_points_to_docs_instead_of_inline_disclosure(tmp_path, mon
     assert "Collected fields" not in seen_prompt["text"]
 
 
-def test_enable_reenables_disabled_marker_with_explicit_yes(tmp_path, monkeypatch):
+def test_declined_consent_is_not_reenabled_by_enable_command(tmp_path, capsys, monkeypatch):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.disabled_config())
     monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: "yes")
+    monkeypatch.setattr(builtins, "input", lambda _prompt: pytest.fail("consent was requested again"))
 
     assert cli._telemetry(["enable"]) == 0
-
-    config = telemetry.load_config(tmp_path)
-    assert config["enabled"] is True
-    assert config["schema_version"] == 1
-    assert config["prompted_consent_version"] == 1
-    assert config["consent_version"] == 1
-    assert config["endpoint"] == telemetry.ENDPOINT
+    assert "declined" in capsys.readouterr().out.lower()
+    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
 
 
 def test_missing_config_generation_changes_after_create_delete_during_consent(tmp_path):
@@ -149,23 +144,32 @@ def test_missing_config_generation_changes_after_create_delete_during_consent(tm
     assert not (tmp_path / CONFIG).exists()
 
 
-@pytest.mark.parametrize("answer", ["", "no", "NO", "y"])
-def test_declined_consent_writes_disabled_marker(tmp_path, monkeypatch, answer):
+@pytest.mark.parametrize(
+    ("answer", "state"),
+    [
+        ("yes", "enabled"),
+        ("YES", "enabled"),
+        ("y", "enabled"),
+        ("Y", "enabled"),
+        ("no", "declined"),
+        ("NO", "declined"),
+        ("n", "declined"),
+        ("", "asked"),
+        ("maybe", "asked"),
+    ],
+)
+def test_consent_parser_records_only_explicit_answers(tmp_path, monkeypatch, answer, state):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
     monkeypatch.setattr(builtins, "input", lambda _prompt: answer)
 
     assert cli._telemetry(["enable"]) == 0
-    assert json.loads((tmp_path / CONFIG).read_text(encoding="utf-8")) == {
-        "schema_version": 1,
-        "enabled": False,
-        "prompted_consent_version": 1,
-    }
+    assert telemetry.load_config(tmp_path)["consent_state"] == state
 
 
 @pytest.mark.parametrize("exception", [EOFError, KeyboardInterrupt])
-def test_consent_input_failure_writes_disabled_marker(tmp_path, monkeypatch, exception):
+def test_consent_input_failure_records_asked_without_declining(tmp_path, monkeypatch, exception):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
@@ -175,7 +179,7 @@ def test_consent_input_failure_writes_disabled_marker(tmp_path, monkeypatch, exc
 
     monkeypatch.setattr(builtins, "input", fail)
     assert cli._telemetry(["enable"]) == 0
-    assert telemetry.load_config(tmp_path)["enabled"] is False
+    assert telemetry.load_config(tmp_path) == telemetry.asked_config()
 
 
 def test_enable_cannot_opt_in_noninteractive_or_from_environment(tmp_path, monkeypatch):
@@ -192,9 +196,9 @@ def test_enable_cannot_opt_in_noninteractive_or_from_environment(tmp_path, monke
     ("config_factory", "field", "value"),
     [
         (telemetry.disabled_config, "schema_version", True),
-        (telemetry.disabled_config, "prompted_consent_version", True),
+        (telemetry.disabled_config, "consent_state", True),
         (telemetry.enabled_config, "schema_version", True),
-        (telemetry.enabled_config, "prompted_consent_version", True),
+        (telemetry.enabled_config, "consent_state", True),
         (telemetry.enabled_config, "consent_version", True),
     ],
 )
@@ -242,11 +246,7 @@ def test_disable_purge_removes_local_telemetry_state_and_preserves_marker(tmp_pa
         (state / name).write_text("private", encoding="utf-8")
 
     assert cli._telemetry(["disable", "--purge"]) == 0
-    assert json.loads((tmp_path / CONFIG).read_text(encoding="utf-8")) == {
-        "schema_version": 1,
-        "enabled": False,
-        "prompted_consent_version": 1,
-    }
+    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
     assert not any(state.iterdir())
 
 
@@ -340,7 +340,7 @@ def test_reinstall_preserves_recorded_choice_without_reprompt(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("exception", [EOFError, KeyboardInterrupt])
-def test_setup_consent_input_failure_records_decline(tmp_path, monkeypatch, exception):
+def test_setup_consent_input_failure_records_asked_without_declining(tmp_path, monkeypatch, exception):
     cli = load_cli()
     fake_setup(monkeypatch, cli, tmp_path, [], interactive=True)
     answers = iter(["yes"])
@@ -354,7 +354,7 @@ def test_setup_consent_input_failure_records_decline(tmp_path, monkeypatch, exce
     monkeypatch.setattr(builtins, "input", input_fn)
 
     assert cli._setup(["--client", "codex"]) == 0
-    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
+    assert telemetry.load_config(tmp_path) == telemetry.asked_config()
 
 
 def test_reinstall_after_telemetry_decline_does_not_reprompt(tmp_path, monkeypatch):
@@ -556,10 +556,10 @@ def test_regressive_marker_is_rejected_and_cannot_replay_an_old_epoch(tmp_path):
 def test_consent_config_deleted_during_prompt_is_failure(tmp_path, capsys, monkeypatch):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
-    telemetry.write_config(tmp_path, telemetry.disabled_config())
     monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
 
     def delete_config(_prompt):
+        telemetry.write_config(tmp_path, telemetry.asked_config())
         (tmp_path / CONFIG).unlink()
         return "yes"
 
@@ -831,7 +831,6 @@ def test_config_lock_cleanup_releases_thread_lock_after_cleanup_failure(
 
 
 def test_disable_wins_over_consent_answer_acquired_before_disable(tmp_path):
-    telemetry.write_config(tmp_path, telemetry.disabled_config())
     original_fchmod = telemetry.os.fchmod
     telemetry.os.fchmod = lambda _fd, _mode: None
     answer_acquired = threading.Event()

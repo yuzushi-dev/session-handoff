@@ -67,6 +67,15 @@ def _telemetry(argv: list[str]) -> int:
             if config is not None and config["enabled"]:
                 print("Telemetry is already enabled.")
                 return 0
+            if telemetry.consent_state(config) == "declined":
+                print("Telemetry consent was declined and cannot be requested again.")
+                return 0
+            if telemetry.consent_state(config) == "asked":
+                print(
+                    "Telemetry consent is pending; reply exactly "
+                    "`session-handoff telemetry yes` or `session-handoff telemetry no`."
+                )
+                return 0
             if not sys.stdin.isatty():
                 print("Telemetry enable requires an interactive terminal.", file=sys.stderr)
                 return 2

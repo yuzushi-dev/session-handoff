@@ -95,15 +95,12 @@ _IN_FLIGHT_BATCHES = set()
 
 CONFIG_PATH = Path(".config/session-handoff/telemetry.json")
 STATE_PATH = Path(".local/state/session-handoff")
-# Canary phase: shared backend, fronted by a Cloudflare Tunnel so it's
-# reachable from any of the owner's machines (infra lives in a separate
-# repo: ~/selfhosted/telemetry/). Rate-limited at nginx (30 req/min/IP).
-# Release/broader publication is still gated on the open items in
-# ~/selfhosted/telemetry/docs/telemetry-canary-report.md.
+# Canary deployment details and release gates are documented in docs/telemetry.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
 CONSENT_VERSION = 1
 TELEMETRY_DETAILS_URL = "https://github.com/yuzushi-dev/session-handoff/blob/main/docs/telemetry.md"
-CONSENT_PROMPT = f"Enable anonymous telemetry? Full details at: {TELEMETRY_DETAILS_URL} [y/N] "
+CONSENT_STATES = frozenset({"unasked", "asked", "enabled", "declined"})
+CONSENT_PROMPT = f"Enable anonymous telemetry? Full details at: {TELEMETRY_DETAILS_URL} [y/yes/n/no] "
 
 
 class TelemetryConfigError(ValueError):
@@ -123,8 +120,20 @@ def config_path(home=None):
     return _home(home) / CONFIG_PATH
 
 
+def consent_state(config):
+    return "unasked" if config is None else config["consent_state"]
+
+
+def unasked_config():
+    return {"schema_version": 1, "enabled": False, "consent_state": "unasked"}
+
+
+def asked_config():
+    return {"schema_version": 1, "enabled": False, "consent_state": "asked"}
+
+
 def disabled_config():
-    return {"schema_version": 1, "enabled": False, "prompted_consent_version": CONSENT_VERSION}
+    return {"schema_version": 1, "enabled": False, "consent_state": "declined"}
 
 
 def enabled_config(consented_at=None):
@@ -133,7 +142,7 @@ def enabled_config(consented_at=None):
     return {
         "schema_version": 1,
         "enabled": True,
-        "prompted_consent_version": CONSENT_VERSION,
+        "consent_state": "enabled",
         "consent_version": CONSENT_VERSION,
         "consented_at": consented_at,
         "endpoint": ENDPOINT,
@@ -147,6 +156,36 @@ def _validate_config(config):
         raise TelemetryConfigError("invalid telemetry config schema version")
     if type(config.get("enabled")) is not bool:
         raise TelemetryConfigError("invalid telemetry config enabled flag")
+    if "consent_state" in config:
+        if not isinstance(config["consent_state"], str) or config["consent_state"] not in CONSENT_STATES:
+            raise TelemetryConfigError("invalid telemetry consent state")
+        if config["consent_state"] == "enabled":
+            if config["enabled"] is not True:
+                raise TelemetryConfigError("invalid telemetry consent state")
+            expected = {
+                "schema_version", "enabled", "consent_state", "consent_version", "consented_at", "endpoint"
+            }
+            if set(config) != expected:
+                raise TelemetryConfigError("invalid enabled telemetry config fields")
+            if type(config["consent_version"]) is not int or config["consent_version"] != CONSENT_VERSION:
+                raise TelemetryConfigError("invalid telemetry consent version")
+            if not isinstance(config["consented_at"], str):
+                raise TelemetryConfigError("invalid telemetry consent timestamp")
+            try:
+                parsed = datetime.fromisoformat(config["consented_at"].replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise TelemetryConfigError("invalid telemetry consent timestamp") from exc
+            if parsed.tzinfo != timezone.utc or parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != config["consented_at"]:
+                raise TelemetryConfigError("invalid telemetry consent timestamp")
+            if config["endpoint"] != ENDPOINT:
+                raise TelemetryConfigError("invalid telemetry endpoint")
+            return config
+        if config["enabled"] is not False or set(config) != {"schema_version", "enabled", "consent_state"}:
+            raise TelemetryConfigError("invalid disabled telemetry config")
+        return config
+
+    # Versions before consent_state recorded only that a prompt had happened.
+    # Preserve that fact without guessing whether the answer was yes or no.
     if config["enabled"] is False:
         if (
             type(config.get("prompted_consent_version")) is not int
@@ -155,7 +194,7 @@ def _validate_config(config):
             raise TelemetryConfigError("invalid telemetry consent version")
         if set(config) != {"schema_version", "enabled", "prompted_consent_version"}:
             raise TelemetryConfigError("invalid disabled telemetry config")
-        return config
+        return asked_config()
     if set(config) != {
         "schema_version", "enabled", "prompted_consent_version", "consent_version", "consented_at", "endpoint"
     }:
@@ -175,7 +214,7 @@ def _validate_config(config):
         raise TelemetryConfigError("invalid telemetry consent timestamp")
     if config["endpoint"] != ENDPOINT:
         raise TelemetryConfigError("invalid telemetry endpoint")
-    return config
+    return enabled_config(config["consented_at"])
 
 
 def _require_secure_filesystem():
@@ -590,11 +629,65 @@ def write_config(home, config):
     return path
 
 
+def _read_config_locked(directory, directory_fd):
+    try:
+        return _validate_config(_read_config(directory, directory_fd, directory / CONFIG_PATH.name))
+    except FileNotFoundError:
+        return None
+
+
+def _transition_consent(home, target):
+    if do_not_track_enabled():
+        return False
+    if target not in {"asked", "enabled", "declined"}:
+        raise ValueError("invalid telemetry consent transition")
+    root = _home(home)
+    path = root / CONFIG_PATH
+    try:
+        directory, directory_fd = _open_secure_directory(root, CONFIG_PATH.parent, create=True)
+        try:
+            with _config_directory_lock(directory, directory_fd) as lock_fd:
+                generation = _read_generation_locked(directory, directory_fd)
+                current = _read_config_locked(directory, directory_fd)
+                state = consent_state(current)
+                if target == "asked":
+                    allowed = state == "unasked"
+                else:
+                    allowed = state in {"unasked", "asked"}
+                if not allowed:
+                    return False
+                config = asked_config() if target == "asked" else (
+                    enabled_config() if target == "enabled" else disabled_config()
+                )
+                _bump_lock_marker(lock_fd, directory)
+                _write_config_locked(directory, directory_fd, config)
+                _write_generation_locked(directory, directory_fd, generation + 1)
+                return True
+        finally:
+            os.close(directory_fd)
+    except TelemetryConfigError:
+        raise
+    except (AttributeError, NotImplementedError, RuntimeError, TypeError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TelemetryConfigError(f"telemetry operation failed: {path}: {exc}") from exc
+
+
+def claim_consent_prompt(home=None):
+    """Atomically record that the one-time consent question is being shown."""
+    return _transition_consent(home, "asked")
+
+
+def record_consent_response(home=None, *, enabled):
+    """Atomically resolve a pending consent question from an explicit answer."""
+    if type(enabled) is not bool:
+        raise ValueError("consent response must be boolean")
+    return _transition_consent(home, "enabled" if enabled else "declined")
+
+
 def request_consent(home, *, interactive, input_fn=None):
     if do_not_track_enabled():
         return None
     current, signature = _load_config_snapshot(home)
-    if current is not None and current["enabled"]:
+    if current is not None and consent_state(current) != "unasked":
         return current
     if not interactive:
         raise TelemetryConfigError("telemetry consent requires an interactive terminal")
@@ -603,7 +696,13 @@ def request_consent(home, *, interactive, input_fn=None):
     except (EOFError, KeyboardInterrupt):
         answer = ""
         print()
-    config = enabled_config() if answer.strip().lower() == "yes" else disabled_config()
+    normalized_answer = answer.strip().lower()
+    if normalized_answer in {"y", "yes"}:
+        config = enabled_config()
+    elif normalized_answer in {"n", "no"}:
+        config = disabled_config()
+    else:
+        config = asked_config()
     root = _home(home)
     path = root / CONFIG_PATH
     try:
@@ -611,14 +710,8 @@ def request_consent(home, *, interactive, input_fn=None):
         directory, directory_fd = opened
         try:
             with _config_directory_lock(directory, directory_fd) as lock_fd:
-                try:
-                    current = _validate_config(
-                        _read_config(directory, directory_fd, directory / CONFIG_PATH.name)
-                    )
-                    current_signature = _config_signature(directory, directory_fd, lock_fd)
-                except FileNotFoundError:
-                    current = None
-                    current_signature = _config_signature(directory, directory_fd, lock_fd)
+                current = _read_config_locked(directory, directory_fd)
+                current_signature = _config_signature(directory, directory_fd, lock_fd)
                 if current is not None and current["enabled"]:
                     return current
                 if current_signature != signature:
@@ -785,7 +878,7 @@ def disable(home, *, purge=False):
                 raise TelemetryConfigError("telemetry purge incomplete: " + "; ".join(failures))
     try:
         config = load_config(home)
-        if config is not None and not config["enabled"]:
+        if config is not None and consent_state(config) == "declined":
             root = _home(home)
             opened = _open_secure_directory(root, CONFIG_PATH.parent, create=True)
             directory, directory_fd = opened
@@ -999,7 +1092,7 @@ def _state_lock(home):
 
 def _locked_config(config_directory, config_fd):
     try:
-        return _validate_config(_read_config(config_directory, config_fd, config_directory / CONFIG_PATH.name))
+        return _read_config_locked(config_directory, config_fd)
     except FileNotFoundError:
         return None
     except (AttributeError, NotImplementedError, RuntimeError, TypeError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
