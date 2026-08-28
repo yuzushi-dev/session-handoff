@@ -102,7 +102,8 @@ STATE_PATH = Path(".local/state/session-handoff")
 # ~/selfhosted/telemetry/docs/telemetry-canary-report.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
 CONSENT_VERSION = 1
-CONSENT_PROMPT = "Enable anonymous telemetry? Full details at: docs/telemetry.md [y/N] "
+TELEMETRY_DETAILS_URL = "https://github.com/yuzushi-dev/session-handoff/blob/main/docs/telemetry.md"
+CONSENT_PROMPT = f"Enable anonymous telemetry? Full details at: {TELEMETRY_DETAILS_URL} [y/N] "
 
 
 class TelemetryConfigError(ValueError):

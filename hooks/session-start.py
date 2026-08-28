@@ -43,7 +43,8 @@ def main() -> int:
                 "systemMessage": (
                     "session-handoff can send anonymous aggregate telemetry "
                     "(opt-in, off by default). Run "
-                    f"`python3 {cli} telemetry enable` to turn it on."
+                    f"`python3 {cli} telemetry enable` to turn it on. "
+                    f"Details: {telemetry.TELEMETRY_DETAILS_URL}"
                 ),
             }
         }))

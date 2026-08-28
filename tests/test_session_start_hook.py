@@ -151,3 +151,17 @@ def test_plugin_manifest_surfaces_include_session_start_hook():
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     assert "hooks/hooks.json" in package["files"]
     assert "hooks/session-start.py" in package["files"]
+
+
+def test_consent_notice_links_to_the_public_details_url(tmp_path):
+    """A consent request the user cannot verify is not an informed one: the notice
+    must carry a resolvable URL, not a repo-relative path that an installed plugin
+    does not have."""
+    assert telemetry.TELEMETRY_DETAILS_URL.startswith("https://")
+    assert telemetry.TELEMETRY_DETAILS_URL in telemetry.CONSENT_PROMPT
+
+    result = run_hook(tmp_path)
+
+    assert result.returncode == 0
+    message = json.loads(result.stdout)["hookSpecificOutput"]["systemMessage"]
+    assert telemetry.TELEMETRY_DETAILS_URL in message
