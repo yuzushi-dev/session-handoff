@@ -200,7 +200,6 @@ def test_create_validation_failure_records_only_safe_summary(monkeypatch, tmp_pa
         "redacted_count": 0,
         "dropped_events": 0,
         "normalized_fields": 0,
-        "duration_seconds": 0,
     }
 
 

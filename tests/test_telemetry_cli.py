@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import server.telemetry as telemetry
+from server.version import PACKAGE_VERSION
 
 
 ROOT = Path(__file__).parents[1]
@@ -56,6 +57,30 @@ def test_status_is_disabled_by_default(tmp_path, capsys, monkeypatch):
 
     assert cli._telemetry(["status"]) == 0
     assert "disabled" in capsys.readouterr().out.lower()
+
+
+def test_status_reports_runtime_do_not_track_override_without_rewriting_config(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    before = telemetry.load_config(tmp_path)
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+
+    assert cli._telemetry(["status"]) == 0
+    assert "DO_NOT_TRACK" in capsys.readouterr().out
+    assert telemetry.load_config(tmp_path) == before
+
+
+def test_enable_is_a_noop_under_do_not_track(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setenv("DO_NOT_TRACK", "yes")
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: pytest.fail("unexpected prompt"))
+
+    assert cli._telemetry(["enable"]) == 0
+    assert "DO_NOT_TRACK" in capsys.readouterr().out
+    assert not (tmp_path / CONFIG).exists()
 
 
 def test_enable_requires_interactive_explicit_yes(tmp_path, capsys, monkeypatch):
@@ -1232,7 +1257,7 @@ def test_telemetry_preview_renders_otlp_without_upload(tmp_path, capsys, monkeyp
             "schema_version": 1,
             "event": "operation_summary",
             "day_utc": "2026-08-25",
-            "plugin_version": "0.5",
+            "plugin_version": PACKAGE_VERSION,
             "operation": "handoff",
             "source_client": "codex",
             "target_client": "claude",
@@ -1266,7 +1291,7 @@ def test_telemetry_preview_uses_exact_upload_request_bytes_and_headers(tmp_path,
             "schema_version": 1,
             "event": "operation_summary",
             "day_utc": "2026-08-25",
-            "plugin_version": "0.5",
+            "plugin_version": PACKAGE_VERSION,
             "operation": "handoff",
             "source_client": "codex",
             "target_client": "claude",
@@ -1301,7 +1326,7 @@ def test_telemetry_preview_with_disabled_config_does_not_leak_endpoint(tmp_path,
         "schema_version": 1,
         "event": "operation_summary",
         "day_utc": "2026-08-25",
-        "plugin_version": "0.5",
+        "plugin_version": PACKAGE_VERSION,
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "claude",
@@ -1351,7 +1376,7 @@ def _recent_operation_event():
         "schema_version": 1,
         "event": "operation_summary",
         "day_utc": telemetry.datetime.now(telemetry.timezone.utc).date().isoformat(),
-        "plugin_version": "0.5",
+        "plugin_version": PACKAGE_VERSION,
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "codex",
@@ -1378,14 +1403,15 @@ def test_telemetry_report_records_enum_only_feedback_without_upload(tmp_path, mo
         "schema_version": 1,
         "event": "context_feedback",
         "day_utc": event["day_utc"],
-        "plugin_version": "0.5",
+        "plugin_version": PACKAGE_VERSION,
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "codex",
         "feedback_category": "constraint",
         "feedback_severity": "recoverable",
     }
-    assert not (tmp_path / telemetry.STATE_PATH / telemetry._QUEUE_NAME).exists()
+    queued = telemetry._read_queue(tmp_path)
+    assert queued and all(row["event"] == "active_day" for row in queued)
 
 
 def test_telemetry_report_is_disabled_and_rejects_free_text(tmp_path, monkeypatch, capsys):
@@ -1393,12 +1419,14 @@ def test_telemetry_report_is_disabled_and_rejects_free_text(tmp_path, monkeypatc
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.disabled_config())
 
-    assert cli._telemetry(["report", "--category", "other", "--severity", "blocked"]) == 1
+    assert cli._telemetry(["report", "--category", "constraint", "--severity", "blocked"]) == 1
     assert "disabled" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli._telemetry(
             ["report", "--category", "other", "--severity", "blocked", "--text", "secret"]
         )
+    with pytest.raises(SystemExit):
+        cli._telemetry(["report", "--category", "other", "--severity", "blocked"])
 
 
 def test_last_operation_summary_expires_and_is_removed(tmp_path):

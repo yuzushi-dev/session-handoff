@@ -45,6 +45,14 @@ def _telemetry(argv: list[str]) -> int:
     home = _home()
     try:
         config = None if args.command == "disable" and args.purge else telemetry.load_config(home)
+        if telemetry.do_not_track_enabled() and args.command in {"status", "enable", "flush"}:
+            if args.command == "status":
+                print("Telemetry: disabled by DO_NOT_TRACK.")
+            elif args.command == "enable":
+                print("Telemetry is disabled by DO_NOT_TRACK.")
+            else:
+                print("Telemetry flush skipped because DO_NOT_TRACK is set.")
+            return 0
         if args.command == "status":
             if config is None or not config["enabled"]:
                 print("Telemetry: disabled.")

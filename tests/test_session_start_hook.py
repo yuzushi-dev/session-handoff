@@ -1,4 +1,7 @@
 import json
+import builtins
+import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -9,6 +12,19 @@ from server import telemetry
 
 ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "hooks/session-start.py"
+
+
+class TTYStream(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def load_hook():
+    spec = importlib.util.spec_from_file_location("session_start_hook", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_hook(home):
@@ -33,6 +49,68 @@ def test_session_start_hook_nudges_until_consent_is_recorded(tmp_path):
     assert str(ROOT / "bin/session-handoff") in message
 
 
+def test_session_start_hook_prompts_once_when_both_streams_are_tty(tmp_path, monkeypatch):
+    hook = load_hook()
+    output = TTYStream()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook.sys, "stdin", TTYStream("yes\n"))
+    monkeypatch.setattr(hook.sys, "stdout", output)
+
+    assert hook.main() == 0
+    assert telemetry.load_config(tmp_path)["enabled"] is True
+    assert json.loads(output.getvalue()) == {}
+
+
+def test_session_start_hook_decline_is_persisted_without_reminder(tmp_path, monkeypatch):
+    hook = load_hook()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook.sys, "stdin", TTYStream("no\n"))
+    monkeypatch.setattr(hook.sys, "stdout", TTYStream())
+
+    assert hook.main() == 0
+    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
+
+
+def test_session_start_hook_reprompts_for_an_older_consent_version(tmp_path, monkeypatch):
+    hook = load_hook()
+    old_config = telemetry.disabled_config()
+    old_config["prompted_consent_version"] = telemetry.CONSENT_VERSION - 1
+    telemetry.write_config(tmp_path, old_config)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook.sys, "stdin", TTYStream("no\n"))
+    monkeypatch.setattr(hook.sys, "stdout", TTYStream())
+
+    assert hook.main() == 0
+    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
+
+
+def test_session_start_hook_does_not_prompt_without_tty(tmp_path, monkeypatch):
+    hook = load_hook()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(hook.sys, "stdin", TTYStream())
+    monkeypatch.setattr(hook.sys, "stdout", io.StringIO())
+    monkeypatch.setattr(builtins, "input", lambda _prompt: pytest.fail("unexpected prompt"))
+
+    assert hook.main() == 0
+    assert telemetry.load_config(tmp_path) is None
+
+
+def test_session_start_hook_does_not_prompt_or_flush_when_do_not_track_is_set(tmp_path, monkeypatch):
+    hook = load_hook()
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    calls = []
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    monkeypatch.setattr(hook.telemetry, "session_start_flush", lambda: calls.append(True))
+    monkeypatch.setattr(hook.sys, "stdin", TTYStream())
+    monkeypatch.setattr(hook.sys, "stdout", TTYStream())
+    monkeypatch.setattr(builtins, "input", lambda _prompt: pytest.fail("unexpected prompt"))
+
+    assert hook.main() == 0
+    assert calls == []
+    assert telemetry.load_config(tmp_path)["enabled"] is True
+
+
 def test_session_start_hook_is_silent_after_declining(tmp_path):
     telemetry.write_config(tmp_path, telemetry.disabled_config())
 
@@ -40,6 +118,14 @@ def test_session_start_hook_is_silent_after_declining(tmp_path):
 
     assert result.returncode == 0
     assert json.loads(result.stdout) == {}
+
+
+def test_session_start_hook_spawns_flush_for_enabled_consent(tmp_path, monkeypatch):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    calls = []
+    monkeypatch.setattr(telemetry, "spawn_detached_flush", lambda *args: calls.append(args))
+    assert telemetry.session_start_flush(tmp_path) is None
+    assert calls == [(tmp_path / telemetry.STATE_PATH / telemetry._QUEUE_NAME, telemetry.config_path(tmp_path))]
 
 
 def test_session_start_hook_fails_open_on_invalid_config(tmp_path):

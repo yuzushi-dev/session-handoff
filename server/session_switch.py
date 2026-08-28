@@ -27,15 +27,17 @@ from typing import Any, Callable
 try:
     from .migration import MigrationError, migrate_session, migration_telemetry_summary
     from . import telemetry
+    from .version import PACKAGE_VERSION
 except ImportError:
     from migration import MigrationError, migrate_session, migration_telemetry_summary
     import telemetry  # type: ignore[no-redef]
+    from version import PACKAGE_VERSION
 
 CONTROL_PATH_ENV = "SESSION_HANDOFF_CONTROL"
 CONTROL_TOKEN_ENV = "SESSION_HANDOFF_CONTROL_TOKEN"
 REQUEST_LIMIT = 64 * 1024
 SUPPORTED_CLIENTS = {"codex", "claude"}
-TELEMETRY_PLUGIN_VERSION = "0.5"
+TELEMETRY_PLUGIN_VERSION = PACKAGE_VERSION
 TELEMETRY_SUMMARY_FIELDS = frozenset(
     {"handoff_bytes", "redacted_count", "dropped_events", "normalized_fields", "duration_seconds"}
 )
@@ -84,7 +86,7 @@ def _operation_event(summary: dict[str, Any]) -> dict[str, Any]:
         "target_client": summary["target_client"],
         "result": summary["result"],
         "failure_stage": summary["failure_stage"],
-        "duration_bucket": telemetry.bucket_duration(safe.get("duration_seconds", 0)),
+        "duration_bucket": telemetry.bucket_duration(safe.get("duration_seconds")),
         "handoff_bytes_bucket": telemetry.bucket_handoff_bytes(int(safe.get("handoff_bytes", 0))),
         "redaction_bucket": telemetry.bucket_count(int(safe.get("redacted_count", 0))),
         "dropped_events_bucket": telemetry.bucket_count(int(safe.get("dropped_events", 0))),
@@ -97,6 +99,8 @@ def _operation_event(summary: dict[str, Any]) -> dict[str, Any]:
 def record_terminal_outcome(summary: dict[str, Any]) -> None:
     """Record one validated, aggregate-only outcome before detached upload."""
     try:
+        if telemetry.do_not_track_enabled():
+            return
         home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
         config = telemetry.load_config(home)
         if config is None or not config["enabled"]:
@@ -607,6 +611,7 @@ class SessionSupervisor:
         if executable:
             self.client_executables[client] = executable
         self.migrate = migrate
+        telemetry.session_start_flush()
 
     def _client_executable(self, client: str) -> str | None:
         return self.client_executables.get(client) or shutil.which(client)
@@ -745,7 +750,7 @@ class SessionSupervisor:
                         record_terminal_outcome({
                             "operation": "migrate", "source_client": source_client,
                             "target_client": target_client, "result": "failure",
-                            "failure_stage": "validation", "duration_seconds": 0,
+                            "failure_stage": "validation",
                         })
                         continue
                     target_executable = self._client_executable(target_client)
@@ -757,7 +762,7 @@ class SessionSupervisor:
                         record_terminal_outcome({
                             "operation": "migrate", "source_client": source_client,
                             "target_client": target_client, "result": "failure",
-                            "failure_stage": "control", "duration_seconds": 0,
+                            "failure_stage": "control",
                         })
                         continue
                     self._terminate(process)

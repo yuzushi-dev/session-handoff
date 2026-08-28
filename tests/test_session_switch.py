@@ -11,6 +11,7 @@ from server.session_switch import (
     CONTROL_PATH_ENV,
     CONTROL_TOKEN_ENV,
     SessionSupervisor,
+    _operation_event,
     _fresh_session_args,
     handoff_prompt,
     write_migration_request,
@@ -302,6 +303,18 @@ def test_supervisor_records_handoff_success_after_target_terminal_state(monkeypa
         "duration_seconds": summaries[0]["duration_seconds"],
     }
     assert summaries[0]["duration_seconds"] >= 0
+
+
+def test_operation_event_marks_missing_duration_as_not_measured():
+    event = _operation_event({
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "claude",
+        "result": "failure",
+        "failure_stage": "validation",
+    })
+
+    assert event["duration_bucket"] == "not_measured"
 
 
 def test_supervisor_records_target_resume_failure(monkeypatch, tmp_path):

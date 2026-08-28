@@ -22,6 +22,7 @@ BUNDLE_ENTRIES = (
     ".codex-plugin",
     ".mcp.json",
     "mcp.json",
+    "package.json",
     "plugin.json",
     "README.md",
     "hooks",

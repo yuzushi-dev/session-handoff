@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from server import handoff_mcp
+from server import handoff_mcp, session_switch
 
 
 ROOT = Path(__file__).parents[1]
@@ -21,7 +21,7 @@ def test_portable_and_native_manifests_agree():
 
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
-    assert portable["version"] == codex["version"] == claude["version"] == "0.5.5"
+    assert portable["version"] == codex["version"] == claude["version"] == load_json("package.json")["version"]
     assert set(portable) <= {
         "$schema",
         "name",
@@ -34,6 +34,28 @@ def test_portable_and_native_manifests_agree():
         "keywords",
         "extensions",
     }
+
+
+def test_all_package_version_sources_agree():
+    package = load_json("package.json")
+    sources = {
+        "package.json": package["version"],
+        "plugin.json": load_json("plugin.json")["version"],
+        ".codex-plugin/plugin.json": load_json(".codex-plugin/plugin.json")["version"],
+        ".claude-plugin/plugin.json": load_json(".claude-plugin/plugin.json")["version"],
+        "server/handoff_mcp.py": handoff_mcp.SERVER_VERSION,
+        "server/session_switch.py": session_switch.TELEMETRY_PLUGIN_VERSION,
+    }
+
+    assert len(set(sources.values())) == 1, sources
+    event = session_switch._operation_event({
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "claude",
+        "result": "success",
+        "failure_stage": "none",
+    })
+    assert event["plugin_version"] == package["version"]
 
 
 def test_portable_mcp_config_uses_agent_plugins_paths():

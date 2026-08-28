@@ -6,11 +6,13 @@ import multiprocessing
 import os
 import time
 import threading
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
 
 import server.telemetry as telemetry
+from server.version import PACKAGE_VERSION
 from server.telemetry import (
     bucket_count,
     bucket_duration,
@@ -24,7 +26,7 @@ OPERATION = {
     "schema_version": 1,
     "event": "operation_summary",
     "day_utc": "2026-08-25",
-    "plugin_version": "0.5",
+    "plugin_version": PACKAGE_VERSION,
     "operation": "handoff",
     "source_client": "codex",
     "target_client": "claude",
@@ -41,13 +43,39 @@ FEEDBACK = {
     "schema_version": 1,
     "event": "context_feedback",
     "day_utc": "2026-08-25",
-    "plugin_version": "0.5",
+    "plugin_version": PACKAGE_VERSION,
     "operation": "migrate",
     "source_client": "claude",
     "target_client": "codex",
     "feedback_category": "constraint",
     "feedback_severity": "recoverable",
 }
+
+
+def test_do_not_track_suppresses_consent_without_writing_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+
+    assert telemetry.request_consent(tmp_path, interactive=True, input_fn=lambda _: pytest.fail("prompted")) is None
+    assert not (tmp_path / telemetry.CONFIG_PATH).exists()
+
+
+def test_do_not_track_suppresses_collection_and_flush_without_rewriting_enabled_config(tmp_path, monkeypatch):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    monkeypatch.setenv("DO_NOT_TRACK", "true")
+    opener = lambda *_args, **_kwargs: pytest.fail("uploaded")
+
+    assert telemetry.increment_counter(OPERATION, tmp_path) == 0
+    assert telemetry.flush_queue(tmp_path, opener=opener) == 0
+    assert telemetry.load_config(tmp_path) == telemetry.enabled_config(
+        consented_at=telemetry.load_config(tmp_path)["consented_at"]
+    )
+
+
+def test_do_not_track_zero_does_not_suppress_collection(tmp_path, monkeypatch):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    monkeypatch.setenv("DO_NOT_TRACK", "0")
+
+    assert telemetry.increment_counter(OPERATION, tmp_path) == 1
 
 
 @pytest.mark.parametrize("payload", [OPERATION, FEEDBACK])
@@ -72,6 +100,112 @@ def test_increment_and_close_day_aggregate_daily_rows(tmp_path):
     assert [row["count"] for row in closed] == [2, 1]
     assert all(row["event"] == "daily_aggregate" for row in closed)
     assert not (tmp_path / telemetry.STATE_PATH / "telemetry-counters.json").exists()
+
+
+def test_operation_aggregate_uses_client_route_and_omits_redaction_bucket():
+    row = telemetry._aggregate_row(OPERATION, 3)
+
+    assert set(row) == {
+        "schema_version", "event", "aggregate", "day_utc", "plugin_version",
+        "operation", "client_route", "count", "result", "failure_stage",
+        "duration_bucket", "handoff_bytes_bucket", "dropped_events_bucket",
+        "normalized_fields_bucket",
+    }
+    assert row["client_route"] == "codex_to_claude"
+    assert "redaction_bucket" not in row
+
+
+def test_context_feedback_aggregate_omits_operation_and_client_dimensions():
+    row = telemetry._aggregate_row(FEEDBACK, 2)
+
+    assert set(row) == {
+        "schema_version", "event", "aggregate", "day_utc", "plugin_version",
+        "count", "feedback_category", "feedback_severity",
+    }
+
+
+def test_legacy_queue_row_is_normalized_without_error(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    legacy = {
+        "schema_version": 1,
+        "event": "daily_aggregate",
+        "aggregate": "operation",
+        "day_utc": OPERATION["day_utc"],
+        "plugin_version": OPERATION["plugin_version"],
+        "operation": OPERATION["operation"],
+        "source_client": OPERATION["source_client"],
+        "target_client": OPERATION["target_client"],
+        "count": 1,
+        "result": OPERATION["result"],
+        "failure_stage": OPERATION["failure_stage"],
+        "duration_bucket": OPERATION["duration_bucket"],
+        "handoff_bytes_bucket": OPERATION["handoff_bytes_bucket"],
+        "redaction_bucket": OPERATION["redaction_bucket"],
+        "dropped_events_bucket": OPERATION["dropped_events_bucket"],
+        "normalized_fields_bucket": OPERATION["normalized_fields_bucket"],
+    }
+    telemetry._store_queue(tmp_path, [legacy])
+
+    rows = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
+
+    assert rows[0]["client_route"] == "codex_to_claude"
+    assert "source_client" not in rows[0]
+    assert "target_client" not in rows[0]
+    assert "redaction_bucket" not in rows[0]
+
+
+def test_legacy_feedback_other_is_dropped_without_error(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    legacy = {
+        "schema_version": 1,
+        "event": "daily_aggregate",
+        "aggregate": "context_feedback",
+        "day_utc": FEEDBACK["day_utc"],
+        "plugin_version": FEEDBACK["plugin_version"],
+        "operation": FEEDBACK["operation"],
+        "source_client": FEEDBACK["source_client"],
+        "target_client": FEEDBACK["target_client"],
+        "count": 1,
+        "feedback_category": "other",
+        "feedback_severity": FEEDBACK["feedback_severity"],
+    }
+    telemetry._store_queue(tmp_path, [legacy])
+
+    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == []
+
+
+def test_otlp_rows_have_only_contract_attributes():
+    row = telemetry._aggregate_row(OPERATION, 1)
+
+    records = telemetry.to_otlp_logs([row])["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    attributes = {item["key"] for item in records[0]["attributes"]}
+
+    assert attributes == set(row)
+    assert {"source_client", "target_client", "redaction_bucket"}.isdisjoint(attributes)
+
+
+def test_feedback_category_other_is_rejected():
+    with pytest.raises(ValueError):
+        validate_event(FEEDBACK | {"feedback_category": "other"})
+
+
+def test_first_use_of_day_queues_one_active_day_marker_without_partial_operation(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(OPERATION, tmp_path, now="2026-08-25T12:00:00Z")
+    telemetry.increment_counter(OPERATION, tmp_path, now="2026-08-25T13:00:00Z")
+
+    rows = telemetry._read_queue(tmp_path)
+    assert [row["event"] for row in rows] == ["active_day"]
+    assert rows[0]["day_utc"] == "2026-08-25"
+    assert "result" not in rows[0]
+
+
+def test_retention_keeps_thirty_days(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    old = telemetry._aggregate_row(OPERATION | {"day_utc": "2026-08-01"}, 1)
+    telemetry._store_queue(tmp_path, [old])
+
+    assert telemetry.load_batch(tmp_path, now="2026-08-30T00:00:00Z") == [old]
 
 
 def test_queue_is_private_atomic_and_bounded_by_age_count_and_bytes(tmp_path):
@@ -123,8 +257,9 @@ def test_load_batch_purges_stale_queue_rows_without_counters(tmp_path):
 
     batch = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
-    assert batch == [fresh]
-    assert telemetry._read_queue(tmp_path) == [fresh]
+    assert len(batch) == telemetry.MAX_UPLOAD_ROWS
+    assert all(row == stale for row in batch)
+    assert len(telemetry._read_queue(tmp_path)) == 34
 
 
 def test_load_batch_purges_stale_rows_after_first_upload_batch(tmp_path):
@@ -135,7 +270,7 @@ def test_load_batch_purges_stale_rows_after_first_upload_batch(tmp_path):
 
     telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
-    assert stale not in telemetry._read_queue(tmp_path)
+    assert stale in telemetry._read_queue(tmp_path)
 
 
 def test_load_batch_purges_stale_rows_anywhere_within_bounded_queue(tmp_path):
@@ -153,7 +288,7 @@ def test_load_batch_purges_stale_rows_anywhere_within_bounded_queue(tmp_path):
     batch = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
     assert len(batch) == telemetry.MAX_UPLOAD_ROWS
-    assert stale not in telemetry._read_queue(tmp_path)
+    assert stale in telemetry._read_queue(tmp_path)
 
 
 def test_copying_batch_gets_fresh_nonce_and_cannot_ack_replayed_batch(tmp_path):
@@ -534,17 +669,16 @@ def test_detached_flush_closes_prior_utc_day_and_preserves_current_counter(tmp_p
     ) == 0
 
     assert called == [tmp_path]
-    assert len(telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")) == 1
+    assert len(telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")) == 3
     counters = json.loads((tmp_path / telemetry.STATE_PATH / telemetry._COUNTERS_NAME).read_text())
     assert set(counters["days"]) == {"2026-08-26"}
 
 
-def test_close_day_discards_stale_only_counters(tmp_path):
+def test_close_day_keeps_stale_only_counters_within_retention(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(OPERATION | {"day_utc": "2026-08-01"}, tmp_path, now="2026-08-01T00:00:00Z")
 
-    assert telemetry.close_day(tmp_path, now="2026-08-10T00:00:00Z") == []
-    assert not (tmp_path / telemetry.STATE_PATH / telemetry._COUNTERS_NAME).exists()
+    assert telemetry.close_day(tmp_path, now="2026-08-10T00:00:00Z")
 
 
 def test_close_day_deduplicates_rows_after_queue_commit_retry(tmp_path):
@@ -555,7 +689,7 @@ def test_close_day_deduplicates_rows_after_queue_commit_retry(tmp_path):
 
     telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
 
-    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == [row]
+    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == [row, {"day_utc": "2026-08-25", "event": "active_day", "plugin_version": PACKAGE_VERSION, "schema_version": 1}]
 
 
 def test_config_read_is_capped_before_json_allocation(tmp_path, monkeypatch):
@@ -627,7 +761,7 @@ def test_empty_success_response_does_not_ack_batch(tmp_path):
     [
         b'{"partialSuccess":{"rejectedLogRecords":true}}',
         b'{"partialSuccess":{"rejectedLogRecords":-1}}',
-        b'{"partialSuccess":{"rejectedLogRecords":2}}',
+            b'{"partialSuccess":{"rejectedLogRecords":3}}',
         b'{"partialSuccess":"oops"}',
         b'{"partialSuccess":{},"partialSuccess":{}}',
         b'[]',
@@ -652,6 +786,64 @@ def test_invalid_acceptance_response_does_not_ack_batch(tmp_path, body):
 
     assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response()) == 0
     assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
+
+
+def test_partial_success_drops_entire_batch_and_records_rejection_count(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry._store_queue(tmp_path, [telemetry._aggregate_row(OPERATION, 1)] * 2)
+
+    class Response:
+        status = 200
+        def read(self, _size):
+            if getattr(self, "done", False):
+                return b""
+            self.done = True
+            return b'{"partialSuccess":{"rejectedLogRecords":"1"}}'
+        def close(self):
+            return None
+
+    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response()) == 2
+    assert telemetry.load_batch(tmp_path) == []
+    assert telemetry.last_flush_diagnostics(tmp_path)["rejected_log_records"] == 1
+
+
+def test_retry_state_uses_transient_backoff_and_not_permanent_status(tmp_path, monkeypatch):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry._store_queue(tmp_path, [telemetry._aggregate_row(OPERATION, 1)])
+    monkeypatch.setattr(telemetry.random, "uniform", lambda low, high: high)
+
+    class Response:
+        status = 503
+        def read(self, _size): return b""
+        def close(self): return None
+
+    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response(), now="2026-08-26T00:00:00Z") == 0
+    retry = telemetry._read_retry_state(tmp_path)
+    assert retry and next(iter(retry.values()))["attempt_count"] == 1
+    assert next(iter(retry.values()))["next_attempt_at"] == "2026-08-26T00:01:00Z"
+
+    class Permanent:
+        status = 400
+        def read(self, _size): return b""
+        def close(self): return None
+
+    monkeypatch.setattr(telemetry.time, "time", lambda: 9999999999)
+    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Permanent(), now="2026-08-26T00:06:00Z") == 0
+    assert telemetry._read_retry_state(tmp_path) == retry
+
+
+def test_child_environment_propagates_only_proxy_and_ca_allowlist(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.setenv("SSL_CERT_FILE", "/cert")
+    monkeypatch.setenv("SSL_CERT_DIR", "/certs")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/bundle")
+    monkeypatch.setenv("SECRET_VALUE", "no")
+    assert telemetry._sanitized_environment() == {
+        "HTTPS_PROXY": "https://proxy", "HTTP_PROXY": "http://proxy", "NO_PROXY": "localhost",
+        "SSL_CERT_FILE": "/cert", "SSL_CERT_DIR": "/certs", "REQUESTS_CA_BUNDLE": "/bundle",
+    }
 
 
 def test_flush_records_and_clears_last_flush_error(tmp_path):
@@ -691,7 +883,7 @@ def test_flush_records_and_clears_last_flush_error(tmp_path):
 
     assert telemetry.flush_queue(
         tmp_path, opener=lambda *_args, **_kwargs: OkResponse(), now="2026-08-26T00:00:00Z"
-    ) == 1
+    ) == 2
     assert telemetry.last_flush_error(tmp_path) is None
 
 
@@ -725,7 +917,7 @@ def test_flush_closes_response_reads_bounded_body_and_avoids_eager_getcode(tmp_p
         requests.append(request)
         return response
 
-    assert telemetry.flush_queue(tmp_path, opener=opener) == 1
+    assert telemetry.flush_queue(tmp_path, opener=opener) == 2
     assert closed["value"]
     assert requests[0].headers["Idempotency-key"] == hashlib.sha256(requests[0].data).hexdigest()
 
@@ -769,7 +961,7 @@ def test_two_flushes_claim_one_batch(tmp_path):
     release.set()
     for thread in threads:
         thread.join(2)
-    assert sorted(results) == [0, 1]
+    assert sorted(results) == [0, 2]
     assert len(calls) == 1
 
 
@@ -916,7 +1108,7 @@ def _telemetry_server():
     return server, thread
 
 
-def test_flush_queue_supports_partial_acceptance_and_leaves_remainder(tmp_path):
+def test_flush_queue_drops_partial_success_batch_and_records_remainder(tmp_path):
     server, thread = _telemetry_server()
     try:
         telemetry.write_config(tmp_path, telemetry.enabled_config())
@@ -929,10 +1121,10 @@ def test_flush_queue_supports_partial_acceptance_and_leaves_remainder(tmp_path):
             config = telemetry.enabled_config()
             config["endpoint"] = telemetry.ENDPOINT
             telemetry.write_config(tmp_path, config)
-            assert telemetry.flush_queue(tmp_path, now="2026-08-03T00:00:00Z") == 1
+            assert telemetry.flush_queue(tmp_path, now="2026-08-03T00:00:00Z") == 4
         finally:
             telemetry.ENDPOINT = original_endpoint
-        assert len(telemetry.load_batch(tmp_path, limit=2, now="2026-08-03T00:00:00Z")) == 1
+        assert telemetry.load_batch(tmp_path, limit=2, now="2026-08-03T00:00:00Z") == []
         sent_headers, _sent_body = _TelemetryHandler.requests[-1]
         assert sent_headers["User-Agent"] == telemetry._USER_AGENT
         assert "python-urllib" not in sent_headers["User-Agent"].lower()
@@ -1148,6 +1340,10 @@ def test_rejects_serialized_payload_over_2_kib(monkeypatch):
 )
 def test_bucket_duration(seconds, expected):
     assert bucket_duration(seconds) == expected
+
+
+def test_unmeasured_duration_has_a_distinct_bucket():
+    assert bucket_duration(None) == "not_measured"
 
 
 @pytest.mark.parametrize(
