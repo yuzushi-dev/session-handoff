@@ -13,6 +13,18 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.py\"",
+            "timeout": 1,
+            "statusMessage": "Checking telemetry response"
+          }
+        ]
+      }
     ]
   }
 }

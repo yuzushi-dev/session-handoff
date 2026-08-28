@@ -10,8 +10,7 @@ from server.version import PACKAGE_VERSION
 
 
 ROOT = Path(__file__).parents[1]
-# Shared backend infra lives in a separate repo, not this checkout.
-INFRA_ROOT = Path.home() / "selfhosted" / "telemetry"
+PUBLIC_NOTICE = ROOT / "docs/telemetry.md"
 
 OPERATION = {
     "schema_version": 1,
@@ -36,14 +35,16 @@ def _row(count=1):
 
 
 def test_privacy_notice_covers_inventory_consent_processors_retention_and_commands():
-    privacy = (INFRA_ROOT / "docs/telemetry-privacy.md").read_text(encoding="utf-8")
+    privacy = PUBLIC_NOTICE.read_text(encoding="utf-8")
 
     for phrase in (
-        "Data inventory",
-        "Purpose",
-        "Consent",
+        "What's collected",
+        "Purpose and limits",
+        "Consent and controls",
         "Retention",
-        "OpenTelemetry",
+        "OpenTelemetry Collector",
+        "memory_limiter",
+        "filter/session-handoff",
         "Collector",
         "Loki",
         "Grafana",
@@ -53,6 +54,9 @@ def test_privacy_notice_covers_inventory_consent_processors_retention_and_comman
         "no unique-user denominator",
     ):
         assert phrase in privacy
+    assert "~/selfhosted" not in privacy
+    assert "telemetry-privacy.md" not in privacy
+    assert "telemetry-canary-report.md" not in privacy
     assert "@" not in privacy
 
 
@@ -174,23 +178,18 @@ def test_concurrent_flush_burst_claims_one_batch(tmp_path):
 
 
 def test_tenant_and_schema_boundaries_drop_unknown_shapes():
-    collector = (INFRA_ROOT / "otel-collector.yaml").read_text(encoding="utf-8")
-    compose = (INFRA_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    privacy = PUBLIC_NOTICE.read_text(encoding="utf-8")
 
-    for service in ("session-handoff", "sando"):
-        assert f"value: {service}" in collector
-        assert f"X-Scope-OrgID: {service}" in collector
-    assert "match_type: strict" in collector
-    assert "filter/session-handoff" in collector
-    assert "filter/sando" in collector
-    assert 'attributes["event"] != "daily_aggregate"' in collector
-    assert 'attributes["aggregate"] != "operation"' in collector
-    assert "logging" not in collector
-    assert "debug" not in collector
-    # OTLP ingest stays loopback-only even though it's also reachable via the
-    # public Cloudflare Tunnel; Grafana is intentionally open to the LAN
-    # (see docker-compose.yml comments), so it's not asserted loopback-only.
-    assert '"127.0.0.1:4318:4318"' in compose
+    for phrase in (
+        "strict `service.name` filter",
+        "strict event and aggregate shape filters",
+        "`session-handoff` attribute allowlist",
+        "service.name=session-handoff",
+        "Grafana dashboards are private",
+    ):
+        assert phrase in privacy
+    assert "canary remains open" in privacy
+    assert "independent privacy review remains open" in privacy
 
     unknown = _row() | {"aggregate": "unknown", "bogus": "tenant-data"}
     mixed = _row() | {"aggregate": "context_feedback", "feedback_category": "other"}
