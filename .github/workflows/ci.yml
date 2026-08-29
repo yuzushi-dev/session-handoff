@@ -42,6 +42,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
 
+      - name: Allow Bubblewrap user namespaces
+        run: |
+          if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if sudo sysctl -n kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+      - name: Check Bubblewrap sandbox
+        run: bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc -- true
+
       - name: Install test tooling
         run: python -m pip install --disable-pip-version-check pytest
 
