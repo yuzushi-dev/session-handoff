@@ -8,12 +8,13 @@ import os
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 MAX_ITEMS = 100_000
 MAX_ITEM_BYTES = 16 * 1024 * 1024
+UTC = timezone.utc
 PORTABLE_TOOL_ITEMS = {
     "fileChange": ("codex_file_change", ("changes",), ("status",)),
     "mcpToolCall": (

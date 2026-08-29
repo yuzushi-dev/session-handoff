@@ -8,12 +8,13 @@ import os
 import re
 import uuid
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 MAX_RECORDS = 100_000
 MAX_LINE_BYTES = 16 * 1024 * 1024
+UTC = timezone.utc
 
 
 class EngineError(RuntimeError):
