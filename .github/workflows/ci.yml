@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '18.20.8'
+
+      - name: Install test tooling
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+      - name: Check Python syntax
+        run: python -m compileall -q bin server hooks
+
+  package:
+    name: Package and public tree
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '18.20.8'
+
+      - name: Install test tooling
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Validate manifests and public README
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          paths = subprocess.check_output(
+              ["git", "ls-files", "*.json"], text=True
+          ).splitlines()
+          for path in paths:
+              json.loads(Path(path).read_text(encoding="utf-8"))
+
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          versions = [
+              package["version"],
+              json.loads(Path("plugin.json").read_text(encoding="utf-8"))["version"],
+              json.loads(Path(".claude-plugin/plugin.json").read_text(encoding="utf-8"))["version"],
+              json.loads(Path(".codex-plugin/plugin.json").read_text(encoding="utf-8"))["version"],
+          ]
+          assert len(set(versions)) == 1, versions
+
+          readme = Path("README.md").read_text(encoding="utf-8")
+          for text in (
+              "npx session-handoff@latest setup",
+              "/plugin install session-handoff@yuzushi",
+              "codex plugin add session-handoff@yuzushi",
+          ):
+              assert text in readme, text
+          print(f"Validated {len(paths)} JSON files and README install paths.")
+          PY
+
+      - name: Check package tests
+        run: python -m pytest -q tests/test_package.py
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Check public tree
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files 'handoffs/**')" ]; then
+            echo "::error::Internal handoffs must not be tracked in the public repository."
+            exit 1
+          fi
+
+      - name: Check npm package contents
+        run: npm pack --dry-run --ignore-scripts
