@@ -30,6 +30,8 @@ For migrate mode, the launcher terminates the source client before conversion, c
 
 If the managed launcher is not active, do not claim that an automatic switch or migration occurred.
 
+If an updater replaces the managed Codex launcher during a supervised run, the supervisor restores the wrapper after the child exits. Claude updates reconcile the managed target to the newest validated native version. An update run outside supervision is not auto-repairable; recover with `npx session-handoff@latest setup --client codex --yes` or `npx session-handoff@latest setup --client claude --yes`.
+
 ## Create mode
 
 1. Inspect the current conversation and repository state. Read applicable `AGENTS.md`, `CLAUDE.md`, or project instructions before making claims about files, tests, deployment, or safety.

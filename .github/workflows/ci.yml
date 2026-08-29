@@ -37,6 +37,13 @@ jobs:
         with:
           node-version: '18.20.8'
 
+      - name: Smoke Codex 0.151.0
+        run: |
+          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_RELEASE=0.151.0 CODEX_NON_INTERACTIVE=1 sh
+          python3 bin/session-handoff setup --client codex --yes
+          test ! -L "$HOME/.local/bin/codex"
+          test "$(codex --version)" = "codex-cli 0.151.0"
+
       - name: Install Bubblewrap
         run: |
           sudo apt-get update

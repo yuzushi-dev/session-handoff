@@ -9,6 +9,7 @@ import json
 import math
 import os
 import pty
+import re
 import secrets
 import select
 import signal
@@ -438,6 +439,101 @@ def _with_control_path(client: str, args: list[str], control: Path) -> list[str]
     return ["-c", setting, *args]
 
 
+def _managed_launcher(executable: str, client: str) -> Path | None:
+    path = Path(executable)
+    if client == "claude" and path.name == "claude.session-handoff-original":
+        return path.with_name(client)
+    if not path.name.startswith(f"{client}.session-handoff-active"):
+        return None
+    return path.with_name(client)
+
+
+def _repair_launcher(executable: str, client: str, original: str | None) -> None:
+    launcher = _managed_launcher(executable, client)
+    if launcher is None or original is None:
+        return
+    temporary: Path | None = None
+    try:
+        if launcher.is_symlink():
+            pass
+        elif launcher.read_text(encoding="utf-8") == original:
+            return
+        else:
+            raise OSError("replacement is not a symlink")
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=launcher.parent,
+            prefix=f".{launcher.name}.repair-", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(original)
+        temporary.chmod(0o755)
+        os.replace(temporary, launcher)
+    except (OSError, UnicodeDecodeError) as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        print(
+            f"session-handoff: launcher repair failed for {launcher}: {exc}; "
+            f"run `npx session-handoff@latest setup --client {client} --yes`",
+            file=sys.stderr,
+        )
+
+
+def _reconcile_claude_target(
+    executable: str, launcher: Path | None, original: str | None
+) -> None:
+    if launcher is None or original is None:
+        return
+    target = Path(executable)
+    try:
+        if launcher.read_text(encoding="utf-8") != original:
+            return
+        resolved = target.resolve(strict=True)
+        versions = resolved.parent
+        if versions.name != "versions" or versions.parent.name != "claude":
+            return
+        candidates = []
+        for candidate in versions.iterdir():
+            if (
+                re.fullmatch(r"\d+\.\d+\.\d+", candidate.name)
+                and candidate.is_file()
+                and os.access(candidate, os.X_OK)
+            ):
+                candidates.append((tuple(map(int, candidate.name.split("."))), candidate))
+        for _, candidate in sorted(candidates, reverse=True):
+            try:
+                result = subprocess.run(
+                    [str(candidate), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if re.search(rf"\b{re.escape(candidate.name)}\b", result.stdout):
+                newest = candidate
+                break
+        else:
+            return
+        if newest == resolved:
+            return
+        descriptor, name = tempfile.mkstemp(prefix=f".{target.name}.repair-", dir=target.parent)
+        os.close(descriptor)
+        temporary = Path(name)
+        try:
+            temporary.unlink()
+            temporary.symlink_to(newest)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except (OSError, ValueError) as exc:
+        print(
+            f"session-handoff: Claude target repair failed for {target}: {exc}; "
+            "run `npx session-handoff@latest setup --client claude --yes`",
+            file=sys.stderr,
+        )
+
+
 class _DraftProcess:
     """Run an interactive client and seed its input without submitting it."""
 
@@ -643,6 +739,13 @@ class SessionSupervisor:
 
         current_client = self.client
         current_executable = self._client_executable(current_client) or current_client
+        managed_launcher = _managed_launcher(current_executable, current_client)
+        original_launcher = None
+        if managed_launcher is not None:
+            try:
+                original_launcher = managed_launcher.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                original_launcher = None
         current_args = _with_control_path(current_client, self.host_args, control)
         process = self._launch(current_client, current_executable, current_args, env)
         pending_summary: dict[str, Any] | None = None
@@ -874,6 +977,13 @@ class SessionSupervisor:
                             terminal["result"] = "failure"
                             terminal["failure_stage"] = "source_resume"
                         record_terminal_outcome(terminal)
+                    _repair_launcher(current_executable, current_client, original_launcher)
+                    if current_client == "claude":
+                        _reconcile_claude_target(
+                            current_executable,
+                            _managed_launcher(current_executable, current_client),
+                            original_launcher,
+                        )
                     return status
                 self.sleep(self.poll_interval)
         finally:

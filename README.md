@@ -40,6 +40,8 @@ npx session-handoff@latest setup --client codex --yes
 
 The client executable must already be on `PATH`. Without a client, setup stops with an error and changes nothing.
 
+If a Codex update replaces the managed launcher while it is supervised, the supervisor restores it when Codex exits and keeps the updated executable as its target. Claude version updates are reconciled to the newest validated executable in its native versions directory. An installer run outside a supervised session cannot be repaired automatically; rerun setup afterward with `--client codex` or `--client claude` for the affected client.
+
 ## Native plugin files
 
 The repository and npm package include native Claude and Codex plugin manifests, the portable plugin manifest, the command, the skill, hooks, and the MCP configuration.

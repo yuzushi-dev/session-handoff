@@ -11,6 +11,7 @@ from server.session_switch import (
     CONTROL_PATH_ENV,
     CONTROL_TOKEN_ENV,
     SessionSupervisor,
+    _reconcile_claude_target,
     _operation_event,
     _fresh_session_args,
     handoff_prompt,
@@ -237,6 +238,202 @@ def test_supervisor_without_request_returns_child_status(tmp_path):
     assert calls[0][0] == "codex"
     assert calls[0][1] == "-c"
     assert "mcp_servers.session-handoff.env.SESSION_HANDOFF_CONTROL=" in calls[0][2]
+
+
+def test_supervisor_repairs_codex_launcher_replaced_by_updater(tmp_path):
+    launcher = tmp_path / "bin/codex"
+    active = tmp_path / "bin/codex.session-handoff-active"
+    replacement = tmp_path / "bin/codex-0.151.0"
+    launcher.parent.mkdir()
+    replacement.write_bytes(b"\x7fELF new codex")
+    active.symlink_to(replacement)
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"exec python3 /session-handoff run codex --executable {active} \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    class Process:
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if self.polls == 1:
+                launcher.unlink()
+                launcher.symlink_to(replacement)
+                return None
+            return 17
+
+    process = Process()
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=lambda *args, **kwargs: process,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        executable=str(active),
+    )
+
+    assert supervisor.run() == 17
+    assert not launcher.is_symlink()
+    assert "session-handoff run codex" in launcher.read_text(encoding="utf-8")
+
+
+def test_supervisor_does_not_mutate_intact_codex_launcher(tmp_path):
+    launcher = tmp_path / "bin/codex"
+    active = tmp_path / "bin/codex.session-handoff-active"
+    launcher.parent.mkdir()
+    active.write_text("codex", encoding="utf-8")
+    launcher.write_text(
+        "#!/bin/sh\nexec python3 /session-handoff run codex --executable "
+        f"{active} \"$@\"\n",
+        encoding="utf-8",
+    )
+    original = launcher.read_bytes()
+
+    class Process:
+        def poll(self):
+            return 0
+
+    supervisor = SessionSupervisor(
+        "codex", [], popen=lambda *args, **kwargs: Process(), sleep=lambda _: None,
+        temp_dir=tmp_path / "control", executable=str(active),
+    )
+
+    assert supervisor.run() == 0
+    assert launcher.read_bytes() == original
+
+
+def test_supervisor_repairs_claude_launcher_replaced_by_updater(tmp_path):
+    launcher = tmp_path / "bin/claude"
+    active = tmp_path / "bin/claude.session-handoff-active"
+    replacement = tmp_path / "bin/claude-1.0"
+    launcher.parent.mkdir()
+    replacement.write_bytes(b"\x7fELF new claude")
+    active.symlink_to(replacement)
+    launcher.write_text(
+        "#!/bin/sh\nexec python3 /session-handoff run claude --executable "
+        f"{active} \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    class Process:
+        def __init__(self):
+            self.done = False
+
+        def poll(self):
+            if not self.done:
+                self.done = True
+                launcher.unlink()
+                launcher.symlink_to(replacement)
+                return None
+            return 19
+
+    supervisor = SessionSupervisor(
+        "claude", [], popen=lambda *args, **kwargs: Process(), sleep=lambda _: None,
+        temp_dir=tmp_path / "control", executable=str(active),
+    )
+
+    assert supervisor.run() == 19
+    assert not launcher.is_symlink()
+    assert "session-handoff run claude" in launcher.read_text(encoding="utf-8")
+
+
+def test_supervisor_reconciles_claude_version_target_after_update(tmp_path):
+    versions = tmp_path / ".local/share/claude/versions"
+    versions.mkdir(parents=True)
+    old = versions / "2.1.233"
+    newest = versions / "2.1.251"
+    old.write_text("#!/bin/sh\nprintf '%s\\n' '2.1.233 (Claude Code)'\n", encoding="utf-8")
+    newest.write_text("#!/bin/sh\nprintf '%s\\n' '2.1.251 (Claude Code)'\n", encoding="utf-8")
+    old.chmod(0o755)
+    newest.chmod(0o755)
+    target = tmp_path / "bin/claude.session-handoff-original"
+    launcher = tmp_path / "bin/claude"
+    target.parent.mkdir(exist_ok=True)
+    target.symlink_to(old)
+    launcher.write_text(
+        "#!/bin/sh\nexec python3 /session-handoff run claude --executable "
+        f"{target} \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    class Process:
+        def poll(self):
+            return 0
+
+    supervisor = SessionSupervisor(
+        "claude", [], popen=lambda *args, **kwargs: Process(), sleep=lambda _: None,
+        temp_dir=tmp_path / "control", executable=str(target),
+    )
+
+    assert supervisor.run() == 0
+    assert target.resolve() == newest
+
+
+def test_claude_target_validation_stops_at_newest_valid_candidate(monkeypatch, tmp_path):
+    versions = tmp_path / ".local/share/claude/versions"
+    versions.mkdir(parents=True)
+    old = versions / "2.1.233"
+    newest = versions / "2.1.251"
+    next_newest = versions / "2.1.250"
+    for path in (old, newest, next_newest):
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+    target = tmp_path / "bin/claude.session-handoff-original"
+    launcher = tmp_path / "bin/claude"
+    target.parent.mkdir(exist_ok=True)
+    target.symlink_to(old)
+    wrapper = "#!/bin/sh\nexec python3 /session-handoff run claude\n"
+    launcher.write_text(wrapper, encoding="utf-8")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv[0])
+        return type("Result", (), {"stdout": "2.1.251 (Claude Code)"})()
+
+    monkeypatch.setattr(session_switch.subprocess, "run", run)
+    _reconcile_claude_target(str(target), launcher, wrapper)
+
+    assert calls == [str(newest)]
+    assert target.resolve() == newest
+
+
+def test_supervisor_keeps_exit_code_when_launcher_repair_fails(monkeypatch, tmp_path, capsys):
+    launcher = tmp_path / "bin/codex"
+    active = tmp_path / "bin/codex.session-handoff-active"
+    replacement = tmp_path / "bin/codex-0.151.0"
+    launcher.parent.mkdir()
+    replacement.write_text("new codex", encoding="utf-8")
+    active.symlink_to(replacement)
+    launcher.write_text(
+        "#!/bin/sh\nexec python3 /session-handoff run codex --executable "
+        f"{active} \"$@\"\n",
+        encoding="utf-8",
+    )
+
+    class Process:
+        def __init__(self):
+            self.done = False
+
+        def poll(self):
+            if not self.done:
+                self.done = True
+                launcher.unlink()
+                launcher.symlink_to(replacement)
+                return None
+            return 23
+
+    monkeypatch.setattr(session_switch.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("locked")))
+    supervisor = SessionSupervisor(
+        "codex", [], popen=lambda *args, **kwargs: Process(), sleep=lambda _: None,
+        temp_dir=tmp_path / "control", executable=str(active),
+    )
+
+    assert supervisor.run() == 23
+    assert launcher.is_symlink()
+    assert "launcher repair failed" in capsys.readouterr().err
 
 
 def test_supervisor_records_handoff_success_after_target_terminal_state(monkeypatch, tmp_path):
