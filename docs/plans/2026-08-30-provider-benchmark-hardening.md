@@ -62,3 +62,12 @@
 **Step 3:** Rerun the provider matrix only if the validity and harness gates pass; otherwise document the blocker and keep Markdown as baseline.
 
 **Step 4:** Update the project note and commit only scoped repository changes.
+
+## Outcome (2026-08-30)
+
+Tasks 1–4 were completed in commit `8114def`. The exact failed `state-v1` cell
+was rerun as a two-call provider regression probe with Luna `high`: 2/2 calls,
+valid JSON, successful verification/acceptance, and zero classified trace
+failures. The 144-call full matrix was not mixed with the previous aggregate;
+it remains an owner-gated rerun after a semantically more discriminating study
+is defined.

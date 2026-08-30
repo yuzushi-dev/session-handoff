@@ -80,3 +80,19 @@ the remaining release-grade step is blinded, human-calibrated judgment.
 
 The full local test suite after the runner setting change passed: `642 passed,
 2 skipped`. No push, publish, or deploy was performed.
+
+## Post-run hardening probe
+
+After this study, the runner was hardened in local commit `8114def`:
+
+- Codex `state-v1` generation now passes the contract through native
+  `--output-schema`, while the local validator remains authoritative.
+- Continuation prompts avoid unavailable `git` and `pytest` commands in the
+  fixture workspace; trace artifacts classify environment failures.
+- Paired medians and p95 values exclude incomplete or invalid pairs.
+
+The previously failed cell was rerun as a two-call regression probe with the
+same model and `high` effort. It completed **2/2** calls, produced valid JSON,
+passed task verification and acceptance, and recorded zero trace failures.
+This probe is not added to the original aggregate because the runner revision
+changed; a fresh full comparison would require the complete 144-call matrix.
