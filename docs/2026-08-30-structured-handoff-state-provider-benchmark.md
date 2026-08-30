@@ -36,6 +36,24 @@ The 35 clean paired cells show `state-v1` minus Markdown medians of:
 Local validation/rendering remains below the mechanical target: p95 **1.55 ms**
 over 1,000 iterations.
 
+## Exploratory semantic judgment
+
+Sol Medium performed a read-only, model-judged pass over the completed
+artifacts. This is exploratory evidence, not human-calibrated release scoring,
+and its counts were not imported into `evaluation.json`:
+
+- facts preserved: **261/261**;
+- stale-trap activations: **0/95**;
+- DoD checks: **166/166**;
+- task success: **71/71** completed cells;
+- recovery reads: **0**.
+
+It found no observable semantic advantage for `state-v1` over Markdown. All 71
+continuation traces also contained at least one internal command failure (**251**
+in total), mostly missing `pytest` commands and `git` commands run outside the
+repository. These failures are harness inefficiency, not a judged handoff
+correctness failure, but they can inflate latency and token use.
+
 ## Failure
 
 `state-v1` failed generation at `late-correction / very_long / replicate 2`.
@@ -51,9 +69,10 @@ the cell as failed; it did not repair or retry the response.
   median wall-time regression remains within the 10% limit.
 - Continuation efficacy: **100%** on completed cells, but overall state-v1
   generation completion is 35/36 (97.2%) versus Markdown 36/36 (100%).
-- Semantic fidelity (`RCR`, `IFR`, `SCI`) and judged recovery reads are not yet
-  scored: blinded human/model judgment artifacts were not imported. Therefore
-  no semantic superiority claim is justified.
+- Exploratory Sol judgment found **261/261** facts preserved, **0/95** stale
+  traps, **166/166** DoD checks, and no recovery reads; it found no semantic
+  advantage for state-v1. It is not human-calibrated and therefore is not
+  release-grade evidence.
 
 Decision: do not make `state-v1` the product default. In this run it was not
 more efficient than Markdown and exposed a strict-JSON reliability failure;
