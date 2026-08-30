@@ -18,6 +18,37 @@ RUNNER = ROOT / "benchmark/run_study.py"
 SPEC = ROOT / "benchmark/fixtures/context_rot_cases.json"
 
 
+def test_codex_command_includes_requested_reasoning_effort():
+    command = study_runner._agent_command(
+        "codex",
+        "codex",
+        "gpt-5.6-luna",
+        Path("/mnt/work"),
+        mode="generate",
+        reasoning_effort="high",
+    )
+
+    index = command.index("-c")
+    assert ["-c", 'model_reasoning_effort="high"'] == command[index : index + 2]
+
+
+def test_reasoning_effort_is_part_of_run_identity():
+    common = {
+        "case": "fixture",
+        "band": "long",
+        "condition": "handoff",
+        "client": "codex",
+        "model": "gpt-5.6-luna",
+        "replicate": 1,
+        "handoff_format": "state-v1",
+    }
+
+    high = SimpleNamespace(**common, reasoning_effort="high")
+    max_effort = SimpleNamespace(**common, reasoning_effort="max")
+
+    assert study_runner._run_id(high) != study_runner._run_id(max_effort)
+
+
 def test_run_identity_includes_handoff_format_but_fixture_seed_does_not():
     common = {
         "case": "fixture",

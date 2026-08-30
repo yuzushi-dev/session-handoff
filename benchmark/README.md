@@ -134,6 +134,7 @@ The runner selects exactly one manifest cell. Its default is a content-free plan
 python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --client codex \
   --model <exact-model-id> \
+  --reasoning-effort high \
   --case superseded-decision \
   --band long \
   --condition handoff \
@@ -147,6 +148,7 @@ Execution needs both an action flag and a separate cost acknowledgement:
 python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --client codex \
   --model <exact-model-id> \
+  --reasoning-effort high \
   --case superseded-decision \
   --band long \
   --condition handoff \
@@ -163,6 +165,10 @@ On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolate
 A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so do not use that mode for secrets or commit its artifacts.
 
 `--resume` is accepted only at a recorded retry-free checkpoint, including a handoff setup failure before any provider call. It refuses completed, provider-failed, or ambiguous runs rather than risking a duplicate billed call.
+
+For Codex, pass `--reasoning-effort` explicitly when comparing runs. The runner
+records it in the run identity and provenance; it is not inherited from the
+user configuration because live runs ignore that configuration.
 
 For one client/model study, the default matrix is 180 continuations. The 72
 paired `handoff` cells also need a generation call, so execution is 252 provider

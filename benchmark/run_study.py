@@ -32,6 +32,7 @@ from server.migration import MigrationError, migrate_session
 CLIENTS = ("claude", "codex")
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
 HANDOFF_FORMATS = ("markdown-v1", "state-v1")
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_HANDOFF_FORMAT = "markdown-v1"
 PROMPT_VERSION = 1
 BASE_ENV = {
@@ -169,7 +170,10 @@ def _select_run(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 
 def _run_id(args: argparse.Namespace) -> str:
-    model_key = hashlib.sha256(f"{args.client}:{args.model}".encode()).hexdigest()[:10]
+    reasoning_effort = getattr(args, "reasoning_effort", None) or "default"
+    model_key = hashlib.sha256(
+        f"{args.client}:{args.model}:{reasoning_effort}".encode()
+    ).hexdigest()[:10]
     handoff_format = getattr(args, "handoff_format", DEFAULT_HANDOFF_FORMAT)
     return (
         f"{args.case}--{args.band}--{args.condition}--{handoff_format}--{args.client}--"
@@ -331,6 +335,7 @@ def _validate_resume_provenance(
     expected_state = {
         "client": args.client,
         "model": args.model,
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
         "case": args.case,
         "band": args.band,
         "condition": args.condition,
@@ -360,6 +365,7 @@ def _validate_resume_provenance(
         "workspace_template_sha256": _tree_sha256(template),
         "runner_sha256": _sha256(Path(__file__).read_bytes()),
         "runner_git_revision": _git_revision(),
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
         "client_profile": CLIENT_PROFILE,
     }
     client_executable = (
@@ -402,6 +408,7 @@ def _pair_fingerprint(state: dict[str, Any]) -> str:
     comparable = {
         "client": state.get("client"),
         "model": state.get("model"),
+        "reasoning_effort": state.get("reasoning_effort"),
         "fixture_seed": state.get("fixture_seed"),
         "runner_git_revision": provenance.get("runner_git_revision"),
         "runner_sha256": provenance.get("runner_sha256"),
@@ -581,7 +588,12 @@ def _agent_command(
     *,
     mode: str,
     session_id: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
+    if reasoning_effort is not None:
+        if client != "codex" or reasoning_effort not in REASONING_EFFORTS:
+            raise StudyRunError("reasoning effort is invalid for the selected client")
+
     if client == "claude":
         command = [
             executable,
@@ -632,6 +644,8 @@ def _agent_command(
         "--cd",
         str(workspace),
     ]
+    if reasoning_effort is not None:
+        command.extend(("-c", f'model_reasoning_effort="{reasoning_effort}"'))
     if mode == "generate":
         return [*command, "--ephemeral", "-"]
     if mode == "resume":
@@ -1047,6 +1061,7 @@ def _export_blinded_bundle(
         "handoff_format": run.get("handoff_format", DEFAULT_HANDOFF_FORMAT),
         "client": state["client"],
         "model": state["model"],
+        "reasoning_effort": state["reasoning_effort"],
         "revision": state["provenance"]["runner_git_revision"],
         "source_sha256": state["provenance"]["source_sha256"],
         "pair_fingerprint": state["provenance"]["pair_fingerprint"],
@@ -1137,6 +1152,7 @@ def _prepare_context(
         args.model,
         Path("/mnt/work"),
         mode="generate",
+        reasoning_effort=getattr(args, "reasoning_effort", None),
     )
     generation_command = _sandbox_agent(
         generation_command,
@@ -1276,6 +1292,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "target_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, fixture_seed + ":target")),
             "client": args.client,
             "model": args.model,
+            "reasoning_effort": getattr(args, "reasoning_effort", None),
             "case": args.case,
             "band": args.band,
             "condition": args.condition,
@@ -1302,6 +1319,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "workspace_template_sha256": _tree_sha256(template),
                 "runner_sha256": _sha256(runner_path.read_bytes()),
                 "runner_git_revision": _git_revision(),
+                "reasoning_effort": getattr(args, "reasoning_effort", None),
                 "repository_sha256": _repository_sha256(),
                 "sandbox_executable": args.sandbox_executable,
                 "sandbox_executable_sha256": _file_sha256(args.sandbox_executable),
@@ -1370,6 +1388,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 Path("/mnt/work"),
                 mode=mode,
                 session_id=session_id,
+                reasoning_effort=getattr(args, "reasoning_effort", None),
             )
             command = _sandbox_agent(
                 command,
@@ -1440,6 +1459,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             run_id=state["run_id"],
             client=state["client"],
             model=state["model"],
+            reasoning_effort=state["reasoning_effort"],
             revision=state["provenance"]["runner_git_revision"],
             source_sha256=state["provenance"]["source_sha256"],
             pair_fingerprint=state["provenance"]["pair_fingerprint"],
@@ -1500,6 +1520,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("evaluation", type=Path)
     result.add_argument("--client", choices=CLIENTS, required=True)
     result.add_argument("--model", required=True)
+    result.add_argument("--reasoning-effort", choices=REASONING_EFFORTS)
     result.add_argument("--case", required=True)
     result.add_argument("--band", required=True)
     result.add_argument("--condition", choices=CONDITIONS, required=True)
@@ -1543,6 +1564,7 @@ def main() -> int:
             "run_id": _run_id(args),
             "client": args.client,
             "model": args.model,
+            "reasoning_effort": getattr(args, "reasoning_effort", None),
             "case": args.case,
             "band": args.band,
             "condition": args.condition,
