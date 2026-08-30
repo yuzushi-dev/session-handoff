@@ -78,7 +78,7 @@ Decision: do not make `state-v1` the product default. In this run it was not
 more efficient than Markdown and exposed a strict-JSON reliability failure;
 the remaining release-grade step is blinded, human-calibrated judgment.
 
-The full local test suite after the runner setting change passed: `642 passed,
+The full local test suite after the hardening changes passed: `649 passed,
 2 skipped`. No push, publish, or deploy was performed.
 
 ## Post-run hardening probe
