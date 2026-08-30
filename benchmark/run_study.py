@@ -1218,14 +1218,6 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             verify_command,
             acceptance_command,
         )
-        if state.get("status") == "prepared" and state.get("retry_safe") is True:
-            _refresh_runtime_provenance(args, state)
-        else:
-            if not provenance.get("pair_fingerprint"):
-                raise StudyRunError("existing run lacks pair provenance; start a fresh run")
-            _validate_recorded_runtime_provenance(args, state)
-        if provenance.get("pair_fingerprint") != _pair_fingerprint(state):
-            raise StudyRunError("resume provenance fingerprint is inconsistent")
         provider_calls_started = state.get("provider_calls_started", 0)
         if (
             isinstance(provider_calls_started, bool)
@@ -1233,6 +1225,18 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             or provider_calls_started < 0
         ):
             raise StudyRunError("existing run has invalid provider call count")
+        if state.get("status") == "prepared" and state.get("retry_safe") is True:
+            if provider_calls_started != 0:
+                raise StudyRunError(
+                    "prepared checkpoint cannot have provider calls"
+                )
+            _refresh_runtime_provenance(args, state)
+        else:
+            if not provenance.get("pair_fingerprint"):
+                raise StudyRunError("existing run lacks pair provenance; start a fresh run")
+            _validate_recorded_runtime_provenance(args, state)
+        if provenance.get("pair_fingerprint") != _pair_fingerprint(state):
+            raise StudyRunError("resume provenance fingerprint is inconsistent")
         if provider_calls_started == 0:
             state["execution_started_at_ns"] = execution_started_at_ns
         elif (

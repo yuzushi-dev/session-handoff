@@ -957,6 +957,48 @@ def test_pre_provider_failure_resumes_from_prepared_checkpoint(tmp_path):
     assert len(fake_calls(run_dir)) == 2
 
 
+def test_resume_rejects_prepared_checkpoint_with_provider_calls(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+    base = command(
+        evaluation, output, "handoff", "codex", claude, codex, migration
+    )
+    cost_flags = ["--execute", "--acknowledge-provider-cost"]
+
+    interrupted = subprocess.run(
+        [*base, *cost_flags, "--sandbox-executable", "missing-bwrap"],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert interrupted.returncode != 0
+    run_dir = next(output.iterdir())
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["provider_calls_started"] = 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    resumed = subprocess.run(
+        [*base, *cost_flags, "--sandbox-executable", "bwrap", "--resume"],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert resumed.returncode != 0
+    assert "prepared checkpoint" in resumed.stderr
+    assert fake_calls(run_dir) == []
+
+
 def test_context_ready_remains_resumable_after_handoff_generation(
     tmp_path, monkeypatch
 ):
