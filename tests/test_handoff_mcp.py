@@ -53,6 +53,25 @@ def tool_result(response):
     return result.get("structuredContent", result)
 
 
+def structured_state():
+    return {
+        "schema_version": 1,
+        "goal": "Ship the focused change",
+        "constraints_preferences": ["Keep the public API synchronous"],
+        "progress": {
+            "done": ["Implementation is in place"],
+            "in_progress": [],
+            "pending": ["Run the focused test"],
+        },
+        "key_decisions": ["Use the final value"],
+        "rejected_attempts": ["The regex-only fix failed"],
+        "verification": ["The focused test is still red"],
+        "critical_context": ["Target: src/example.py"],
+        "uncertainties": [],
+        "next_steps": ["Update the assertion"],
+    }
+
+
 def test_server_initializes_and_lists_handoff_tools():
     responses = exchange(
         [
@@ -70,6 +89,148 @@ def test_server_initializes_and_lists_handoff_tools():
         "handoff_read",
         "handoff_validate",
         "handoff_list",
+    }
+
+
+def test_handoff_create_schema_accepts_exact_state_v1_contract():
+    tool = next(tool for tool in handoff_mcp.TOOLS if tool["name"] == "handoff_create")
+    schema = tool["inputSchema"]
+
+    assert schema["required"] == ["workspace", "path"]
+    assert schema["additionalProperties"] is False
+    assert "content" not in schema["required"]
+    state = schema["properties"]["state"]
+    assert state["type"] == "object"
+    assert state["additionalProperties"] is False
+    assert state["required"] == [
+        "schema_version",
+        "goal",
+        "constraints_preferences",
+        "progress",
+        "key_decisions",
+        "rejected_attempts",
+        "verification",
+        "critical_context",
+        "uncertainties",
+        "next_steps",
+    ]
+    assert state["properties"]["progress"]["additionalProperties"] is False
+    assert state["properties"]["progress"]["required"] == [
+        "done",
+        "in_progress",
+        "pending",
+    ]
+
+
+def test_create_accepts_state_and_writes_canonical_headings(tmp_path):
+    path = tmp_path / "handoffs" / "state.md"
+
+    result = handoff_mcp._create(
+        {"workspace": str(tmp_path), "path": "handoffs/state.md", "state": structured_state()}
+    )
+
+    content = path.read_text(encoding="utf-8")
+    assert result["valid"] is True
+    assert all(section in content for section in handoff_mcp.REQUIRED_SECTIONS)
+    assert "- Rejected attempt: The regex-only fix failed" in content
+    assert "- Verification: The focused test is still red" in content
+
+
+def test_create_rejects_both_content_and_state(tmp_path):
+    with pytest.raises(handoff_mcp.HandoffError, match="exactly one"):
+        handoff_mcp._create(
+            {
+                "workspace": str(tmp_path),
+                "path": "handoffs/both.md",
+                "content": "content",
+                "state": structured_state(),
+            }
+        )
+
+
+def test_create_rejects_neither_content_nor_state(tmp_path):
+    with pytest.raises(handoff_mcp.HandoffError, match="exactly one"):
+        handoff_mcp._create(
+            {"workspace": str(tmp_path), "path": "handoffs/neither.md"}
+        )
+
+
+def test_invalid_state_writes_no_file_or_switch_request(monkeypatch, tmp_path):
+    state = structured_state()
+    state["progress"]["done"] = ["invalid\x00state"]
+    control_path = tmp_path / "control" / "switch.json"
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL", str(control_path))
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL_TOKEN", "test-token")
+
+    with pytest.raises(handoff_mcp.HandoffError, match="state"):
+        handoff_mcp._create(
+            {
+                "workspace": str(tmp_path),
+                "path": "handoffs/invalid-state.md",
+                "state": state,
+                "auto_switch": True,
+            }
+        )
+
+    assert not (tmp_path / "handoffs" / "invalid-state.md").exists()
+    assert not control_path.exists()
+
+
+def test_state_redaction_count_covers_all_state_strings(monkeypatch, tmp_path):
+    state = structured_state()
+    state["goal"] = "Ship API_TOKEN=goal-secret"
+    state["progress"]["done"] = ["Used Bearer abcdefghijkl"]
+    state["next_steps"] = ["Remove sk-1234567890"]
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", lambda summary: None)
+
+    result = handoff_mcp._create(
+        {"workspace": str(tmp_path), "path": "handoffs/redacted.md", "state": state}
+    )
+
+    content = (tmp_path / "handoffs" / "redacted.md").read_text(encoding="utf-8")
+    assert result["redacted_count"] == 3
+    assert "goal-secret" not in content
+    assert "abcdefghijkl" not in content
+    assert "sk-1234567890" not in content
+
+
+def test_state_create_preserves_auto_switch_numeric_telemetry(tmp_path):
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    control_path = control_dir / "switch.json"
+    token = "test-control-token"
+    state = structured_state()
+    state["goal"] = "Ship API_TOKEN=state-secret"
+
+    responses = exchange(
+        [
+            initialized(),
+            call(
+                2,
+                "handoff_create",
+                {
+                    "workspace": str(tmp_path),
+                    "path": "handoffs/state-switch.md",
+                    "state": state,
+                    "auto_switch": True,
+                },
+            ),
+        ],
+        {
+            "SESSION_HANDOFF_CONTROL": str(control_path),
+            "SESSION_HANDOFF_CONTROL_TOKEN": token,
+        },
+    )
+
+    result = tool_result(responses[1])
+    content = (tmp_path / "handoffs" / "state-switch.md").read_text(encoding="utf-8")
+    request = json.loads(control_path.read_text(encoding="utf-8"))
+    assert result["auto_switch_requested"] is True
+    assert request == {
+        "token": token,
+        "workspace": str(tmp_path),
+        "path": "handoffs/state-switch.md",
+        "telemetry": {"handoff_bytes": len(content.encode("utf-8")), "redacted_count": 1},
     }
 
 

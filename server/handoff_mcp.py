@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .handoff_state import (
+        HandoffStateError,
+        MAX_CONTENT_BYTES,
+        redact_state,
+        render_state,
+    )
     from .session_switch import (
         CONTROL_PATH_ENV,
         CONTROL_TOKEN_ENV,
@@ -25,6 +31,12 @@ try:
     )
     from .version import PACKAGE_VERSION
 except ImportError:  # direct `python server/handoff_mcp.py` execution
+    from handoff_state import (  # type: ignore[no-redef]
+        HandoffStateError,
+        MAX_CONTENT_BYTES,
+        redact_state,
+        render_state,
+    )
     from session_switch import (
         CONTROL_PATH_ENV,
         CONTROL_TOKEN_ENV,
@@ -37,7 +49,6 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
 SERVER_NAME = "session-handoff"
 SERVER_VERSION = PACKAGE_VERSION
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
-MAX_CONTENT_BYTES = 2_000_000
 MAX_LIST_LIMIT = 100
 
 REQUIRED_SECTIONS = (
@@ -209,17 +220,85 @@ def _control_credentials() -> tuple[str, str]:
     return control_path or "", token or ""
 
 
+def _state_array_schema() -> dict[str, Any]:
+    return {
+        "type": "array",
+        "maxItems": 256,
+        "items": {"type": "string", "minLength": 1},
+    }
+
+
+def _state_schema() -> dict[str, Any]:
+    array_schema = _state_array_schema()
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version",
+            "goal",
+            "constraints_preferences",
+            "progress",
+            "key_decisions",
+            "rejected_attempts",
+            "verification",
+            "critical_context",
+            "uncertainties",
+            "next_steps",
+        ],
+        "properties": {
+            "schema_version": {"type": "integer", "const": 1},
+            "goal": {"type": "string", "minLength": 1},
+            "constraints_preferences": array_schema,
+            "progress": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["done", "in_progress", "pending"],
+                "properties": {
+                    "done": _state_array_schema(),
+                    "in_progress": _state_array_schema(),
+                    "pending": _state_array_schema(),
+                },
+            },
+            "key_decisions": _state_array_schema(),
+            "rejected_attempts": _state_array_schema(),
+            "verification": _state_array_schema(),
+            "critical_context": _state_array_schema(),
+            "uncertainties": _state_array_schema(),
+            "next_steps": _state_array_schema(),
+        },
+    }
+
+
 def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     workspace = _require_string(arguments, "workspace")
     requested_path = _require_string(arguments, "path")
-    content = _require_string(arguments, "content")
     root, path = _safe_path(workspace, requested_path)
+    has_content = "content" in arguments
+    has_state = "state" in arguments
+    if has_content == has_state:
+        raise HandoffError("exactly one of content or state must be provided")
+
+    if has_content:
+        content, redacted_count = redact_secrets(_require_string(arguments, "content"))
+    else:
+        try:
+            redacted_state, redacted_count = redact_state(arguments["state"])
+            content = render_state(redacted_state)
+        except HandoffStateError as exc:
+            record_terminal_outcome({
+                "operation": "handoff", "source_client": "codex", "target_client": "codex",
+                "result": "failure", "failure_stage": "validation",
+                "handoff_bytes": 0, "redacted_count": 0, "dropped_events": 0,
+                "normalized_fields": 0,
+            })
+            raise HandoffError(f"invalid state: {exc}") from exc
+
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
         record_terminal_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
             "result": "failure", "failure_stage": "validation",
             "handoff_bytes": len(content.encode("utf-8")),
-            "redacted_count": 0, "dropped_events": 0, "normalized_fields": 0,
+            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
         })
         raise HandoffError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     overwrite = arguments.get("overwrite", False)
@@ -229,7 +308,7 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(auto_switch, bool):
         raise HandoffError("auto_switch must be a boolean")
 
-    redacted, redacted_count = redact_secrets(content)
+    redacted = content
     missing_sections = validate_handoff(redacted)
     if missing_sections:
         record_terminal_outcome({
@@ -404,14 +483,19 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["workspace", "path", "content"],
+            "required": ["workspace", "path"],
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace, for example handoffs/2026-08-12-feature.md."},
                 "content": {"type": "string", "description": "Complete handoff with all canonical sections."},
+                "state": _state_schema(),
                 "overwrite": {"type": "boolean", "default": False, "description": "Explicitly allow replacing an existing handoff."},
                 "auto_switch": {"type": "boolean", "default": False, "description": "Ask the session-handoff launcher to terminate this client and start a fresh session with the handoff."},
             },
+            "oneOf": [
+                {"required": ["content"], "not": {"required": ["state"]}},
+                {"required": ["state"], "not": {"required": ["content"]}},
+            ],
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
     },
