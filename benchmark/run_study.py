@@ -211,6 +211,32 @@ def _git_revision() -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _pair_fingerprint(state: dict[str, Any]) -> str:
+    provenance = state["provenance"]
+    comparable = {
+        "client": state.get("client"),
+        "model": state.get("model"),
+        "fixture_seed": state.get("fixture_seed"),
+        "runner_git_revision": provenance.get("runner_git_revision"),
+        "runner_sha256": provenance.get("runner_sha256"),
+        "source_sha256": provenance.get("source_sha256"),
+        "workspace_template_sha256": provenance.get("workspace_template_sha256"),
+        "continuation_prompt_sha256": provenance.get("continuation_prompt_sha256"),
+        "verify_command_sha256": provenance.get("verify_command_sha256"),
+        "acceptance_command_sha256": provenance.get("acceptance_command_sha256"),
+        "evaluation_sha256": provenance.get("evaluation_sha256"),
+        "sandbox_executable": provenance.get("sandbox_executable"),
+        "credential_mode": provenance.get("credential_mode"),
+        "client_executable": provenance.get("client_executable"),
+        "client_profile": provenance.get("client_profile"),
+        "pass_env": sorted(provenance.get("pass_env", [])),
+    }
+    encoded = json.dumps(
+        comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return _sha256(encoded)
+
+
 def _client_executable(client: str, explicit: str | None) -> str:
     if explicit:
         return explicit
@@ -830,6 +856,10 @@ def _export_blinded_bundle(
         "client": state["client"],
         "model": state["model"],
         "revision": state["provenance"]["runner_git_revision"],
+        "source_sha256": state["provenance"]["source_sha256"],
+        "pair_fingerprint": state["provenance"]["pair_fingerprint"],
+        "arm_order": run.get("arm_order"),
+        "arm_position": run.get("arm_position"),
         "replicate": run["replicate"],
     }
     if existing not in (None, entry):
@@ -981,6 +1011,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         provenance = state.get("provenance")
         if not isinstance(provenance, dict):
             raise StudyRunError("existing run has no valid provenance")
+        provenance.setdefault("pair_fingerprint", _pair_fingerprint(state))
         runner_path = Path(__file__).resolve()
         provenance["resume_runner_sha256"] = _sha256(runner_path.read_bytes())
         provenance["resume_runner_git_revision"] = _git_revision()
@@ -1013,6 +1044,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "condition": args.condition,
             "handoff_format": handoff_format,
             "replicate": args.replicate,
+            "arm_order": run.get("arm_order"),
+            "arm_position": run.get("arm_position"),
             "provenance": {
                 "prompt_version": PROMPT_VERSION,
                 "handoff_format": handoff_format,
@@ -1033,6 +1066,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "runner_git_revision": _git_revision(),
                 "sandbox_executable": args.sandbox_executable,
                 "credential_mode": args.credential_mode,
+                "pass_env": sorted(set(args.pass_env)),
                 "client_executable": (
                     args.claude_executable
                     if args.client == "claude"
@@ -1048,6 +1082,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 **migration_provenance,
             },
         }
+        state["provenance"]["pair_fingerprint"] = _pair_fingerprint(state)
         _write_json(state_path, state)
 
     started = time.monotonic()
@@ -1169,6 +1204,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             client=state["client"],
             model=state["model"],
             revision=state["provenance"]["runner_git_revision"],
+            source_sha256=state["provenance"]["source_sha256"],
+            pair_fingerprint=state["provenance"]["pair_fingerprint"],
             task_success=task_success,
             repeated_failed_attempts=None,
             stale_decisions_acted_on=None,

@@ -121,6 +121,11 @@ annotations, and an `evaluation.json` skeleton. `benchmark/generated/` and
 `benchmark/results/` are gitignored so long transcripts and study outputs stay
 out of the repository.
 
+To prepare only the paired handoff candidate, use `--handoff-only`. With two
+replications this creates 72 manifest rows; executing them requires 144
+provider calls (generation plus continuation per arm). The default matrix is
+unchanged.
+
 ## Planning and running one study cell
 
 The runner selects exactly one manifest cell. Its default is a content-free plan: it does not create a result directory or call a provider.
@@ -166,7 +171,7 @@ costs before authorizing the matrix.
 
 ### Run artifacts
 
-- `state.json`: content-free selection, handoff format, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
+- `state.json`: content-free selection, handoff format and recorded arm order, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
 - `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`, `acceptance.stdout`, `acceptance.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
@@ -235,16 +240,19 @@ python3 benchmark/score.py benchmark/generated/evaluation.judged.json --pretty
 ```
 
 `handoff_fidelity_gate` checks the existing `markdown-v1` arm. The separate
-`structured_state_gate` checks every `state-v1` cell for critical recall, zero
-incorrect/stale facts, hidden acceptance/task success, and a complete DoD.
-`paired_handoff` reports raw state-minus-Markdown deltas and per-arm medians for
-context bytes, tokens, recovery reads, wall time, semantic metrics, and task
-success. `release_gate` additionally requires all six release cases, all three
-bands, all four conditions, at least two replications, successful handoff,
-migrate, and oracle continuations, and condition-blind human-calibrated judging
-with documented axis coverage and agreement of at least `0.8`. A pilot can pass
-the fidelity gate but cannot pass the release gate. Calibration needs at least
-18 human-reviewed samples.
+`structured_state_gate` requires both recorded handoff arms for every one of
+the six release cases, three bands, and two minimum replications; it then checks
+state-v1 for critical recall, zero incorrect/stale facts, hidden
+acceptance/task success, and a complete DoD. A pair with a missing or mismatched
+fingerprint is not scored as a delta. `paired_handoff` reports raw
+state-minus-Markdown deltas and per-arm medians for context bytes, tokens,
+recovery reads, wall time, semantic metrics, and task success. `release_gate`
+additionally requires all six release cases, all three bands, all four
+conditions, at least two replications, successful handoff, migrate, and oracle
+continuations, and condition-blind human-calibrated judging with documented
+axis coverage and agreement of at least `0.8`. A pilot can pass the fidelity
+gate but cannot pass the release gate. Calibration needs at least 18
+human-reviewed samples.
 
 For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across paired arms. Randomize arm order and blind the judge to the condition name when practical. The handoff judge bundle is presentation-blind: it normalizes headings, whitespace, list markers, and empty markers, but content choices can still reveal the arm, so it is not condition-blind.
 

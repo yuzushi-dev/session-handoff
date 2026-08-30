@@ -180,6 +180,44 @@ def test_prepare_study_emits_a_complete_versioned_manifest(tmp_path):
         for run in evaluation["runs"]
         if run["condition"] != "handoff"
     )
+    arm_orders = {}
+    for run in evaluation["runs"]:
+        if run["condition"] != "handoff":
+            continue
+        key = (run["case"], run["band"], run["replicate"])
+        arm_orders.setdefault(key, set()).add(
+            (tuple(run["arm_order"]), run["arm_position"])
+        )
+    assert all(len(entries) == 2 for entries in arm_orders.values())
+    assert all(
+        {position for _, position in entries} == {1, 2}
+        for entries in arm_orders.values()
+    )
+
+
+def test_prepare_study_can_emit_only_the_paired_handoff_candidate(tmp_path):
+    output = tmp_path / "study"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "benchmark/prepare_study.py"),
+            str(ROOT / "benchmark/fixtures/context_rot_cases.json"),
+            "--output",
+            str(output),
+            "--runs-per-condition",
+            "2",
+            "--handoff-only",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    evaluation = json.loads((output / "evaluation.json").read_text(encoding="utf-8"))
+    scoring.validate_study_manifest(evaluation)
+    assert evaluation["study"]["conditions"] == ["handoff"]
+    assert len(evaluation["runs"]) == 6 * 3 * 2 * 2
 
 
 def test_manifest_rejects_unknown_handoff_format():
@@ -234,6 +272,11 @@ def valid_run(**overrides):
         "output_tokens": None,
         "wall_seconds": None,
         "supplied_context_bytes": None,
+        "client": "codex",
+        "model": "synthetic-model",
+        "revision": "revision-1",
+        "source_sha256": "source-1",
+        "pair_fingerprint": "pair-1",
     }
     run.update(overrides)
     return run
@@ -303,27 +346,58 @@ def test_handoff_fidelity_gate_requires_all_critical_context_and_no_stale_intrus
     }
 
 
-def test_structured_state_gate_requires_semantics_task_success_and_complete_dod():
-    good = scoring.score_run(valid_run(handoff_format="state-v1"))
-    assert scoring.structured_state_gate([good]) == {"passed": True, "failures": []}
+def candidate_rows():
+    rows = []
+    for case, band, replicate in itertools.product(
+        scoring.RELEASE_CASES,
+        scoring.RELEASE_BANDS,
+        (1, 2),
+    ):
+        pair_fingerprint = f"{case}:{band}:{replicate}"
+        for handoff_format, arm_position in (
+            ("markdown-v1", 1),
+            ("state-v1", 2),
+        ):
+            rows.append(
+                scoring.score_run(
+                    valid_run(
+                        case=case,
+                        band=band,
+                        replicate=replicate,
+                        handoff_format=handoff_format,
+                        pair_fingerprint=pair_fingerprint,
+                        arm_order=["markdown-v1", "state-v1"],
+                        arm_position=arm_position,
+                    )
+                )
+            )
+    return rows
 
-    bad = scoring.score_run(
-        valid_run(
-            handoff_format="state-v1",
-            replicate=2,
-            task_success=False,
-            dod=[{"id": "D1", "weight": 1, "critical": False, "passed": False}],
-            facts=[
-                {"id": "F1", "weight": 1, "critical": True, "status": "missing"}
-            ],
-        )
+
+def test_structured_state_gate_requires_semantics_task_success_and_complete_dod():
+    good_rows = candidate_rows()
+    assert scoring.structured_state_gate(good_rows) == {"passed": True, "failures": []}
+
+    bad = next(
+        row
+        for row in good_rows
+        if row["handoff_format"] == "state-v1" and row["replicate"] == 2
     )
-    failed = scoring.structured_state_gate([good, bad])
+    bad["task_success"] = False
+    bad["dod_pass_rate"] = 0
+    bad["critical_rcr"] = 0
+    failed = scoring.structured_state_gate(good_rows)
     assert failed["passed"] is False
     assert {failure["metric"] for failure in failed["failures"]} == {
         "critical_rcr",
         "task_success",
         "dod_pass_rate",
+    }
+
+    incomplete = scoring.structured_state_gate(candidate_rows()[:-1])
+    assert incomplete["passed"] is False
+    assert {failure["metric"] for failure in incomplete["failures"]} == {
+        "complete_pairs"
     }
 
 
@@ -334,6 +408,8 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
             input_tokens=100,
             recovery_reads=2,
             wall_seconds=4.0,
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=1,
         )
     )
     state = scoring.score_run(
@@ -343,6 +419,8 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
             input_tokens=90,
             recovery_reads=1,
             wall_seconds=3.0,
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=2,
         )
     )
 
@@ -368,6 +446,30 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
     }
     assert summary["by_format"]["state-v1"]["median_supplied_context_bytes"] == 150
     assert summary["by_format"]["markdown-v1"]["median_input_tokens"] == 100
+    assert summary["complete_pairs"] == 1
+
+
+def test_paired_handoff_summary_rejects_mismatched_pair_identity():
+    markdown = scoring.score_run(
+        valid_run(
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=1,
+        )
+    )
+    state = scoring.score_run(
+        valid_run(
+            handoff_format="state-v1",
+            pair_fingerprint="different-pair",
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=2,
+        )
+    )
+
+    summary = scoring.paired_handoff_summary([markdown, state])
+
+    assert summary["complete_pairs"] == 0
+    assert summary["pairs"][0]["delta_state_minus_markdown"] == {}
+    assert summary["pairing_errors"][0]["metric"] == "pair_identity"
 
 
 def test_release_gate_rejects_pilot_scope_and_missing_calibration():

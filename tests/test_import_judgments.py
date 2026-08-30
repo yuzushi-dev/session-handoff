@@ -19,7 +19,12 @@ def fixture(tmp_path: Path):
         "case": "fixture",
         "band": "long",
         "condition": "handoff",
+        "handoff_format": "markdown-v1",
         "replicate": 1,
+        "arm_order": ["markdown-v1"],
+        "arm_position": 1,
+        "source_sha256": "source-1",
+        "pair_fingerprint": "pair-1",
         "workspace_template": "fixture/workspace",
         "verify_command": ["python3", "-c", "pass"],
         "acceptance_command": ["python3", "-c", "pass"],
@@ -80,6 +85,10 @@ def fixture(tmp_path: Path):
             "client": "codex",
             "model": "synthetic-model",
             "revision": "revision-1",
+            "source_sha256": "source-1",
+            "pair_fingerprint": "pair-1",
+            "arm_order": ["markdown-v1"],
+            "arm_position": 1,
             "replicate": 1,
         }
     }
@@ -98,6 +107,10 @@ def fixture(tmp_path: Path):
         client="codex",
         model="synthetic-model",
         revision="revision-1",
+        source_sha256="source-1",
+        pair_fingerprint="pair-1",
+        arm_order=["markdown-v1"],
+        arm_position=1,
     )
     completed["dod"] = [dict(run["dod"][0], passed=True)]
     write_json(results / "run-1/evaluation-run.json", completed)
@@ -196,6 +209,7 @@ def test_imports_complete_blinded_judgment_without_mutating_source(tmp_path):
     assert merged["runs"][0]["repeated_failed_attempts"] == 0
     assert merged["runs"][0]["task_success"] is True
     assert merged["runs"][0]["supplied_context_bytes"] == 123
+    assert merged["runs"][0]["pair_fingerprint"] == "pair-1"
     assert merged["judging"]["judge_id"] == "judge-1"
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert json.loads(evaluation.read_text()) == original
@@ -218,6 +232,18 @@ def test_rejects_blind_mapping_path_outside_results(tmp_path):
 
     assert result.returncode != 0
     assert "outside" in result.stderr
+
+
+def test_rejects_pair_identity_mismatch(tmp_path):
+    evaluation, results, judging, _ = fixture(tmp_path)
+    mapping = json.loads((results / "private/blind-map.json").read_text())
+    mapping["blind-1"]["pair_fingerprint"] = "different-pair"
+    write_json(results / "private/blind-map.json", mapping)
+
+    result = run_import(evaluation, results, judging, tmp_path / "judged.json")
+
+    assert result.returncode != 0
+    assert "pair_fingerprint" in result.stderr
 
 
 def test_rejects_completed_run_identity_mismatch(tmp_path):

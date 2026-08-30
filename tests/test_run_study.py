@@ -627,6 +627,7 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert state["provenance"]["evaluation_sha256"]
     assert state["provenance"]["acceptance_command_sha256"]
     assert state["provenance"]["verify_command_sha256"]
+    assert state["provenance"]["pair_fingerprint"]
     assert state["provenance"]["prompt_version"] == 1
     private_dir = output / "private"
     mapping_path = private_dir / "blind-map.json"
@@ -634,6 +635,15 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert stat.S_IMODE(mapping_path.stat().st_mode) == 0o600
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     assert mapping[state["blind_id"]]["condition"] == condition
+    assert (
+        mapping[state["blind_id"]]["pair_fingerprint"]
+        == state["provenance"]["pair_fingerprint"]
+    )
+    assert (
+        evaluation_run["pair_fingerprint"]
+        == state["provenance"]["pair_fingerprint"]
+    )
+    assert evaluation_run["source_sha256"] == state["provenance"]["source_sha256"]
     if condition == "migrate":
         provenance = state["provenance"]
         assert provenance["migration_engine"] == "session-handoff"
@@ -685,6 +695,20 @@ def test_fake_state_v1_pilot_parses_json_and_keeps_real_context_canonical(tmp_pa
     assert evaluation_run["client"] == state["client"]
     assert evaluation_run["model"] == state["model"]
     assert evaluation_run["revision"] == state["provenance"]["runner_git_revision"]
+    assert (
+        evaluation_run["pair_fingerprint"]
+        == state["provenance"]["pair_fingerprint"]
+    )
+    assert evaluation_run["arm_order"] in (
+        ["markdown-v1", "state-v1"],
+        ["state-v1", "markdown-v1"],
+    )
+    assert (
+        evaluation_run["arm_position"]
+        == evaluation_run["arm_order"].index("state-v1") + 1
+    )
+    assert state["arm_order"] == evaluation_run["arm_order"]
+    assert state["arm_position"] == evaluation_run["arm_position"]
 
 
 def test_hidden_acceptance_controls_automated_task_success(tmp_path):

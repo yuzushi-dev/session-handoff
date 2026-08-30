@@ -88,19 +88,25 @@ def main() -> int:
     parser.add_argument("spec", type=Path)
     parser.add_argument("--output", type=Path, default=Path("benchmark/generated"))
     parser.add_argument("--runs-per-condition", type=int, default=2)
+    parser.add_argument(
+        "--handoff-only",
+        action="store_true",
+        help="prepare only the paired Markdown/state handoff candidate",
+    )
     args = parser.parse_args()
 
     if args.runs_per_condition < 1:
         raise SystemExit("--runs-per-condition must be at least 1")
 
     data = load_spec(args.spec)
+    conditions = ("handoff",) if args.handoff_only else CONDITIONS
     args.output.mkdir(parents=True, exist_ok=True)
     evaluation = {
         "schema_version": 1,
         "study": {
             "cases": [case["id"] for case in data["cases"]],
             "bands": list(data["bands"]),
-            "conditions": list(CONDITIONS),
+            "conditions": list(conditions),
             "handoff_formats": list(HANDOFF_FORMATS),
             "runs_per_condition": args.runs_per_condition,
         },
@@ -125,7 +131,7 @@ def main() -> int:
         for band, target_chars in data["bands"].items():
             transcript = render(case, int(target_chars))
             (case_dir / f"session-{band}.md").write_text(transcript, encoding="utf-8")
-            for condition in CONDITIONS:
+            for condition in conditions:
                 for replicate in range(1, args.runs_per_condition + 1):
                     formats = (
                         handoff_arm_order(case["id"], band, replicate)
@@ -143,6 +149,9 @@ def main() -> int:
                         run["workspace_template"] = f"{case['id']}/workspace"
                         run["verify_command"] = fixture["verify_command"]
                         run["acceptance_command"] = fixture["acceptance_command"]
+                        if condition == "handoff":
+                            run["arm_order"] = list(formats)
+                            run["arm_position"] = formats.index(handoff_format) + 1
                         evaluation["runs"].append(run)
 
     (args.output / "evaluation.json").write_text(
@@ -151,7 +160,7 @@ def main() -> int:
     print(json.dumps({
         "cases": len(data["cases"]),
         "bands": len(data["bands"]),
-        "conditions": len(CONDITIONS),
+        "conditions": len(conditions),
         "runs_per_condition": args.runs_per_condition,
         "total_runs": len(evaluation["runs"]),
         "output": str(args.output),

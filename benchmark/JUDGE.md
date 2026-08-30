@@ -62,6 +62,12 @@ Every fact, stale-trap, DoD, and counter label needs concise evidence: an exact 
 
 Before using model judgments as release evidence, human-score a stratified calibration sample covering every case, condition, and size band. Record the judge identity/model, calibration-set identifier, sample size, agreement, and adjudicated disagreements. Set `human_reviewed=true` only after that comparison. Review every disagreement involving a critical fact; do not tune the fixture or handoff template against the held-out study cells.
 
+For the typed-vs-Markdown handoff candidate, the bundle is presentation-blind,
+not condition-blind: record `presentation_blind=true` and
+`condition_blind=false` (or omit `condition_blind`). Do not use the candidate's
+presentation normalization as evidence for the release gate's separate
+condition-blind calibration requirement.
+
 Record the study-level result in the evaluation root:
 
 ```json

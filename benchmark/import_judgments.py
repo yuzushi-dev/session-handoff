@@ -30,7 +30,15 @@ class JudgmentImportError(ValueError):
     """Judgment artifacts are incomplete or inconsistent."""
 
 
-EXECUTION_IDENTITY_FIELDS = ("run_id", "client", "model", "revision")
+EXECUTION_IDENTITY_FIELDS = (
+    "run_id",
+    "client",
+    "model",
+    "revision",
+    "source_sha256",
+    "pair_fingerprint",
+)
+ARM_METADATA_FIELDS = ("arm_order", "arm_position")
 
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:
@@ -116,9 +124,17 @@ def _merge_run(
             raise JudgmentImportError(f"evaluation-run execution identity is missing: {field}")
         if actual != expected:
             raise JudgmentImportError(f"evaluation-run execution identity mismatch: {field}")
+    for field in ARM_METADATA_FIELDS:
+        expected = mapping.get(field)
+        actual = completed.get(field)
+        if expected != actual:
+            raise JudgmentImportError(f"evaluation-run arm metadata mismatch: {field}")
     merged = json.loads(json.dumps(prepared))
     for field in EXECUTION_IDENTITY_FIELDS:
         merged[field] = completed[field]
+    for field in ARM_METADATA_FIELDS:
+        if field in mapping or field in completed:
+            merged[field] = completed.get(field)
     _merge_items(
         merged["facts"],
         judge.get("facts"),

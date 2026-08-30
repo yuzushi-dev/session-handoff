@@ -47,6 +47,14 @@ RELEASE_CASES = (
 RELEASE_BANDS = ("short", "long", "very_long")
 RELEASE_CONDITIONS = ("full", "handoff", "migrate", "oracle")
 MIN_RELEASE_REPLICATIONS = 2
+MIN_CANDIDATE_REPLICATIONS = 2
+PAIR_IDENTITY_FIELDS = (
+    "pair_fingerprint",
+    "client",
+    "model",
+    "revision",
+    "source_sha256",
+)
 MIN_CALIBRATION_SAMPLE_SIZE = 18
 MIN_CALIBRATION_AGREEMENT = 0.8
 
@@ -123,6 +131,29 @@ def _validate_run(run: Any) -> None:
             isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0
         ):
             raise ValueError(f"{field} must be null or a non-negative number")
+    for field in PAIR_IDENTITY_FIELDS:
+        value = run.get(field)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"{field} must be null or a non-empty string")
+    if "arm_order" in run or "arm_position" in run:
+        arm_order = run.get("arm_order")
+        arm_position = run.get("arm_position")
+        if (
+            not isinstance(arm_order, list)
+            or not arm_order
+            or any(value not in HANDOFF_FORMATS for value in arm_order)
+            or len(set(arm_order)) != len(arm_order)
+        ):
+            raise ValueError("arm_order must be a permutation of supported handoff formats")
+        if (
+            isinstance(arm_position, bool)
+            or not isinstance(arm_position, int)
+            or arm_position < 1
+            or arm_position > len(arm_order)
+        ):
+            raise ValueError("arm_position must identify a handoff arm")
+        if run.get("handoff_format") != arm_order[arm_position - 1]:
+            raise ValueError("arm_position does not match handoff_format")
 
 
 def score_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +195,9 @@ def score_run(run: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": run.get("output_tokens"),
         "wall_seconds": run.get("wall_seconds"),
         "supplied_context_bytes": run.get("supplied_context_bytes"),
+        **{field: run.get(field) for field in PAIR_IDENTITY_FIELDS},
+        "arm_order": run.get("arm_order"),
+        "arm_position": run.get("arm_position"),
     }
 
 
@@ -213,20 +247,66 @@ def _median(values: list[Any]) -> int | float | None:
     return median(numeric) if numeric else None
 
 
+def _pair_identity_error(
+    markdown: dict[str, Any], state: dict[str, Any]
+) -> dict[str, Any] | None:
+    for field in PAIR_IDENTITY_FIELDS:
+        expected = markdown.get(field)
+        actual = state.get(field)
+        if not isinstance(expected, str) or not expected:
+            return {
+                "metric": "pair_identity",
+                "field": field,
+                "value": expected,
+                "expected": "same non-empty value",
+            }
+        if actual != expected:
+            return {
+                "metric": "pair_identity",
+                "field": field,
+                "value": actual,
+                "expected": expected,
+            }
+    if markdown.get("arm_order") != state.get("arm_order"):
+        return {
+            "metric": "pair_identity",
+            "field": "arm_order",
+            "value": state.get("arm_order"),
+            "expected": markdown.get("arm_order"),
+        }
+    if not isinstance(markdown.get("arm_order"), list):
+        return {
+            "metric": "pair_identity",
+            "field": "arm_order",
+            "value": markdown.get("arm_order"),
+            "expected": "same recorded arm order",
+        }
+    return None
+
+
 def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
-    """Report paired Markdown/state rows and raw state-minus-Markdown deltas."""
-    groups: dict[tuple[str, str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
+    """Report only comparable Markdown/state pairs and their raw deltas."""
+    groups: dict[tuple[str, str, int], dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for row in scored:
         if row.get("condition") != "handoff":
             continue
         handoff_format = row.get("handoff_format", DEFAULT_HANDOFF_FORMAT)
         if handoff_format in HANDOFF_FORMATS:
             key = (row["case"], row["band"], row["replicate"])
-            groups[key][handoff_format] = row
+            groups[key][handoff_format].append(row)
 
     pairs: list[dict[str, Any]] = []
+    pairing_errors: list[dict[str, Any]] = []
+    complete_pairs = 0
     for case, band, replicate in sorted(groups):
-        formats = groups[(case, band, replicate)]
+        format_rows = groups[(case, band, replicate)]
+        formats = {
+            handoff_format: rows[0]
+            for handoff_format, rows in format_rows.items()
+            if rows
+        }
         pair: dict[str, Any] = {
             "case": case,
             "band": band,
@@ -235,33 +315,77 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
         for handoff_format in HANDOFF_FORMATS:
             if handoff_format in formats:
                 pair[handoff_format] = formats[handoff_format]
-        markdown = formats.get("markdown-v1")
-        state = formats.get("state-v1")
+        errors: list[dict[str, Any]] = []
+        for handoff_format, rows in format_rows.items():
+            if len(rows) != 1:
+                errors.append(
+                    {
+                        "metric": "pairing",
+                        "case": case,
+                        "band": band,
+                        "replicate": replicate,
+                        "format": handoff_format,
+                        "value": len(rows),
+                        "expected": 1,
+                    }
+                )
+        markdown = (
+            formats.get("markdown-v1")
+            if len(format_rows.get("markdown-v1", [])) == 1
+            else None
+        )
+        state = (
+            formats.get("state-v1")
+            if len(format_rows.get("state-v1", [])) == 1
+            else None
+        )
         delta: dict[str, int | float] = {}
         if markdown is not None and state is not None:
-            for metric in PAIRED_METRICS:
-                if _numeric(markdown.get(metric)) and _numeric(state.get(metric)):
-                    delta[metric] = state[metric] - markdown[metric]
-            delta["task_success"] = int(state["task_success"]) - int(
-                markdown["task_success"]
+            identity_error = _pair_identity_error(markdown, state)
+            if identity_error is not None:
+                errors.append(
+                    {
+                        **identity_error,
+                        "case": case,
+                        "band": band,
+                        "replicate": replicate,
+                    }
+                )
+            else:
+                complete_pairs += 1
+                for metric in PAIRED_METRICS:
+                    if _numeric(markdown.get(metric)) and _numeric(state.get(metric)):
+                        delta[metric] = state[metric] - markdown[metric]
+                delta["task_success"] = int(state["task_success"]) - int(
+                    markdown["task_success"]
+                )
+        elif set(format_rows) != set(HANDOFF_FORMATS):
+            errors.append(
+                {
+                    "metric": "pairing",
+                    "case": case,
+                    "band": band,
+                    "replicate": replicate,
+                    "value": sorted(format_rows),
+                    "expected": list(HANDOFF_FORMATS),
+                }
             )
+        if errors:
+            pairing_errors.extend(errors)
+            pair["pairing_errors"] = errors
         pair["delta_state_minus_markdown"] = delta
         pairs.append(pair)
 
     by_format: dict[str, dict[str, Any]] = {}
     for handoff_format in HANDOFF_FORMATS:
         rows = [
-            formats[handoff_format]
-            for formats in groups.values()
-            if handoff_format in formats
+            format_rows[handoff_format][0]
+            for format_rows in groups.values()
+            if len(format_rows.get(handoff_format, [])) == 1
         ]
         summary: dict[str, Any] = {
             "runs": len(rows),
-            "complete_pairs": sum(
-                1
-                for formats in groups.values()
-                if set(formats) >= set(HANDOFF_FORMATS)
-            ),
+            "complete_pairs": complete_pairs,
             "task_success_rate": (
                 sum(1 for row in rows if row["task_success"]) / len(rows)
                 if rows
@@ -271,7 +395,12 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
         for metric in PAIRED_METRICS:
             summary[f"median_{metric}"] = _median([row.get(metric) for row in rows])
         by_format[handoff_format] = summary
-    return {"pairs": pairs, "by_format": by_format}
+    return {
+        "pairs": pairs,
+        "complete_pairs": complete_pairs,
+        "pairing_errors": pairing_errors,
+        "by_format": by_format,
+    }
 
 
 def validate_study_manifest(payload: Any) -> None:
@@ -331,6 +460,8 @@ def validate_study_manifest(payload: Any) -> None:
     if not isinstance(runs, list) or not runs:
         raise ValueError("evaluation must contain a non-empty runs array")
     actual: set[tuple[str, str, str, str, int]] = set()
+    arm_orders: dict[tuple[str, str, int], tuple[str, ...]] = {}
+    arm_metadata_formats: dict[tuple[str, str, int], set[str]] = defaultdict(set)
     for run in runs:
         if not isinstance(run, dict):
             raise ValueError("run must be an object")
@@ -347,6 +478,39 @@ def validate_study_manifest(payload: Any) -> None:
         if key not in expected:
             raise ValueError(f"unexpected run: {key}")
         actual.add(key)
+        has_arm_metadata = "arm_order" in run or "arm_position" in run
+        if has_arm_metadata:
+            if (
+                run["condition"] != "handoff"
+                or "arm_order" not in run
+                or "arm_position" not in run
+            ):
+                raise ValueError("handoff arm metadata is incomplete")
+            arm_order = run["arm_order"]
+            if (
+                not isinstance(arm_order, list)
+                or len(arm_order) != len(handoff_formats)
+                or any(value not in handoff_formats for value in arm_order)
+                or len(set(arm_order)) != len(arm_order)
+            ):
+                raise ValueError("arm_order must be a permutation of study handoff formats")
+            arm_position = run["arm_position"]
+            if (
+                isinstance(arm_position, bool)
+                or not isinstance(arm_position, int)
+                or arm_position < 1
+                or arm_position > len(arm_order)
+                or arm_order[arm_position - 1] != handoff_format
+            ):
+                raise ValueError("arm_position does not match handoff_format")
+            arm_key = (run["case"], run["band"], replicate)
+            previous = arm_orders.setdefault(arm_key, tuple(arm_order))
+            if previous != tuple(arm_order):
+                raise ValueError(f"handoff arm order differs within pair: {arm_key}")
+            arm_metadata_formats[arm_key].add(handoff_format)
+    for arm_key, formats in arm_metadata_formats.items():
+        if formats != set(handoff_formats):
+            raise ValueError(f"handoff arm metadata is incomplete: {arm_key}")
     missing = sorted(expected - actual)
     if missing:
         raise ValueError(f"missing runs: {missing[:5]}")
@@ -390,7 +554,7 @@ def handoff_fidelity_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def structured_state_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fail closed unless every state-v1 handoff meets the correctness gate."""
+    """Fail closed unless the complete paired candidate meets the gate."""
     state_runs = [
         row
         for row in scored
@@ -399,6 +563,20 @@ def structured_state_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     if not state_runs:
         return {"passed": False, "failures": [{"metric": "state_v1_runs", "value": 0}]}
+    paired = paired_handoff_summary(scored)
+    expected_pairs = set(
+        itertools.product(
+            RELEASE_CASES,
+            RELEASE_BANDS,
+            range(1, MIN_CANDIDATE_REPLICATIONS + 1),
+        )
+    )
+    complete_pair_keys = {
+        (pair["case"], pair["band"], pair["replicate"])
+        for pair in paired["pairs"]
+        if "pairing_errors" not in pair
+        and all(handoff_format in pair for handoff_format in HANDOFF_FORMATS)
+    }
     thresholds = {
         "critical_rcr": 1.0,
         "incorrect_fact_rate": 0.0,
@@ -406,6 +584,15 @@ def structured_state_gate(scored: list[dict[str, Any]]) -> dict[str, Any]:
         "dod_pass_rate": 1.0,
         "task_success": True,
     }
+    if missing_pairs := sorted(expected_pairs - complete_pair_keys):
+        failures.append(
+            {
+                "metric": "complete_pairs",
+                "value": len(complete_pair_keys),
+                "expected": len(expected_pairs),
+                "missing": missing_pairs[:5],
+            }
+        )
     for row in state_runs:
         for metric, expected in thresholds.items():
             if row.get(metric) != expected:
