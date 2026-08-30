@@ -961,6 +961,8 @@ def test_context_ready_remains_resumable_after_handoff_generation(
     tmp_path, monkeypatch
 ):
     evaluation = prepare_study(tmp_path)
+    codex = tmp_path / "codex-fake"
+    write_fake_agent(codex)
     payload = json.loads(evaluation.read_text(encoding="utf-8"))
     run = next(
         item
@@ -982,7 +984,7 @@ def test_context_ready_remains_resumable_after_handoff_generation(
         credential_mode="environment",
         pass_env=[],
         claude_executable="claude-fake",
-        codex_executable="codex-fake",
+        codex_executable=str(codex),
     )
 
     def generated_context(*call_args):
@@ -1014,10 +1016,26 @@ def test_context_ready_remains_resumable_after_handoff_generation(
     assert state["status"] == "context_ready"
     assert state["provider_calls_started"] == 1
     assert state["retry_safe"] is True
+    original_timestamp = state["execution_started_at_ns"]
+
+    monkeypatch.setattr(
+        study_runner, "_credential_mount", lambda *unused: ("environment", None)
+    )
+    args.resume = True
+    resumed = study_runner.execute(
+        args,
+        run,
+        evaluation.parent,
+        source.read_text(encoding="utf-8"),
+    )
+
+    assert resumed["status"] == "completed"
+    resumed_state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert resumed_state["execution_started_at_ns"] == original_timestamp
 
 
 @pytest.mark.parametrize("condition", ["full", "migrate"])
-def test_verification_checkpoint_resumes_without_another_provider_call(
+def test_verification_checkpoint_rejects_changed_provenance_without_provider_call(
     tmp_path, condition
 ):
     evaluation = prepare_study(tmp_path)
@@ -1071,12 +1089,9 @@ def test_verification_checkpoint_resumes_without_another_provider_call(
         check=False,
     )
 
-    assert resumed.returncode == 0, resumed.stderr
-    assert json.loads(resumed.stdout)["task_success"] is True
+    assert resumed.returncode != 0
+    assert "provenance" in resumed.stderr
     assert len(fake_calls(run_dir)) == 1
-    resumed_state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    assert resumed_state["provenance"]["resume_runner_sha256"]
-    assert resumed_state["provenance"]["resume_runner_git_revision"]
 
 
 @pytest.mark.parametrize(

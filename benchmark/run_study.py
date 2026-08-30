@@ -91,6 +91,13 @@ Exclude stale noise. Do not include secrets.
 Synthetic transcript:
 
 """
+CLIENT_PROFILE = {
+    "customizations": "disabled",
+    "generation_tools": "disabled",
+    "generation_sandbox": "read_only",
+    "continuation_sandbox": "workspace_write",
+    "claude_permission_mode": "bypassPermissions",
+}
 
 
 class StudyRunError(RuntimeError):
@@ -298,6 +305,76 @@ def _validate_runtime_provenance(
         raise StudyRunError("credential source changed after pair provenance was recorded")
 
 
+def _validate_recorded_runtime_provenance(
+    args: argparse.Namespace, state: dict[str, Any]
+) -> None:
+    credential_mode = _effective_credential_mode(args, args.client)
+    credential_source = (
+        _auth_source(args.client).expanduser().resolve()
+        if credential_mode == "read_only_mount"
+        else None
+    )
+    _validate_runtime_provenance(args, state, credential_mode, credential_source)
+
+
+def _validate_resume_provenance(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    transcript: str,
+    evaluation_path: Path,
+    oracle_path: Path,
+    template: Path,
+    verify_command: list[str],
+    acceptance_command: list[str],
+) -> None:
+    provenance = state["provenance"]
+    expected_state = {
+        "client": args.client,
+        "model": args.model,
+        "case": args.case,
+        "band": args.band,
+        "condition": args.condition,
+        "handoff_format": _handoff_format(args),
+        "replicate": args.replicate,
+    }
+    for field, expected in expected_state.items():
+        if state.get(field) != expected:
+            raise StudyRunError(f"resume provenance mismatch: {field}")
+    expected_provenance = {
+        "prompt_version": PROMPT_VERSION,
+        "handoff_format": expected_state["handoff_format"],
+        "fixture_seed": _fixture_seed(args),
+        "handoff_prompt_sha256": _sha256(
+            _handoff_prompt(expected_state["handoff_format"])
+        ),
+        "continuation_prompt_sha256": _sha256(CONTINUATION_PROMPT),
+        "source_sha256": _sha256(transcript),
+        "oracle_sha256": _sha256(oracle_path.read_bytes()),
+        "evaluation_sha256": _sha256(evaluation_path.read_bytes()),
+        "verify_command_sha256": _sha256(
+            json.dumps(verify_command, ensure_ascii=False, separators=(",", ":"))
+        ),
+        "acceptance_command_sha256": _sha256(
+            json.dumps(acceptance_command, ensure_ascii=False, separators=(",", ":"))
+        ),
+        "workspace_template_sha256": _tree_sha256(template),
+        "runner_sha256": _sha256(Path(__file__).read_bytes()),
+        "runner_git_revision": _git_revision(),
+        "client_profile": CLIENT_PROFILE,
+    }
+    client_executable = (
+        args.claude_executable if args.client == "claude" else args.codex_executable
+    )
+    expected_provenance["client_executable"] = client_executable
+    for field, expected in expected_provenance.items():
+        if provenance.get(field) != expected:
+            raise StudyRunError(f"resume provenance mismatch: {field}")
+    if args.condition == "migrate":
+        for field, expected in _migration_provenance().items():
+            if provenance.get(field) != expected:
+                raise StudyRunError(f"resume provenance mismatch: {field}")
+
+
 def _refresh_runtime_provenance(args: argparse.Namespace, state: dict[str, Any]) -> None:
     client_executable = (
         args.claude_executable if args.client == "claude" else args.codex_executable
@@ -305,6 +382,8 @@ def _refresh_runtime_provenance(args: argparse.Namespace, state: dict[str, Any])
     provenance = state["provenance"]
     provenance.update(
         repository_sha256=_repository_sha256(),
+        runner_sha256=_sha256(Path(__file__).read_bytes()),
+        runner_git_revision=_git_revision(),
         sandbox_executable=args.sandbox_executable,
         sandbox_executable_sha256=_file_sha256(args.sandbox_executable),
         credential_mode=_effective_credential_mode(args, args.client),
@@ -1129,11 +1208,38 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         provenance = state.get("provenance")
         if not isinstance(provenance, dict):
             raise StudyRunError("existing run has no valid provenance")
+        _validate_resume_provenance(
+            args,
+            state,
+            transcript,
+            evaluation_path,
+            oracle_path,
+            template,
+            verify_command,
+            acceptance_command,
+        )
         if state.get("status") == "prepared" and state.get("retry_safe") is True:
             _refresh_runtime_provenance(args, state)
-        elif not provenance.get("pair_fingerprint"):
-            raise StudyRunError("existing run lacks pair provenance; start a fresh run")
-        state["execution_started_at_ns"] = execution_started_at_ns
+        else:
+            if not provenance.get("pair_fingerprint"):
+                raise StudyRunError("existing run lacks pair provenance; start a fresh run")
+            _validate_recorded_runtime_provenance(args, state)
+        if provenance.get("pair_fingerprint") != _pair_fingerprint(state):
+            raise StudyRunError("resume provenance fingerprint is inconsistent")
+        provider_calls_started = state.get("provider_calls_started", 0)
+        if (
+            isinstance(provider_calls_started, bool)
+            or not isinstance(provider_calls_started, int)
+            or provider_calls_started < 0
+        ):
+            raise StudyRunError("existing run has invalid provider call count")
+        if provider_calls_started == 0:
+            state["execution_started_at_ns"] = execution_started_at_ns
+        elif (
+            isinstance(state.get("execution_started_at_ns"), bool)
+            or not isinstance(state.get("execution_started_at_ns"), int)
+        ):
+            raise StudyRunError("existing run lacks a provider-start timestamp")
         runner_path = Path(__file__).resolve()
         provenance["resume_runner_sha256"] = _sha256(runner_path.read_bytes())
         provenance["resume_runner_git_revision"] = _git_revision()
@@ -1202,13 +1308,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "environment_fingerprints": _environment_fingerprints(args),
                 "client_executable": client_executable,
                 "client_executable_sha256": _file_sha256(client_executable),
-                "client_profile": {
-                    "customizations": "disabled",
-                    "generation_tools": "disabled",
-                    "generation_sandbox": "read_only",
-                    "continuation_sandbox": "workspace_write",
-                    "claude_permission_mode": "bypassPermissions",
-                },
+                "client_profile": CLIENT_PROFILE,
                 **migration_provenance,
             },
         }
