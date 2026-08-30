@@ -171,7 +171,7 @@ costs before authorizing the matrix.
 
 ### Run artifacts
 
-- `state.json`: content-free selection, handoff format and recorded arm order, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
+- `state.json`: content-free selection, handoff format, recorded arm order and execution timestamp, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
 - `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`, `acceptance.stdout`, `acceptance.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
@@ -244,7 +244,8 @@ python3 benchmark/score.py benchmark/generated/evaluation.judged.json --pretty
 the six release cases, three bands, and two minimum replications; it then checks
 state-v1 for critical recall, zero incorrect/stale facts, hidden
 acceptance/task success, and a complete DoD. A pair with a missing or mismatched
-fingerprint is not scored as a delta. `paired_handoff` reports raw
+fingerprint, or an execution timestamp that contradicts the recorded arm order,
+is not scored as a delta. `paired_handoff` reports raw
 state-minus-Markdown deltas and per-arm medians for context bytes, tokens,
 recovery reads, wall time, semantic metrics, and task success. `release_gate`
 additionally requires all six release cases, all three bands, all four

@@ -135,6 +135,11 @@ def _validate_run(run: Any) -> None:
         value = run.get(field)
         if value is not None and (not isinstance(value, str) or not value):
             raise ValueError(f"{field} must be null or a non-empty string")
+    timestamp = run.get("execution_started_at_ns")
+    if timestamp is not None and (
+        isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0
+    ):
+        raise ValueError("execution_started_at_ns must be null or a non-negative integer")
     if "arm_order" in run or "arm_position" in run:
         arm_order = run.get("arm_order")
         arm_position = run.get("arm_position")
@@ -198,6 +203,7 @@ def score_run(run: dict[str, Any]) -> dict[str, Any]:
         **{field: run.get(field) for field in PAIR_IDENTITY_FIELDS},
         "arm_order": run.get("arm_order"),
         "arm_position": run.get("arm_position"),
+        "execution_started_at_ns": run.get("execution_started_at_ns"),
     }
 
 
@@ -280,6 +286,35 @@ def _pair_identity_error(
             "field": "arm_order",
             "value": markdown.get("arm_order"),
             "expected": "same recorded arm order",
+        }
+    markdown_position = markdown.get("arm_position")
+    state_position = state.get("arm_position")
+    markdown_started = markdown.get("execution_started_at_ns")
+    state_started = state.get("execution_started_at_ns")
+    if (
+        markdown_position not in (1, 2)
+        or state_position not in (1, 2)
+        or markdown_position == state_position
+        or not isinstance(markdown_started, int)
+        or not isinstance(state_started, int)
+    ):
+        return {
+            "metric": "pair_identity",
+            "field": "execution_started_at_ns",
+            "value": {"markdown": markdown_started, "state": state_started},
+            "expected": "recorded timestamps for distinct arm positions",
+        }
+    first_started, second_started = (
+        (markdown_started, state_started)
+        if markdown_position < state_position
+        else (state_started, markdown_started)
+    )
+    if first_started >= second_started:
+        return {
+            "metric": "pair_identity",
+            "field": "execution_started_at_ns",
+            "value": {"markdown": markdown_started, "state": state_started},
+            "expected": "arm positions start in recorded order",
         }
     return None
 

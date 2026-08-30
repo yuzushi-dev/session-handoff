@@ -368,6 +368,7 @@ def candidate_rows():
                         pair_fingerprint=pair_fingerprint,
                         arm_order=["markdown-v1", "state-v1"],
                         arm_position=arm_position,
+                        execution_started_at_ns=arm_position,
                     )
                 )
             )
@@ -410,6 +411,7 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
             wall_seconds=4.0,
             arm_order=["markdown-v1", "state-v1"],
             arm_position=1,
+            execution_started_at_ns=1,
         )
     )
     state = scoring.score_run(
@@ -421,6 +423,7 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
             wall_seconds=3.0,
             arm_order=["markdown-v1", "state-v1"],
             arm_position=2,
+            execution_started_at_ns=2,
         )
     )
 
@@ -462,6 +465,7 @@ def test_paired_handoff_summary_rejects_mismatched_pair_identity():
             pair_fingerprint="different-pair",
             arm_order=["markdown-v1", "state-v1"],
             arm_position=2,
+            execution_started_at_ns=2,
         )
     )
 
@@ -470,6 +474,29 @@ def test_paired_handoff_summary_rejects_mismatched_pair_identity():
     assert summary["complete_pairs"] == 0
     assert summary["pairs"][0]["delta_state_minus_markdown"] == {}
     assert summary["pairing_errors"][0]["metric"] == "pair_identity"
+
+
+def test_paired_handoff_summary_rejects_execution_order_mismatch():
+    markdown = scoring.score_run(
+        valid_run(
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=1,
+            execution_started_at_ns=2,
+        )
+    )
+    state = scoring.score_run(
+        valid_run(
+            handoff_format="state-v1",
+            arm_order=["markdown-v1", "state-v1"],
+            arm_position=2,
+            execution_started_at_ns=1,
+        )
+    )
+
+    summary = scoring.paired_handoff_summary([markdown, state])
+
+    assert summary["complete_pairs"] == 0
+    assert summary["pairing_errors"][0]["field"] == "execution_started_at_ns"
 
 
 def test_release_gate_rejects_pilot_scope_and_missing_calibration():

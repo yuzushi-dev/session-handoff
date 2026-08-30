@@ -38,7 +38,7 @@ EXECUTION_IDENTITY_FIELDS = (
     "source_sha256",
     "pair_fingerprint",
 )
-ARM_METADATA_FIELDS = ("arm_order", "arm_position")
+ARM_METADATA_FIELDS = ("arm_order", "arm_position", "execution_started_at_ns")
 
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:

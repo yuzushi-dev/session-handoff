@@ -211,6 +211,113 @@ def _git_revision() -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _repository_sha256() -> str | None:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    digest = hashlib.sha256()
+    for relative in result.stdout.split(b"\0"):
+        if not relative:
+            continue
+        path = ROOT / os.fsdecode(relative)
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return None
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _file_sha256(value: str) -> str | None:
+    path = Path(value)
+    if not path.is_file():
+        resolved = shutil.which(value)
+        if not resolved:
+            return None
+        path = Path(resolved)
+    try:
+        return _sha256(path.resolve().read_bytes())
+    except OSError:
+        return None
+
+
+def _environment_fingerprints(args: argparse.Namespace) -> dict[str, str | None]:
+    names = sorted(BASE_ENV | AUTH_ENV[args.client] | set(args.pass_env))
+    return {
+        name: _sha256(os.environ[name]) if name in os.environ else None
+        for name in names
+    }
+
+
+def _effective_credential_mode(args: argparse.Namespace, client: str) -> str:
+    if args.credential_mode == "environment":
+        return "environment"
+    return (
+        "read_only_mount"
+        if _auth_source(client).expanduser().is_file()
+        else "environment"
+    )
+
+
+def _credential_sha256(args: argparse.Namespace, client: str) -> str | None:
+    if _effective_credential_mode(args, client) != "read_only_mount":
+        return None
+    return _file_sha256(str(_auth_source(client).expanduser().resolve()))
+
+
+def _validate_runtime_provenance(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    credential_access: str,
+    credential_source: Path | None,
+) -> None:
+    provenance = state["provenance"]
+    if provenance.get("repository_sha256") != _repository_sha256():
+        raise StudyRunError("repository changed after pair provenance was recorded")
+    if provenance.get("environment_fingerprints") != _environment_fingerprints(args):
+        raise StudyRunError("provider environment changed after pair provenance was recorded")
+    executable = args.claude_executable if args.client == "claude" else args.codex_executable
+    if provenance.get("client_executable_sha256") != _file_sha256(executable):
+        raise StudyRunError("client executable changed after pair provenance was recorded")
+    if provenance.get("sandbox_executable_sha256") != _file_sha256(args.sandbox_executable):
+        raise StudyRunError("sandbox executable changed after pair provenance was recorded")
+    if provenance.get("credential_mode") != credential_access:
+        raise StudyRunError("credential mode changed after pair provenance was recorded")
+    credential_sha256 = (
+        _file_sha256(str(credential_source)) if credential_source is not None else None
+    )
+    if provenance.get("credential_sha256") != credential_sha256:
+        raise StudyRunError("credential source changed after pair provenance was recorded")
+
+
+def _refresh_runtime_provenance(args: argparse.Namespace, state: dict[str, Any]) -> None:
+    client_executable = (
+        args.claude_executable if args.client == "claude" else args.codex_executable
+    )
+    provenance = state["provenance"]
+    provenance.update(
+        repository_sha256=_repository_sha256(),
+        sandbox_executable=args.sandbox_executable,
+        sandbox_executable_sha256=_file_sha256(args.sandbox_executable),
+        credential_mode=_effective_credential_mode(args, args.client),
+        credential_mode_requested=args.credential_mode,
+        credential_sha256=_credential_sha256(args, args.client),
+        pass_env=sorted(set(args.pass_env)),
+        environment_fingerprints=_environment_fingerprints(args),
+        client_executable=client_executable,
+        client_executable_sha256=_file_sha256(client_executable),
+    )
+    provenance["pair_fingerprint"] = _pair_fingerprint(state)
+
+
 def _pair_fingerprint(state: dict[str, Any]) -> str:
     provenance = state["provenance"]
     comparable = {
@@ -219,6 +326,7 @@ def _pair_fingerprint(state: dict[str, Any]) -> str:
         "fixture_seed": state.get("fixture_seed"),
         "runner_git_revision": provenance.get("runner_git_revision"),
         "runner_sha256": provenance.get("runner_sha256"),
+        "repository_sha256": provenance.get("repository_sha256"),
         "source_sha256": provenance.get("source_sha256"),
         "workspace_template_sha256": provenance.get("workspace_template_sha256"),
         "continuation_prompt_sha256": provenance.get("continuation_prompt_sha256"),
@@ -226,10 +334,15 @@ def _pair_fingerprint(state: dict[str, Any]) -> str:
         "acceptance_command_sha256": provenance.get("acceptance_command_sha256"),
         "evaluation_sha256": provenance.get("evaluation_sha256"),
         "sandbox_executable": provenance.get("sandbox_executable"),
+        "sandbox_executable_sha256": provenance.get("sandbox_executable_sha256"),
         "credential_mode": provenance.get("credential_mode"),
+        "credential_mode_requested": provenance.get("credential_mode_requested"),
+        "credential_sha256": provenance.get("credential_sha256"),
         "client_executable": provenance.get("client_executable"),
+        "client_executable_sha256": provenance.get("client_executable_sha256"),
         "client_profile": provenance.get("client_profile"),
         "pass_env": sorted(provenance.get("pass_env", [])),
+        "environment_fingerprints": provenance.get("environment_fingerprints"),
     }
     encoded = json.dumps(
         comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -860,6 +973,7 @@ def _export_blinded_bundle(
         "pair_fingerprint": state["provenance"]["pair_fingerprint"],
         "arm_order": run.get("arm_order"),
         "arm_position": run.get("arm_position"),
+        "execution_started_at_ns": state["execution_started_at_ns"],
         "replicate": run["replicate"],
     }
     if existing not in (None, entry):
@@ -934,6 +1048,9 @@ def _prepare_context(
     generation_access, generation_credential = _credential_mount(
         args, args.client, analysis_home
     )
+    _validate_runtime_provenance(
+        args, state, generation_access, generation_credential
+    )
     state.setdefault("credential_access", {})["generation"] = generation_access
     generation_command = _agent_command(
         args.client,
@@ -991,6 +1108,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
     handoff_format = _handoff_format(args)
     if run.get("handoff_format", DEFAULT_HANDOFF_FORMAT) != handoff_format:
         raise StudyRunError("selected run handoff_format does not match the requested format")
+    execution_started_at_ns = time.time_ns()
     run_id = _run_id(args)
     run_dir = args.output.resolve() / run_id
     state_path = run_dir / "state.json"
@@ -1011,7 +1129,11 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         provenance = state.get("provenance")
         if not isinstance(provenance, dict):
             raise StudyRunError("existing run has no valid provenance")
-        provenance.setdefault("pair_fingerprint", _pair_fingerprint(state))
+        if state.get("status") == "prepared" and state.get("retry_safe") is True:
+            _refresh_runtime_provenance(args, state)
+        elif not provenance.get("pair_fingerprint"):
+            raise StudyRunError("existing run lacks pair provenance; start a fresh run")
+        state["execution_started_at_ns"] = execution_started_at_ns
         runner_path = Path(__file__).resolve()
         provenance["resume_runner_sha256"] = _sha256(runner_path.read_bytes())
         provenance["resume_runner_git_revision"] = _git_revision()
@@ -1027,6 +1149,11 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         migration_provenance = _migration_provenance() if args.condition == "migrate" else {}
         fixture_seed = _fixture_seed(args)
         runner_path = Path(__file__).resolve()
+        client_executable = (
+            args.claude_executable
+            if args.client == "claude"
+            else args.codex_executable
+        )
         state = {
             "schema_version": 1,
             "run_id": run_id,
@@ -1044,6 +1171,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "condition": args.condition,
             "handoff_format": handoff_format,
             "replicate": args.replicate,
+            "execution_started_at_ns": execution_started_at_ns,
             "arm_order": run.get("arm_order"),
             "arm_position": run.get("arm_position"),
             "provenance": {
@@ -1064,14 +1192,16 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "workspace_template_sha256": _tree_sha256(template),
                 "runner_sha256": _sha256(runner_path.read_bytes()),
                 "runner_git_revision": _git_revision(),
+                "repository_sha256": _repository_sha256(),
                 "sandbox_executable": args.sandbox_executable,
-                "credential_mode": args.credential_mode,
+                "sandbox_executable_sha256": _file_sha256(args.sandbox_executable),
+                "credential_mode": _effective_credential_mode(args, args.client),
+                "credential_mode_requested": args.credential_mode,
+                "credential_sha256": _credential_sha256(args, args.client),
                 "pass_env": sorted(set(args.pass_env)),
-                "client_executable": (
-                    args.claude_executable
-                    if args.client == "claude"
-                    else args.codex_executable
-                ),
+                "environment_fingerprints": _environment_fingerprints(args),
+                "client_executable": client_executable,
+                "client_executable_sha256": _file_sha256(client_executable),
                 "client_profile": {
                     "customizations": "disabled",
                     "generation_tools": "disabled",
@@ -1124,6 +1254,9 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             mode = "resume" if args.condition in {"full", "migrate"} else "fresh"
             credential_access, credential_source = _credential_mount(
                 args, args.client, target_home
+            )
+            _validate_runtime_provenance(
+                args, state, credential_access, credential_source
             )
             state.setdefault("credential_access", {})["continuation"] = credential_access
             command = _agent_command(
@@ -1206,6 +1339,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             revision=state["provenance"]["runner_git_revision"],
             source_sha256=state["provenance"]["source_sha256"],
             pair_fingerprint=state["provenance"]["pair_fingerprint"],
+            execution_started_at_ns=state["execution_started_at_ns"],
             task_success=task_success,
             repeated_failed_attempts=None,
             stale_decisions_acted_on=None,

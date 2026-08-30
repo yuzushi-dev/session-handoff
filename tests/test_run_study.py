@@ -34,6 +34,22 @@ def test_run_identity_includes_handoff_format_but_fixture_seed_does_not():
     assert study_runner._fixture_seed(markdown) == study_runner._fixture_seed(state)
 
 
+def test_pair_fingerprint_includes_runtime_configuration():
+    state = {
+        "client": "codex",
+        "model": "synthetic-model",
+        "fixture_seed": "fixture-seed",
+        "provenance": {"environment_fingerprints": {"OPENAI_BASE_URL": "one"}},
+    }
+    changed = json.loads(json.dumps(state))
+    changed["provenance"]["environment_fingerprints"]["OPENAI_BASE_URL"] = "two"
+
+    assert (
+        study_runner._pair_fingerprint(state)
+        != study_runner._pair_fingerprint(changed)
+    )
+
+
 def test_presentation_blind_handoff_normalizes_format_without_dropping_content_lines():
     markdown = """## Goal
 
@@ -624,10 +640,15 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert state["provenance"]["source_sha256"]
     assert state["provenance"]["workspace_template_sha256"]
     assert state["provenance"]["runner_sha256"]
+    assert state["provenance"]["repository_sha256"]
+    assert state["provenance"]["client_executable_sha256"]
+    assert state["provenance"]["sandbox_executable_sha256"]
+    assert state["provenance"]["environment_fingerprints"]
     assert state["provenance"]["evaluation_sha256"]
     assert state["provenance"]["acceptance_command_sha256"]
     assert state["provenance"]["verify_command_sha256"]
     assert state["provenance"]["pair_fingerprint"]
+    assert state["execution_started_at_ns"] > 0
     assert state["provenance"]["prompt_version"] == 1
     private_dir = output / "private"
     mapping_path = private_dir / "blind-map.json"
@@ -644,6 +665,11 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
         == state["provenance"]["pair_fingerprint"]
     )
     assert evaluation_run["source_sha256"] == state["provenance"]["source_sha256"]
+    assert evaluation_run["execution_started_at_ns"] == state["execution_started_at_ns"]
+    assert (
+        mapping[state["blind_id"]]["execution_started_at_ns"]
+        == state["execution_started_at_ns"]
+    )
     if condition == "migrate":
         provenance = state["provenance"]
         assert provenance["migration_engine"] == "session-handoff"
@@ -709,6 +735,7 @@ def test_fake_state_v1_pilot_parses_json_and_keeps_real_context_canonical(tmp_pa
     )
     assert state["arm_order"] == evaluation_run["arm_order"]
     assert state["arm_position"] == evaluation_run["arm_position"]
+    assert state["execution_started_at_ns"] == evaluation_run["execution_started_at_ns"]
 
 
 def test_hidden_acceptance_controls_automated_task_success(tmp_path):

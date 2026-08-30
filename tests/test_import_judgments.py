@@ -23,6 +23,7 @@ def fixture(tmp_path: Path):
         "replicate": 1,
         "arm_order": ["markdown-v1"],
         "arm_position": 1,
+        "execution_started_at_ns": 1,
         "source_sha256": "source-1",
         "pair_fingerprint": "pair-1",
         "workspace_template": "fixture/workspace",
@@ -89,6 +90,7 @@ def fixture(tmp_path: Path):
             "pair_fingerprint": "pair-1",
             "arm_order": ["markdown-v1"],
             "arm_position": 1,
+            "execution_started_at_ns": 1,
             "replicate": 1,
         }
     }
@@ -111,6 +113,7 @@ def fixture(tmp_path: Path):
         pair_fingerprint="pair-1",
         arm_order=["markdown-v1"],
         arm_position=1,
+        execution_started_at_ns=1,
     )
     completed["dod"] = [dict(run["dod"][0], passed=True)]
     write_json(results / "run-1/evaluation-run.json", completed)
