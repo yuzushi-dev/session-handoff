@@ -30,6 +30,9 @@ class JudgmentImportError(ValueError):
     """Judgment artifacts are incomplete or inconsistent."""
 
 
+EXECUTION_IDENTITY_FIELDS = ("run_id", "client", "model", "revision")
+
+
 def _read_object(path: Path, label: str) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -97,11 +100,25 @@ def _merge_items(
 
 
 def _merge_run(
-    prepared: dict[str, Any], completed: dict[str, Any], judge: dict[str, Any]
+    prepared: dict[str, Any],
+    completed: dict[str, Any],
+    judge: dict[str, Any],
+    mapping: dict[str, Any],
 ) -> dict[str, Any]:
     if _run_key(completed) != _run_key(prepared):
         raise JudgmentImportError("evaluation-run selection does not match the study")
+    for field in EXECUTION_IDENTITY_FIELDS:
+        expected = mapping.get(field)
+        actual = completed.get(field)
+        if not isinstance(expected, str) or not expected:
+            raise JudgmentImportError(f"blind map execution identity is missing: {field}")
+        if not isinstance(actual, str) or not actual:
+            raise JudgmentImportError(f"evaluation-run execution identity is missing: {field}")
+        if actual != expected:
+            raise JudgmentImportError(f"evaluation-run execution identity mismatch: {field}")
     merged = json.loads(json.dumps(prepared))
+    for field in EXECUTION_IDENTITY_FIELDS:
+        merged[field] = completed[field]
     _merge_items(
         merged["facts"],
         judge.get("facts"),
@@ -187,7 +204,7 @@ def import_judgments(
     judging = _read_object(judging_path, "judging metadata")
     mapping = _read_object(results_root / "private/blind-map.json", "blind map")
     prepared = {_run_key(run): run for run in evaluation["runs"]}
-    merged: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    merged: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
 
     for blind_id, entry in mapping.items():
         if not isinstance(entry, dict):
@@ -211,7 +228,7 @@ def import_judgments(
             ),
             "evaluation run",
         )
-        merged[key] = _merge_run(prepared[key], completed, judge)
+        merged[key] = _merge_run(prepared[key], completed, judge, entry)
 
     missing = set(prepared) - set(merged)
     if missing:

@@ -227,7 +227,6 @@ def _state_array_schema() -> dict[str, Any]:
         "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 8 * 1024,
         },
     }
 
@@ -251,7 +250,7 @@ def _state_schema() -> dict[str, Any]:
         ],
         "properties": {
             "schema_version": {"type": "integer", "const": 1},
-            "goal": {"type": "string", "minLength": 1, "maxLength": 8 * 1024},
+            "goal": {"type": "string", "minLength": 1},
             "constraints_preferences": array_schema,
             "progress": {
                 "type": "object",

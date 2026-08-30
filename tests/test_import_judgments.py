@@ -77,6 +77,9 @@ def fixture(tmp_path: Path):
             "case": "fixture",
             "band": "long",
             "condition": "handoff",
+            "client": "codex",
+            "model": "synthetic-model",
+            "revision": "revision-1",
             "replicate": 1,
         }
     }
@@ -91,6 +94,10 @@ def fixture(tmp_path: Path):
         output_tokens=23,
         wall_seconds=1.5,
         supplied_context_bytes=123,
+        run_id="run-1",
+        client="codex",
+        model="synthetic-model",
+        revision="revision-1",
     )
     completed["dod"] = [dict(run["dod"][0], passed=True)]
     write_json(results / "run-1/evaluation-run.json", completed)
@@ -211,6 +218,21 @@ def test_rejects_blind_mapping_path_outside_results(tmp_path):
 
     assert result.returncode != 0
     assert "outside" in result.stderr
+
+
+def test_rejects_completed_run_identity_mismatch(tmp_path):
+    evaluation, results, judging, _ = fixture(tmp_path)
+    completed_path = results / "run-1/evaluation-run.json"
+    completed = json.loads(completed_path.read_text())
+    completed["model"] = "different-model"
+    write_json(completed_path, completed)
+
+    result = run_import(
+        evaluation, results, judging, tmp_path / "judged.json"
+    )
+
+    assert result.returncode != 0
+    assert "identity" in result.stderr
 
 
 def test_rejects_judgment_that_changes_automated_result(tmp_path):

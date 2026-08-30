@@ -189,6 +189,17 @@ def test_validate_state_enforces_string_and_array_boundaries():
         validate_state(state)
 
 
+def test_validate_state_counts_utf8_bytes_at_string_boundary():
+    state = valid_state()
+    state["goal"] = "é" * (MAX_STRING_BYTES // 2)
+    assert len(state["goal"].encode("utf-8")) == MAX_STRING_BYTES
+    assert validate_state(state)["goal"] == state["goal"]
+
+    state["goal"] += "é"
+    with pytest.raises(HandoffStateError, match="8 KiB"):
+        validate_state(state)
+
+
 def test_validate_state_rejects_oversized_serialized_state():
     state = valid_state()
     state["critical_context"] = ["x" * MAX_STRING_BYTES] * MAX_ARRAY_ITEMS

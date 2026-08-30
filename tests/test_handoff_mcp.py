@@ -120,6 +120,8 @@ def test_handoff_create_schema_accepts_exact_state_v1_contract():
         "in_progress",
         "pending",
     ]
+    assert "maxLength" not in state["properties"]["goal"]
+    assert "maxLength" not in state["properties"]["constraints_preferences"]["items"]
 
 
 def test_create_accepts_state_and_writes_canonical_headings(tmp_path):

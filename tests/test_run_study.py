@@ -103,6 +103,13 @@ def test_state_v1_generation_rejects_prose_or_multiple_json_values_without_repai
             study_runner._render_generated_handoff(output, "state-v1")
 
 
+def test_state_v1_generation_rejects_duplicate_json_keys():
+    output = '{"schema_version":1,"goal":"first","goal":"second","constraints_preferences":[],"progress":{"done":[],"in_progress":[],"pending":[]},"key_decisions":[],"rejected_attempts":[],"verification":[],"critical_context":[],"uncertainties":[],"next_steps":[]}'
+
+    with pytest.raises(study_runner.StudyRunError, match="state-v1"):
+        study_runner._render_generated_handoff(output, "state-v1")
+
+
 def test_claude_input_tokens_include_cache_usage():
     stdout = json.dumps(
         {
@@ -673,7 +680,11 @@ def test_fake_state_v1_pilot_parses_json_and_keeps_real_context_canonical(tmp_pa
     assert state["provenance"]["handoff_format"] == "state-v1"
     assert state["fixture_seed"] == "context-rot-v1:superseded-decision:short:replicate-1"
     assert "## Critical Context" in (run_dir / "handoff.md").read_text(encoding="utf-8")
-    assert (run_dir / "evaluation-run.json").read_text(encoding="utf-8")
+    evaluation_run = json.loads((run_dir / "evaluation-run.json").read_text(encoding="utf-8"))
+    assert evaluation_run["run_id"] == state["run_id"]
+    assert evaluation_run["client"] == state["client"]
+    assert evaluation_run["model"] == state["model"]
+    assert evaluation_run["revision"] == state["provenance"]["runner_git_revision"]
 
 
 def test_hidden_acceptance_controls_automated_task_success(tmp_path):

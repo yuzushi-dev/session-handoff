@@ -24,12 +24,7 @@ if str(ROOT) not in sys.path:
 
 from benchmark.native_seed import seed_native_session
 from benchmark.score import validate_study_manifest
-from server.handoff_state import (
-    HandoffStateError,
-    redact_state,
-    render_state,
-    validate_state,
-)
+from server.handoff_state import redact_state, render_state, validate_state
 from server.handoff_mcp import redact_secrets, validate_handoff
 from server.migration import MigrationError, migrate_session
 
@@ -100,6 +95,15 @@ Synthetic transcript:
 
 class StudyRunError(RuntimeError):
     """A study run failed without an automatic retry."""
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -758,10 +762,12 @@ def _render_generated_handoff(text: str, handoff_format: str) -> tuple[str, int]
         redacted, redactions = redact_secrets(text)
     elif handoff_format == "state-v1":
         try:
-            state = validate_state(json.loads(text))
+            state = validate_state(
+                json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+            )
             redacted_state, redactions = redact_state(state)
             redacted = render_state(redacted_state)
-        except (HandoffStateError, TypeError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError) as exc:
             raise StudyRunError("generated state-v1 handoff is invalid") from exc
     else:
         raise StudyRunError(f"unsupported handoff format: {handoff_format}")
@@ -821,6 +827,9 @@ def _export_blinded_bundle(
         "band": run["band"],
         "condition": run["condition"],
         "handoff_format": run.get("handoff_format", DEFAULT_HANDOFF_FORMAT),
+        "client": state["client"],
+        "model": state["model"],
+        "revision": state["provenance"]["runner_git_revision"],
         "replicate": run["replicate"],
     }
     if existing not in (None, entry):
@@ -1156,6 +1165,10 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         evaluation_run = dict(run)
         evaluation_run["dod"] = [dict(item, passed=task_success) for item in run["dod"]]
         evaluation_run.update(
+            run_id=state["run_id"],
+            client=state["client"],
+            model=state["model"],
+            revision=state["provenance"]["runner_git_revision"],
             task_success=task_success,
             repeated_failed_attempts=None,
             stale_decisions_acted_on=None,
