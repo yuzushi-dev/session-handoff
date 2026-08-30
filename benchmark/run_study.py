@@ -49,8 +49,9 @@ AUTH_ENV = {
 }
 CONTINUATION_PROMPT = (
     "Continue the task from the supplied authoritative state. Work in the "
-    "repository, make the required change, and run the verification tests. "
-    "Do not merely describe the change."
+    "repository and make the required change. The harness runs the supplied "
+    "verification command after continuation; do not run git commands or "
+    "invoke pytest in this fixture workspace. Do not merely describe the change."
 )
 HANDOFF_PROMPT = """Create a semantic implementation-state handoff from the synthetic transcript below.
 Return Markdown only. Preserve current constraints, authoritative decisions, rejected attempts,
@@ -92,6 +93,49 @@ Exclude stale noise. Do not include secrets.
 Synthetic transcript:
 
 """
+_STATE_STRING_SCHEMA = {"type": "string", "minLength": 1}
+_STATE_STRING_ARRAY_SCHEMA = {
+    "type": "array",
+    "maxItems": 256,
+    "items": _STATE_STRING_SCHEMA,
+}
+STATE_HANDOFF_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema_version",
+        "goal",
+        "constraints_preferences",
+        "progress",
+        "key_decisions",
+        "rejected_attempts",
+        "verification",
+        "critical_context",
+        "uncertainties",
+        "next_steps",
+    ],
+    "properties": {
+        "schema_version": {"type": "integer", "enum": [1]},
+        "goal": _STATE_STRING_SCHEMA,
+        "constraints_preferences": _STATE_STRING_ARRAY_SCHEMA,
+        "progress": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["done", "in_progress", "pending"],
+            "properties": {
+                "done": _STATE_STRING_ARRAY_SCHEMA,
+                "in_progress": _STATE_STRING_ARRAY_SCHEMA,
+                "pending": _STATE_STRING_ARRAY_SCHEMA,
+            },
+        },
+        "key_decisions": _STATE_STRING_ARRAY_SCHEMA,
+        "rejected_attempts": _STATE_STRING_ARRAY_SCHEMA,
+        "verification": _STATE_STRING_ARRAY_SCHEMA,
+        "critical_context": _STATE_STRING_ARRAY_SCHEMA,
+        "uncertainties": _STATE_STRING_ARRAY_SCHEMA,
+        "next_steps": _STATE_STRING_ARRAY_SCHEMA,
+    },
+}
 CLIENT_PROFILE = {
     "customizations": "disabled",
     "generation_tools": "disabled",
@@ -197,6 +241,11 @@ def _sha256(data: bytes | str) -> str:
     if isinstance(data, str):
         data = data.encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def _state_schema_sha256() -> str:
+    encoded = json.dumps(STATE_HANDOFF_SCHEMA, indent=2, sort_keys=True) + "\n"
+    return _sha256(encoded)
 
 
 def _tree_sha256(root: Path) -> str:
@@ -366,6 +415,11 @@ def _validate_resume_provenance(
         "runner_sha256": _sha256(Path(__file__).read_bytes()),
         "runner_git_revision": _git_revision(),
         "reasoning_effort": getattr(args, "reasoning_effort", None),
+        "state_schema_sha256": (
+            _state_schema_sha256()
+            if expected_state["handoff_format"] == "state-v1"
+            else None
+        ),
         "client_profile": CLIENT_PROFILE,
     }
     client_executable = (
@@ -589,10 +643,13 @@ def _agent_command(
     mode: str,
     session_id: str | None = None,
     reasoning_effort: str | None = None,
+    output_schema: Path | None = None,
 ) -> list[str]:
     if reasoning_effort is not None:
         if client != "codex" or reasoning_effort not in REASONING_EFFORTS:
             raise StudyRunError("reasoning effort is invalid for the selected client")
+    if output_schema is not None and client != "codex":
+        raise StudyRunError("output schema is only supported for Codex")
 
     if client == "claude":
         command = [
@@ -646,6 +703,8 @@ def _agent_command(
     ]
     if reasoning_effort is not None:
         command.extend(("-c", f'model_reasoning_effort="{reasoning_effort}"'))
+    if output_schema is not None:
+        command.extend(("--output-schema", str(output_schema)))
     if mode == "generate":
         return [*command, "--ephemeral", "-"]
     if mode == "resume":
@@ -848,6 +907,65 @@ def _snapshot_diff(template: Path, workspace: Path) -> str:
 def _sum_metric(calls: list[dict[str, Any]], name: str) -> int | float | None:
     values = [call[name] for call in calls if isinstance(call.get(name), (int, float))]
     return sum(values) if values else None
+
+
+def _trace_failure_summary(trace: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": 0,
+        "pytest_unavailable": 0,
+        "git_outside_repository": 0,
+        "other": 0,
+    }
+    tool_commands: dict[str, str] = {}
+
+    def add_failure(command: object, output: object) -> None:
+        command_text = str(command)
+        output_text = str(output)
+        lowered = f"{command_text}\n{output_text}".lower()
+        summary["total"] += 1
+        if "pytest" in lowered and (
+            "command not found" in lowered or "no module named pytest" in lowered
+        ):
+            summary["pytest_unavailable"] += 1
+        elif "not a git repository" in lowered:
+            summary["git_outside_repository"] += 1
+        else:
+            summary["other"] += 1
+
+    for event in trace:
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item")
+        if event.get("phase") == "call":
+            tool_id = event.get("id")
+            if isinstance(tool_id, str):
+                input_value = event.get("input")
+                if isinstance(input_value, dict):
+                    input_value = (
+                        input_value.get("command")
+                        or input_value.get("cmd")
+                        or input_value.get("script")
+                        or input_value
+                    )
+                tool_commands[tool_id] = str(input_value or "")
+            continue
+        if isinstance(item, dict) and item.get("type") == "command_execution":
+            status = item.get("status")
+            exit_code = item.get("exit_code")
+            failed = status in {"failed", "error"} or (
+                isinstance(exit_code, int)
+                and not isinstance(exit_code, bool)
+                and exit_code != 0
+            )
+            if not failed:
+                continue
+            add_failure(item.get("command", ""), item.get("aggregated_output", ""))
+        elif event.get("phase") == "result" and event.get("is_error") is True:
+            add_failure(
+                tool_commands.get(str(event.get("id")), ""),
+                event.get("content", ""),
+            )
+    return summary
 
 
 def _manifest_command(run: dict[str, Any], field: str) -> list[str]:
@@ -1146,6 +1264,11 @@ def _prepare_context(
         args, state, generation_access, generation_credential
     )
     state.setdefault("credential_access", {})["generation"] = generation_access
+    output_schema = None
+    if handoff_format == "state-v1" and args.client == "codex":
+        schema_path = generation_workspace / "state-v1.schema.json"
+        _write_json(schema_path, STATE_HANDOFF_SCHEMA)
+        output_schema = Path("/mnt/work/state-v1.schema.json")
     generation_command = _agent_command(
         args.client,
         args.claude_executable if args.client == "claude" else args.codex_executable,
@@ -1153,6 +1276,7 @@ def _prepare_context(
         Path("/mnt/work"),
         mode="generate",
         reasoning_effort=getattr(args, "reasoning_effort", None),
+        output_schema=output_schema,
     )
     generation_command = _sandbox_agent(
         generation_command,
@@ -1320,6 +1444,9 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "runner_sha256": _sha256(runner_path.read_bytes()),
                 "runner_git_revision": _git_revision(),
                 "reasoning_effort": getattr(args, "reasoning_effort", None),
+                "state_schema_sha256": (
+                    _state_schema_sha256() if handoff_format == "state-v1" else None
+                ),
                 "repository_sha256": _repository_sha256(),
                 "sandbox_executable": args.sandbox_executable,
                 "sandbox_executable_sha256": _file_sha256(args.sandbox_executable),
@@ -1451,6 +1578,12 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         (run_dir / "acceptance.stderr").write_text(
             acceptance.stderr or "", encoding="utf-8"
         )
+        try:
+            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StudyRunError("continuation trace is missing or invalid") from exc
+        if not isinstance(trace, list):
+            raise StudyRunError("continuation trace must be an array")
         task_success = verification.returncode == 0 and acceptance.returncode == 0
         (run_dir / "workspace.diff").write_text(_snapshot_diff(template, workspace), encoding="utf-8")
         evaluation_run = dict(run)
@@ -1472,6 +1605,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             output_tokens=_sum_metric(calls, "output_tokens"),
             wall_seconds=time.monotonic() - started,
             supplied_context_bytes=(run_dir / "supplied-context.md").stat().st_size,
+            trace_failures=_trace_failure_summary(trace),
         )
         _write_json(run_dir / "evaluation-run.json", evaluation_run)
         _export_blinded_bundle(

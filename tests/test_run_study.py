@@ -32,6 +32,130 @@ def test_codex_command_includes_requested_reasoning_effort():
     assert ["-c", 'model_reasoning_effort="high"'] == command[index : index + 2]
 
 
+def test_codex_state_command_requests_native_output_schema():
+    command = study_runner._agent_command(
+        "codex",
+        "codex",
+        "gpt-5.6-luna",
+        Path("/mnt/work"),
+        mode="generate",
+        reasoning_effort="high",
+        output_schema=Path("/mnt/work/state-v1.schema.json"),
+    )
+
+    index = command.index("--output-schema")
+    assert command[index : index + 2] == [
+        "--output-schema",
+        "/mnt/work/state-v1.schema.json",
+    ]
+
+
+def test_state_output_schema_mirrors_string_and_array_limits():
+    schema = study_runner.STATE_HANDOFF_SCHEMA
+    assert schema["properties"]["goal"]["minLength"] == 1
+    for key in (
+        "constraints_preferences",
+        "key_decisions",
+        "rejected_attempts",
+        "verification",
+        "critical_context",
+        "uncertainties",
+        "next_steps",
+    ):
+        assert schema["properties"][key]["maxItems"] == 256
+        assert schema["properties"][key]["items"]["minLength"] == 1
+    for key in ("done", "in_progress", "pending"):
+        assert schema["properties"]["progress"]["properties"][key]["maxItems"] == 256
+
+
+def test_continuation_prompt_avoids_unavailable_git_and_pytest_commands():
+    assert "do not run git" in study_runner.CONTINUATION_PROMPT.lower()
+    assert "invoke pytest" in study_runner.CONTINUATION_PROMPT.lower()
+    assert "harness runs the supplied verification command" in study_runner.CONTINUATION_PROMPT.lower()
+
+
+def test_trace_failure_summary_separates_environment_failures():
+    trace = [
+        {
+            "kind": "tool",
+            "item": {
+                "type": "command_execution",
+                "command": "pytest tests/example.py",
+                "aggregated_output": "pytest: command not found",
+                "exit_code": 127,
+                "status": "failed",
+            },
+        },
+        {
+            "kind": "tool",
+            "item": {
+                "type": "command_execution",
+                "command": "git status --short",
+                "aggregated_output": "fatal: not a git repository",
+                "exit_code": 128,
+                "status": "failed",
+            },
+        },
+        {
+            "kind": "tool",
+            "item": {
+                "type": "command_execution",
+                "command": "python3 -c 'raise SystemExit(3)'",
+                "aggregated_output": "unexpected failure",
+                "exit_code": 3,
+                "status": "failed",
+            },
+        },
+    ]
+
+    assert study_runner._trace_failure_summary(trace) == {
+        "total": 3,
+        "pytest_unavailable": 1,
+        "git_outside_repository": 1,
+        "other": 1,
+    }
+
+
+def test_trace_failure_summary_correlates_claude_tool_results():
+    trace = [
+        {
+            "kind": "tool",
+            "phase": "call",
+            "id": "pytest-call",
+            "name": "Bash",
+            "input": {"command": "pytest tests/example.py"},
+        },
+        {
+            "kind": "tool",
+            "phase": "result",
+            "id": "pytest-call",
+            "is_error": True,
+            "content": "pytest: command not found",
+        },
+        {
+            "kind": "tool",
+            "phase": "call",
+            "id": "git-call",
+            "name": "Bash",
+            "input": {"command": "git status --short"},
+        },
+        {
+            "kind": "tool",
+            "phase": "result",
+            "id": "git-call",
+            "is_error": True,
+            "content": "fatal: not a git repository",
+        },
+    ]
+
+    assert study_runner._trace_failure_summary(trace) == {
+        "total": 2,
+        "pytest_unavailable": 1,
+        "git_outside_repository": 1,
+        "other": 0,
+    }
+
+
 def test_reasoning_effort_is_part_of_run_identity():
     common = {
         "case": "fixture",
@@ -79,6 +203,19 @@ def test_pair_fingerprint_includes_runtime_configuration():
         study_runner._pair_fingerprint(state)
         != study_runner._pair_fingerprint(changed)
     )
+
+
+def test_pair_fingerprint_ignores_format_specific_schema_hash():
+    markdown = {
+        "client": "codex",
+        "model": "gpt-5.6-luna",
+        "fixture_seed": "fixture-seed",
+        "provenance": {"state_schema_sha256": None},
+    }
+    state = json.loads(json.dumps(markdown))
+    state["provenance"]["state_schema_sha256"] = study_runner._state_schema_sha256()
+
+    assert study_runner._pair_fingerprint(markdown) == study_runner._pair_fingerprint(state)
 
 
 def test_presentation_blind_handoff_normalizes_format_without_dropping_content_lines():
@@ -668,6 +805,12 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
     assert trace and trace[0]["kind"] == "tool"
     assert evaluation_run["task_success"] is True
     assert all(item["passed"] is True for item in evaluation_run["dod"])
+    assert evaluation_run["trace_failures"] == {
+        "total": 0,
+        "pytest_unavailable": 0,
+        "git_outside_repository": 0,
+        "other": 0,
+    }
     assert state["provenance"]["source_sha256"]
     assert state["provenance"]["workspace_template_sha256"]
     assert state["provenance"]["runner_sha256"]
@@ -745,6 +888,12 @@ def test_fake_state_v1_pilot_parses_json_and_keeps_real_context_canonical(tmp_pa
     assert "state-v1" in summary["run_id"]
     assert state["handoff_format"] == "state-v1"
     assert state["provenance"]["handoff_format"] == "state-v1"
+    generation = next(call for call in fake_calls(run_dir) if call["generation"])
+    schema_index = generation["argv"].index("--output-schema")
+    assert generation["argv"][schema_index + 1] == "/mnt/work/state-v1.schema.json"
+    schema = json.loads((run_dir / "handoff-input/state-v1.schema.json").read_text())
+    assert schema["additionalProperties"] is False
+    assert state["provenance"]["state_schema_sha256"] == study_runner._state_schema_sha256()
     assert state["fixture_seed"] == "context-rot-v1:superseded-decision:short:replicate-1"
     assert "## Critical Context" in (run_dir / "handoff.md").read_text(encoding="utf-8")
     evaluation_run = json.loads((run_dir / "evaluation-run.json").read_text(encoding="utf-8"))

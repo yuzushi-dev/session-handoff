@@ -158,7 +158,7 @@ python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --acknowledge-provider-cost
 ```
 
-Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the internal migration engine, then resumes the target; `handoff/markdown-v1` generates and validates the existing Markdown contract; `handoff/state-v1` requires exactly one validated JSON state object and renders it to canonical Markdown; both handoff arms then start fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not repair invalid state output or retry provider failures. After the visible repository tests, a fixture-specific acceptance command hidden from the agent checks the authoritative semantics, so a coherently stale code-and-test edit cannot become an automated pass. Both checks run offline with host files and environment hidden; acceptance sees the fixture read-only. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
+Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the internal migration engine, then resumes the target; `handoff/markdown-v1` generates and validates the existing Markdown contract; `handoff/state-v1` requires exactly one validated JSON state object and renders it to canonical Markdown. Codex state-v1 generation also passes the same contract as Codex's native `--output-schema`; the local validator remains authoritative. Both handoff arms then start fresh; `oracle` starts fresh from the gold state document. The continuation prompt tells the agent that the fixture workspace is not a Git repository and that the harness runs verification, so it does not waste calls on unavailable `git` or `pytest` commands. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It rejects invalid state output and does not retry provider failures. After the visible repository tests, a fixture-specific acceptance command hidden from the agent checks the authoritative semantics, so a coherently stale code-and-test edit cannot become an automated pass. Both checks run offline with host files and environment hidden; acceptance sees the fixture read-only. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
 
 On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolated client home while hiding the study source, host home, repository, and unrelated temporary files. It mounts an existing Claude or Codex OAuth credential read-only into the isolated home and never copies its content. Use `--credential-mode environment` to disable that mount. The runner passes a small environment allowlist; add a required provider variable with `--pass-env NAME`. Handoff generation fails closed when `bwrap` is unavailable. Claude continuation uses `bypassPermissions` inside this OS sandbox so non-interactive shell verification can run; the tool set remains limited to repository reads, edits, and Bash. See [Claude permission modes](https://code.claude.com/docs/en/permission-modes).
 
@@ -177,12 +177,12 @@ costs before authorizing the matrix.
 
 ### Run artifacts
 
-- `state.json`: content-free selection, handoff format, recorded arm order and execution timestamp, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
+- `state.json`: content-free selection, handoff format, recorded arm order and execution timestamp, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, schema hash, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
 - `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`, `acceptance.stdout`, `acceptance.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
 - `migration.json`: content-free loss report for the migrate condition.
-- `evaluation-run.json`: deterministic outcomes and blank manual counters.
+- `evaluation-run.json`: deterministic outcomes, trace failure categories, and blank manual counters.
 - `blinded/<blind-id>/judge.json`: condition-free review bundle with evidence fields and calibration metadata.
 - `private/blind-map.json`: mode-0600 mapping from blind IDs to run conditions inside a mode-0700 directory; do not give it to judges.
 
@@ -252,14 +252,22 @@ state-v1 for critical recall, zero incorrect/stale facts, hidden
 acceptance/task success, and a complete DoD. A pair with a missing or mismatched
 fingerprint, or an execution timestamp that contradicts the recorded arm order,
 is not scored as a delta. `paired_handoff` reports raw
-state-minus-Markdown deltas and per-arm medians for context bytes, tokens,
-recovery reads, wall time, semantic metrics, and task success. `release_gate`
+state-minus-Markdown deltas and per-arm medians and p95 values for context
+bytes, tokens, recovery reads, wall time, semantic metrics, and task success.
+`release_gate`
 additionally requires all six release cases, all three bands, all four
 conditions, at least two replications, successful handoff, migrate, and oracle
 continuations, and condition-blind human-calibrated judging with documented
 axis coverage and agreement of at least `0.8`. A pilot can pass the fidelity
 gate but cannot pass the release gate. Calibration needs at least 18
 human-reviewed samples.
+
+Before authorizing a rerun, record the decision rule: state-v1 must have zero
+invalid generations, no incorrect or stale facts, complete hidden acceptance
+and DoD, and no task-success regression versus Markdown. Any overhead must be
+justified by a measurable semantic benefit; otherwise Markdown remains the
+default. Report the paired median and p95, but do not call an exploratory sample
+statistically significant without a predeclared analysis and an adequate sample.
 
 For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across paired arms. Randomize arm order and blind the judge to the condition name when practical. The handoff judge bundle is presentation-blind: it normalizes headings, whitespace, list markers, and empty markers, but content choices can still reveal the arm, so it is not condition-blind.
 

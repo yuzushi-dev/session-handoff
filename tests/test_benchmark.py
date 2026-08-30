@@ -448,8 +448,20 @@ def test_paired_handoff_summary_reports_raw_delta_and_medians():
         "task_success": 0,
     }
     assert summary["by_format"]["state-v1"]["median_supplied_context_bytes"] == 150
+    assert summary["by_format"]["state-v1"]["p95_supplied_context_bytes"] == 150
     assert summary["by_format"]["markdown-v1"]["median_input_tokens"] == 100
     assert summary["complete_pairs"] == 1
+
+
+def test_paired_handoff_summary_excludes_unpaired_arms_from_statistics():
+    markdown = scoring.score_run(valid_run(supplied_context_bytes=100))
+
+    summary = scoring.paired_handoff_summary([markdown])
+
+    assert summary["complete_pairs"] == 0
+    assert summary["by_format"]["markdown-v1"]["runs"] == 0
+    assert summary["by_format"]["markdown-v1"]["median_supplied_context_bytes"] is None
+    assert summary["by_format"]["markdown-v1"]["p95_supplied_context_bytes"] is None
 
 
 def test_paired_handoff_summary_rejects_mismatched_pair_identity():

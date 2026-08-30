@@ -253,6 +253,14 @@ def _median(values: list[Any]) -> int | float | None:
     return median(numeric) if numeric else None
 
 
+def _percentile(values: list[Any], quantile: float) -> int | float | None:
+    numeric = sorted(value for value in values if _numeric(value))
+    if not numeric:
+        return None
+    index = max(0, min(len(numeric) - 1, math.ceil(quantile * len(numeric)) - 1))
+    return numeric[index]
+
+
 def _pair_identity_error(
     markdown: dict[str, Any], state: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -335,6 +343,9 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
     pairs: list[dict[str, Any]] = []
     pairing_errors: list[dict[str, Any]] = []
     complete_pairs = 0
+    paired_rows: dict[str, list[dict[str, Any]]] = {
+        handoff_format: [] for handoff_format in HANDOFF_FORMATS
+    }
     for case, band, replicate in sorted(groups):
         format_rows = groups[(case, band, replicate)]
         formats = {
@@ -388,6 +399,8 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
                 )
             else:
                 complete_pairs += 1
+                paired_rows["markdown-v1"].append(markdown)
+                paired_rows["state-v1"].append(state)
                 for metric in PAIRED_METRICS:
                     if _numeric(markdown.get(metric)) and _numeric(state.get(metric)):
                         delta[metric] = state[metric] - markdown[metric]
@@ -413,11 +426,7 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
 
     by_format: dict[str, dict[str, Any]] = {}
     for handoff_format in HANDOFF_FORMATS:
-        rows = [
-            format_rows[handoff_format][0]
-            for format_rows in groups.values()
-            if len(format_rows.get(handoff_format, [])) == 1
-        ]
+        rows = paired_rows[handoff_format]
         summary: dict[str, Any] = {
             "runs": len(rows),
             "complete_pairs": complete_pairs,
@@ -428,7 +437,9 @@ def paired_handoff_summary(scored: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         }
         for metric in PAIRED_METRICS:
-            summary[f"median_{metric}"] = _median([row.get(metric) for row in rows])
+            values = [row.get(metric) for row in rows]
+            summary[f"median_{metric}"] = _median(values)
+            summary[f"p95_{metric}"] = _percentile(values, 0.95)
         by_format[handoff_format] = summary
     return {
         "pairs": pairs,
