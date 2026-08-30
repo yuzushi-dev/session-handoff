@@ -40,8 +40,14 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     return payload
 
 
-def _run_key(run: dict[str, Any]) -> tuple[str, str, str, int]:
-    return (run["case"], run["band"], run["condition"], run["replicate"])
+def _run_key(run: dict[str, Any]) -> tuple[str, str, str, str, int]:
+    return (
+        run["case"],
+        run["band"],
+        run["condition"],
+        run.get("handoff_format", "markdown-v1"),
+        run["replicate"],
+    )
 
 
 def _inside(root: Path, relative: Any, name: str, label: str) -> Path:
@@ -123,7 +129,12 @@ def _merge_run(
     if any(item.get("automated_pass") is not task_success for item in judge["dod"]):
         raise JudgmentImportError("judge automated_pass does not match evaluation-run")
     merged["task_success"] = task_success and all(item["passed"] for item in merged["dod"])
-    for field in ("input_tokens", "output_tokens", "wall_seconds"):
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "wall_seconds",
+        "supplied_context_bytes",
+    ):
         merged[field] = completed.get(field)
 
     counters = judge.get("counters")

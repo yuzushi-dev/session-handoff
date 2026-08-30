@@ -17,11 +17,16 @@ Run every fixture under the same model and repository snapshot.
 | Condition | Input to continuation agent | Purpose |
 | --- | --- | --- |
 | `full` | Original long session continued in place | Measures the context-rot baseline |
-| `handoff` | Fresh session with generated `handoff.md` only | Measures the product behavior |
+| `handoff` | Fresh session with generated `handoff.md` only | Measures the product behavior; paired as `markdown-v1` and `state-v1` |
 | `migrate` | Native migrated session | Controls for harness switching without semantic compression |
 | `oracle` | Fresh session with a human-authored minimal state document | Estimates the upper bound for a clean state transfer |
 
 The `oracle` condition is important. If `full` fails because of context rot while `oracle` succeeds, the task is sensitive to stale context. If `handoff` then approaches `oracle`, the handoff is doing useful compression rather than merely copying history.
+
+The `handoff` condition keeps one product label and has two manifest arms:
+`markdown-v1` asks for the existing Markdown contract; `state-v1` asks for one
+strict typed JSON object and renders the same canonical Markdown. Older manifests
+without `handoff_format` mean `markdown-v1`.
 
 ## What fixtures must contain
 
@@ -109,7 +114,12 @@ python3 benchmark/prepare_study.py \
   --runs-per-condition 2
 ```
 
-The default suite contains 6 context-rot cases, 3 size bands, 4 conditions, and 2 replications, for 144 continuation runs. The command writes the rendered transcripts, oracle state documents, per-case gold annotations, and an `evaluation.json` skeleton. `benchmark/generated/` and `benchmark/results/` are gitignored so long transcripts and study outputs stay out of the repository.
+The default suite contains 6 context-rot cases, 3 size bands, 4 conditions, two
+handoff formats, and 2 replications, for 180 continuation runs. The command
+writes the rendered transcripts, oracle state documents, per-case gold
+annotations, and an `evaluation.json` skeleton. `benchmark/generated/` and
+`benchmark/results/` are gitignored so long transcripts and study outputs stay
+out of the repository.
 
 ## Planning and running one study cell
 
@@ -122,6 +132,7 @@ python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --case superseded-decision \
   --band long \
   --condition handoff \
+  --handoff-format markdown-v1 \
   --replicate 1
 ```
 
@@ -134,12 +145,13 @@ python3 benchmark/run_study.py benchmark/generated/evaluation.json \
   --case superseded-decision \
   --band long \
   --condition handoff \
+  --handoff-format state-v1 \
   --replicate 1 \
   --execute \
   --acknowledge-provider-cost
 ```
 
-Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the internal migration engine, then resumes the target; `handoff` generates and validates the canonical Markdown handoff in a repository-blind sandbox, then starts fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not retry provider failures. After the visible repository tests, a fixture-specific acceptance command hidden from the agent checks the authoritative semantics, so a coherently stale code-and-test edit cannot become an automated pass. Both checks run offline with host files and environment hidden; acceptance sees the fixture read-only. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
+Each run gets an independent workspace and native client home. `full` resumes a seeded target-client session; `migrate` seeds the opposite client, invokes the internal migration engine, then resumes the target; `handoff/markdown-v1` generates and validates the existing Markdown contract; `handoff/state-v1` requires exactly one validated JSON state object and renders it to canonical Markdown; both handoff arms then start fresh; `oracle` starts fresh from the gold state document. The runner passes prompts through stdin, captures normalized tool events, and prints a content-free summary. It does not repair invalid state output or retry provider failures. After the visible repository tests, a fixture-specific acceptance command hidden from the agent checks the authoritative semantics, so a coherently stale code-and-test edit cannot become an automated pass. Both checks run offline with host files and environment hidden; acceptance sees the fixture read-only. Raw model output, supplied context, verification output, native session data, trace, and workspace diff remain in the ignored run directory.
 
 On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolated client home while hiding the study source, host home, repository, and unrelated temporary files. It mounts an existing Claude or Codex OAuth credential read-only into the isolated home and never copies its content. Use `--credential-mode environment` to disable that mount. The runner passes a small environment allowlist; add a required provider variable with `--pass-env NAME`. Handoff generation fails closed when `bwrap` is unavailable. Claude continuation uses `bypassPermissions` inside this OS sandbox so non-interactive shell verification can run; the tool set remains limited to repository reads, edits, and Bash. See [Claude permission modes](https://code.claude.com/docs/en/permission-modes).
 
@@ -147,11 +159,14 @@ A non-fixture transcript requires both `--source <path>` and `--allow-non-fixtur
 
 `--resume` is accepted only at a recorded retry-free checkpoint, including a handoff setup failure before any provider call. It refuses completed, provider-failed, or ambiguous runs rather than risking a duplicate billed call.
 
-For one client/model study, the default matrix is 144 continuations. The 36 `handoff` cells also need a generation call, so execution is 180 provider calls before any automated judging. Run a small synthetic pilot and inspect costs before authorizing the matrix.
+For one client/model study, the default matrix is 180 continuations. The 72
+paired `handoff` cells also need a generation call, so execution is 252 provider
+calls before any automated judging. Run a small synthetic pilot and inspect
+costs before authorizing the matrix.
 
 ### Run artifacts
 
-- `state.json`: content-free selection, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, seed, and snapshot hashes.
+- `state.json`: content-free selection, handoff format, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, and snapshot hashes.
 - `supplied-context.md`: the blinded condition input.
 - `continuation.txt`, `trace.json`, `workspace.diff`, `verify.stdout`, `verify.stderr`, `acceptance.stdout`, `acceptance.stderr`: Stage B evidence.
 - `handoff.md`: generated only for the handoff condition.
@@ -219,15 +234,19 @@ evidence. Then run:
 python3 benchmark/score.py benchmark/generated/evaluation.judged.json --pretty
 ```
 
-`handoff_fidelity_gate` checks the semantic thresholds on the available handoff
-runs. `release_gate` additionally requires all six release cases, all three
+`handoff_fidelity_gate` checks the existing `markdown-v1` arm. The separate
+`structured_state_gate` checks every `state-v1` cell for critical recall, zero
+incorrect/stale facts, hidden acceptance/task success, and a complete DoD.
+`paired_handoff` reports raw state-minus-Markdown deltas and per-arm medians for
+context bytes, tokens, recovery reads, wall time, semantic metrics, and task
+success. `release_gate` additionally requires all six release cases, all three
 bands, all four conditions, at least two replications, successful handoff,
 migrate, and oracle continuations, and condition-blind human-calibrated judging
 with documented axis coverage and agreement of at least `0.8`. A pilot can pass
 the fidelity gate but cannot pass the release gate. Calibration needs at least
 18 human-reviewed samples.
 
-For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across conditions. Randomize condition order and blind the judge to the condition name when practical.
+For a study, keep model, model settings, repository snapshot, fixture seed, and continuation prompt fixed across paired arms. Randomize arm order and blind the judge to the condition name when practical. The handoff judge bundle is presentation-blind: it normalizes headings, whitespace, list markers, and empty markers, but content choices can still reveal the arm, so it is not condition-blind.
 
 ## Minimum study before changing the handoff format
 

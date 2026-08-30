@@ -55,6 +55,7 @@ def fixture(tmp_path: Path):
         "input_tokens": None,
         "output_tokens": None,
         "wall_seconds": None,
+        "supplied_context_bytes": None,
     }
     evaluation = {
         "schema_version": 1,
@@ -89,6 +90,7 @@ def fixture(tmp_path: Path):
         input_tokens=101,
         output_tokens=23,
         wall_seconds=1.5,
+        supplied_context_bytes=123,
     )
     completed["dod"] = [dict(run["dod"][0], passed=True)]
     write_json(results / "run-1/evaluation-run.json", completed)
@@ -186,6 +188,7 @@ def test_imports_complete_blinded_judgment_without_mutating_source(tmp_path):
     assert merged["runs"][0]["facts"][0]["evidence"]
     assert merged["runs"][0]["repeated_failed_attempts"] == 0
     assert merged["runs"][0]["task_success"] is True
+    assert merged["runs"][0]["supplied_context_bytes"] == 123
     assert merged["judging"]["judge_id"] == "judge-1"
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert json.loads(evaluation.read_text()) == original

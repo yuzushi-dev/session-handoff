@@ -82,6 +82,11 @@ def test_prepare_study_records_one_workspace_template_per_case(tmp_path):
     evaluation = json.loads((output / "evaluation.json").read_text(encoding="utf-8"))
     templates = {run["workspace_template"] for run in evaluation["runs"]}
     assert templates == {f"{case_id}/workspace" for case_id in CASE_IDS}
+    assert {
+        run["handoff_format"]
+        for run in evaluation["runs"]
+        if run["condition"] == "handoff"
+    } == {"markdown-v1", "state-v1"}
     for template in templates:
         assert (output / template).is_dir()
     assert all(run["verify_command"][0:2] == ["python3", "-c"] for run in evaluation["runs"])

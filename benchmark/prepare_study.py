@@ -5,19 +5,44 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 from fixture_workspace import materialize_workspace
 from render_fixture import load_spec, render, render_oracle
 
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
+HANDOFF_FORMATS = ("markdown-v1", "state-v1")
+DEFAULT_HANDOFF_FORMAT = "markdown-v1"
 
 
-def evaluation_run(case, band: str, condition: str, replicate: int) -> dict:
+def fixture_seed(case_id: str, band: str, replicate: int) -> str:
+    return f"context-rot-v1:{case_id}:{band}:replicate-{replicate}"
+
+
+def handoff_arm_order(case_id: str, band: str, replicate: int) -> tuple[str, ...]:
+    formats = list(HANDOFF_FORMATS)
+    random.Random(fixture_seed(case_id, band, replicate)).shuffle(formats)
+    return tuple(formats)
+
+
+def evaluation_run(
+    case,
+    band: str,
+    condition: str,
+    replicate: int,
+    handoff_format: str = DEFAULT_HANDOFF_FORMAT,
+) -> dict:
+    if handoff_format not in HANDOFF_FORMATS:
+        raise ValueError(f"unsupported handoff format: {handoff_format}")
+    if condition != "handoff" and handoff_format != DEFAULT_HANDOFF_FORMAT:
+        raise ValueError("state-v1 is only valid for the handoff condition")
     return {
         "case": case["id"],
         "band": band,
         "condition": condition,
+        "handoff_format": handoff_format,
+        "fixture_seed": fixture_seed(case["id"], band, replicate),
         "replicate": replicate,
         "facts": [
             {
@@ -53,7 +78,8 @@ def evaluation_run(case, band: str, condition: str, replicate: int) -> dict:
         "recovery_reads": None,
         "input_tokens": None,
         "output_tokens": None,
-        "wall_seconds": None
+        "wall_seconds": None,
+        "supplied_context_bytes": None,
     }
 
 
@@ -75,6 +101,7 @@ def main() -> int:
             "cases": [case["id"] for case in data["cases"]],
             "bands": list(data["bands"]),
             "conditions": list(CONDITIONS),
+            "handoff_formats": list(HANDOFF_FORMATS),
             "runs_per_condition": args.runs_per_condition,
         },
         "runs": [],
@@ -100,11 +127,23 @@ def main() -> int:
             (case_dir / f"session-{band}.md").write_text(transcript, encoding="utf-8")
             for condition in CONDITIONS:
                 for replicate in range(1, args.runs_per_condition + 1):
-                    run = evaluation_run(case, band, condition, replicate)
-                    run["workspace_template"] = f"{case['id']}/workspace"
-                    run["verify_command"] = fixture["verify_command"]
-                    run["acceptance_command"] = fixture["acceptance_command"]
-                    evaluation["runs"].append(run)
+                    formats = (
+                        handoff_arm_order(case["id"], band, replicate)
+                        if condition == "handoff"
+                        else (DEFAULT_HANDOFF_FORMAT,)
+                    )
+                    for handoff_format in formats:
+                        run = evaluation_run(
+                            case,
+                            band,
+                            condition,
+                            replicate,
+                            handoff_format,
+                        )
+                        run["workspace_template"] = f"{case['id']}/workspace"
+                        run["verify_command"] = fixture["verify_command"]
+                        run["acceptance_command"] = fixture["acceptance_command"]
+                        evaluation["runs"].append(run)
 
     (args.output / "evaluation.json").write_text(
         json.dumps(evaluation, indent=2), encoding="utf-8"

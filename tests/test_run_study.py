@@ -18,6 +18,91 @@ RUNNER = ROOT / "benchmark/run_study.py"
 SPEC = ROOT / "benchmark/fixtures/context_rot_cases.json"
 
 
+def test_run_identity_includes_handoff_format_but_fixture_seed_does_not():
+    common = {
+        "case": "fixture",
+        "band": "long",
+        "condition": "handoff",
+        "client": "codex",
+        "model": "synthetic-model",
+        "replicate": 1,
+    }
+    markdown = SimpleNamespace(**common, handoff_format="markdown-v1")
+    state = SimpleNamespace(**common, handoff_format="state-v1")
+
+    assert study_runner._run_id(markdown) != study_runner._run_id(state)
+    assert study_runner._fixture_seed(markdown) == study_runner._fixture_seed(state)
+
+
+def test_presentation_blind_handoff_normalizes_format_without_dropping_content_lines():
+    markdown = """## Goal
+
+Ship the change
+
+## Constraints & Preferences
+* Keep the API stable
+
+## Progress
+### Done
+- Added implementation
+### In Progress
+- None
+### Pending
+1) Run the test
+
+## Key Decisions
+- Use the final value
+## Critical Context
+- Rejected attempt: regex fix failed
+- Verification: focused test is red
+- None
+## Next Steps
+1. Run the test
+"""
+    state = """## Goal
+Ship the change
+## Constraints & Preferences
+- Keep the API stable
+## Progress
+### Done
+- Added implementation
+### In Progress
+- None identified.
+### Pending
+- Run the test
+## Key Decisions
+- Use the final value
+## Critical Context
+- Rejected attempt: regex fix failed
+- Verification: focused test is red
+- None identified.
+## Next Steps
+- Run the test
+"""
+
+    assert study_runner._render_blind_handoff(markdown) == study_runner._render_blind_handoff(state)
+
+
+def test_state_v1_generation_rejects_prose_or_multiple_json_values_without_repair():
+    state = {
+        "schema_version": 1,
+        "goal": "Finish the task",
+        "constraints_preferences": [],
+        "progress": {"done": [], "in_progress": [], "pending": []},
+        "key_decisions": [],
+        "rejected_attempts": [],
+        "verification": [],
+        "critical_context": [],
+        "uncertainties": [],
+        "next_steps": [],
+    }
+    encoded = json.dumps(state)
+
+    for output in (f"```json\n{encoded}\n```", f"{encoded}\n{encoded}"):
+        with pytest.raises(study_runner.StudyRunError, match="state-v1"):
+            study_runner._render_generated_handoff(output, "state-v1")
+
+
 def test_claude_input_tokens_include_cache_usage():
     stdout = json.dumps(
         {
@@ -152,6 +237,22 @@ Finish the fixture task.
 1. Update the focused test to 15.
 2. Run pytest.
 """
+state = {
+    "schema_version": 1,
+    "goal": "Finish the fixture task.",
+    "constraints_preferences": ["Preserve the final authoritative decision."],
+    "progress": {
+        "done": ["Current runtime value is already correct."],
+        "in_progress": ["Focused test update."],
+        "pending": ["Run verification."],
+    },
+    "key_decisions": ["Use 15 seconds; 60 seconds is obsolete."],
+    "rejected_attempts": [],
+    "verification": ["tests/cache/test_negative_ttl.py still expects 60."],
+    "critical_context": [],
+    "uncertainties": [],
+    "next_steps": ["Update the focused test to 15.", "Run pytest."],
+}
 if not generation:
     if "resume" in args or "--resume" in args:
         session_id = args[args.index("resume") + 1] if "resume" in args else args[args.index("--resume") + 1]
@@ -180,7 +281,7 @@ if not generation:
     text = target.read_text(encoding="utf-8")
     target.write_text(text.replace("== 60", "== 15"), encoding="utf-8")
 
-message = canonical if generation else "Implemented and verified the focused change."
+message = json.dumps(state) if generation and "state-v1" in prompt else canonical if generation else "Implemented and verified the focused change."
 if client == "claude":
     if not generation:
         print(json.dumps({
@@ -295,6 +396,7 @@ def command(
     claude: Path,
     codex: Path,
     migration: Path,
+    handoff_format: str = "markdown-v1",
 ) -> list[str]:
     return [
         sys.executable,
@@ -322,6 +424,8 @@ def command(
         "environment",
         "--pass-env",
         "FAKE_AGENT_FAIL",
+        "--handoff-format",
+        handoff_format,
     ]
 
 
@@ -360,6 +464,7 @@ def test_default_is_a_content_free_plan_with_no_provider_call(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["mode"] == "plan"
     assert payload["provider_calls"] == 2
+    assert payload["handoff_format"] == "markdown-v1"
     assert "Initial decision" not in result.stdout
     assert not (tmp_path / "results").exists()
 
@@ -526,6 +631,49 @@ def test_fake_pilot_executes_isolated_condition_and_writes_blinded_artifacts(
         provenance = state["provenance"]
         assert provenance["migration_engine"] == "session-handoff"
         assert provenance["migration_version"] == "0.5.4"
+
+
+def test_fake_state_v1_pilot_parses_json_and_keeps_real_context_canonical(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+
+    result = subprocess.run(
+        [
+            *command(
+                evaluation,
+                output,
+                "handoff",
+                "codex",
+                claude,
+                codex,
+                migration,
+                handoff_format="state-v1",
+            ),
+            "--execute",
+            "--acknowledge-provider-cost",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    run_dir = output / summary["run_id"]
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert "state-v1" in summary["run_id"]
+    assert state["handoff_format"] == "state-v1"
+    assert state["provenance"]["handoff_format"] == "state-v1"
+    assert state["fixture_seed"] == "context-rot-v1:superseded-decision:short:replicate-1"
+    assert "## Critical Context" in (run_dir / "handoff.md").read_text(encoding="utf-8")
+    assert (run_dir / "evaluation-run.json").read_text(encoding="utf-8")
 
 
 def test_hidden_acceptance_controls_automated_task_success(tmp_path):

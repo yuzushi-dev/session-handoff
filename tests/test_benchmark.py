@@ -167,8 +167,51 @@ def test_prepare_study_emits_a_complete_versioned_manifest(tmp_path):
     evaluation = json.loads((output / "evaluation.json").read_text(encoding="utf-8"))
     scoring.validate_study_manifest(evaluation)
     assert evaluation["schema_version"] == 1
-    assert len(evaluation["runs"]) == 6 * 3 * 4
+    assert len(evaluation["runs"]) == 6 * 3 * 5
     assert all("critical" in fact for run in evaluation["runs"] for fact in run["facts"])
+    assert evaluation["study"]["handoff_formats"] == ["markdown-v1", "state-v1"]
+    assert {
+        run["handoff_format"]
+        for run in evaluation["runs"]
+        if run["condition"] == "handoff"
+    } == {"markdown-v1", "state-v1"}
+    assert all(
+        run["handoff_format"] == "markdown-v1"
+        for run in evaluation["runs"]
+        if run["condition"] != "handoff"
+    )
+
+
+def test_manifest_rejects_unknown_handoff_format():
+    payload = {
+        "schema_version": 1,
+        "study": {
+            "cases": ["fixture"],
+            "bands": ["long"],
+            "conditions": ["handoff"],
+            "handoff_formats": ["markdown-v1", "state-v1"],
+            "runs_per_condition": 1,
+        },
+        "runs": [
+            {
+                "case": "fixture",
+                "band": "long",
+                "condition": "handoff",
+                "handoff_format": "future-v1",
+                "replicate": 1,
+            },
+            {
+                "case": "fixture",
+                "band": "long",
+                "condition": "handoff",
+                "handoff_format": "state-v1",
+                "replicate": 1,
+            },
+        ],
+    }
+
+    with pytest.raises(ValueError, match="handoff_format"):
+        scoring.validate_study_manifest(payload)
 
 
 def valid_run(**overrides):
@@ -176,6 +219,7 @@ def valid_run(**overrides):
         "case": "fixture",
         "band": "long",
         "condition": "handoff",
+        "handoff_format": "markdown-v1",
         "replicate": 1,
         "facts": [
             {"id": "F1", "weight": 3, "critical": True, "status": "preserved"}
@@ -189,6 +233,7 @@ def valid_run(**overrides):
         "input_tokens": None,
         "output_tokens": None,
         "wall_seconds": None,
+        "supplied_context_bytes": None,
     }
     run.update(overrides)
     return run
@@ -256,6 +301,73 @@ def test_handoff_fidelity_gate_requires_all_critical_context_and_no_stale_intrus
         "critical_rcr",
         "stale_context_intrusion",
     }
+
+
+def test_structured_state_gate_requires_semantics_task_success_and_complete_dod():
+    good = scoring.score_run(valid_run(handoff_format="state-v1"))
+    assert scoring.structured_state_gate([good]) == {"passed": True, "failures": []}
+
+    bad = scoring.score_run(
+        valid_run(
+            handoff_format="state-v1",
+            replicate=2,
+            task_success=False,
+            dod=[{"id": "D1", "weight": 1, "critical": False, "passed": False}],
+            facts=[
+                {"id": "F1", "weight": 1, "critical": True, "status": "missing"}
+            ],
+        )
+    )
+    failed = scoring.structured_state_gate([good, bad])
+    assert failed["passed"] is False
+    assert {failure["metric"] for failure in failed["failures"]} == {
+        "critical_rcr",
+        "task_success",
+        "dod_pass_rate",
+    }
+
+
+def test_paired_handoff_summary_reports_raw_delta_and_medians():
+    markdown = scoring.score_run(
+        valid_run(
+            supplied_context_bytes=200,
+            input_tokens=100,
+            recovery_reads=2,
+            wall_seconds=4.0,
+        )
+    )
+    state = scoring.score_run(
+        valid_run(
+            handoff_format="state-v1",
+            supplied_context_bytes=150,
+            input_tokens=90,
+            recovery_reads=1,
+            wall_seconds=3.0,
+        )
+    )
+
+    summary = scoring.paired_handoff_summary([markdown, state])
+
+    assert len(summary["pairs"]) == 1
+    pair = summary["pairs"][0]
+    assert pair["case"] == "fixture"
+    assert pair["band"] == "long"
+    assert pair["replicate"] == 1
+    assert pair["markdown-v1"] == markdown
+    assert pair["state-v1"] == state
+    assert pair["delta_state_minus_markdown"] == {
+        "supplied_context_bytes": -50,
+        "input_tokens": -10,
+        "recovery_reads": -1,
+        "wall_seconds": -1.0,
+        "critical_rcr": 0,
+        "incorrect_fact_rate": 0,
+        "stale_context_intrusion": 0,
+        "dod_pass_rate": 0,
+        "task_success": 0,
+    }
+    assert summary["by_format"]["state-v1"]["median_supplied_context_bytes"] == 150
+    assert summary["by_format"]["markdown-v1"]["median_input_tokens"] == 100
 
 
 def test_release_gate_rejects_pilot_scope_and_missing_calibration():

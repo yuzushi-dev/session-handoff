@@ -24,12 +24,20 @@ if str(ROOT) not in sys.path:
 
 from benchmark.native_seed import seed_native_session
 from benchmark.score import validate_study_manifest
+from server.handoff_state import (
+    HandoffStateError,
+    redact_state,
+    render_state,
+    validate_state,
+)
 from server.handoff_mcp import redact_secrets, validate_handoff
 from server.migration import MigrationError, migrate_session
 
 
 CLIENTS = ("claude", "codex")
 CONDITIONS = ("full", "handoff", "migrate", "oracle")
+HANDOFF_FORMATS = ("markdown-v1", "state-v1")
+DEFAULT_HANDOFF_FORMAT = "markdown-v1"
 PROMPT_VERSION = 1
 BASE_ENV = {
     "PATH",
@@ -62,6 +70,28 @@ Use exactly these headings:
 ## Key Decisions
 ## Critical Context
 ## Next Steps
+
+Synthetic transcript:
+
+"""
+STATE_HANDOFF_PROMPT = """Create a semantic implementation-state handoff in state-v1 format from the synthetic transcript below.
+Return exactly one JSON object and no Markdown, prose, code fence, or other text.
+Use exactly these keys and no others:
+{
+  "schema_version": 1,
+  "goal": "...",
+  "constraints_preferences": ["..."],
+  "progress": {"done": ["..."], "in_progress": ["..."], "pending": ["..."]},
+  "key_decisions": ["..."],
+  "rejected_attempts": ["..."],
+  "verification": ["..."],
+  "critical_context": ["..."],
+  "uncertainties": ["..."],
+  "next_steps": ["..."]
+}
+All array entries must be strings. Preserve current constraints, authoritative decisions,
+rejected attempts, completed and pending work, exact paths/tests, and the next safe action.
+Exclude stale noise. Do not include secrets.
 
 Synthetic transcript:
 
@@ -100,7 +130,17 @@ def _inside(root: Path, relative: str, *, directory: bool = False) -> Path:
     return candidate
 
 
+def _handoff_format(args: argparse.Namespace) -> str:
+    value = getattr(args, "handoff_format", DEFAULT_HANDOFF_FORMAT)
+    if value not in HANDOFF_FORMATS:
+        raise StudyRunError(f"invalid handoff format: {value}")
+    if getattr(args, "condition", None) != "handoff" and value != DEFAULT_HANDOFF_FORMAT:
+        raise StudyRunError("state-v1 is only valid for the handoff condition")
+    return value
+
+
 def _select_run(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    handoff_format = _handoff_format(args)
     matches = [
         run
         for run in payload["runs"]
@@ -108,9 +148,9 @@ def _select_run(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, 
             run.get("case"),
             run.get("band"),
             run.get("condition"),
+            run.get("handoff_format", DEFAULT_HANDOFF_FORMAT),
             run.get("replicate"),
-        )
-        == (args.case, args.band, args.condition, args.replicate)
+        ) == (args.case, args.band, args.condition, handoff_format, args.replicate)
     ]
     if len(matches) != 1:
         raise StudyRunError("selected run is absent or ambiguous in the study manifest")
@@ -119,10 +159,23 @@ def _select_run(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 def _run_id(args: argparse.Namespace) -> str:
     model_key = hashlib.sha256(f"{args.client}:{args.model}".encode()).hexdigest()[:10]
+    handoff_format = getattr(args, "handoff_format", DEFAULT_HANDOFF_FORMAT)
     return (
-        f"{args.case}--{args.band}--{args.condition}--{args.client}--"
+        f"{args.case}--{args.band}--{args.condition}--{handoff_format}--{args.client}--"
         f"{model_key}--r{args.replicate:02d}"
     )
+
+
+def _fixture_seed(args: argparse.Namespace) -> str:
+    return f"context-rot-v1:{args.case}:{args.band}:replicate-{args.replicate}"
+
+
+def _handoff_prompt(handoff_format: str) -> str:
+    if handoff_format == "markdown-v1":
+        return HANDOFF_PROMPT
+    if handoff_format == "state-v1":
+        return STATE_HANDOFF_PROMPT
+    raise StudyRunError(f"unsupported handoff format: {handoff_format}")
 
 
 def _sha256(data: bytes | str) -> str:
@@ -665,6 +718,59 @@ def _judge_payload(
     }
 
 
+def _render_blind_handoff(text: str) -> str:
+    """Normalize presentation for judges while retaining every non-blank line."""
+    headings = {
+        "goal": "## Goal",
+        "constraints & preferences": "## Constraints & Preferences",
+        "constraints and preferences": "## Constraints & Preferences",
+        "progress": "## Progress",
+        "done": "### Done",
+        "in progress": "### In Progress",
+        "pending": "### Pending",
+        "key decisions": "## Key Decisions",
+        "critical context": "## Critical Context",
+        "next steps": "## Next Steps",
+    }
+    normalized_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+?)\s*#*$", line)
+        if heading:
+            canonical_heading = headings.get(heading.group(1).strip().lower())
+            if canonical_heading:
+                line = canonical_heading
+        else:
+            item = re.match(r"^(?:[-+*]|\d+[.)])\s+(.*)$", line)
+            if item:
+                body = item.group(1).strip()
+                if body.rstrip(".").lower() in {"none", "none identified"}:
+                    body = "None identified."
+                line = f"- {body}"
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines) + "\n"
+
+
+def _render_generated_handoff(text: str, handoff_format: str) -> tuple[str, int]:
+    if handoff_format == "markdown-v1":
+        redacted, redactions = redact_secrets(text)
+    elif handoff_format == "state-v1":
+        try:
+            state = validate_state(json.loads(text))
+            redacted_state, redactions = redact_state(state)
+            redacted = render_state(redacted_state)
+        except (HandoffStateError, TypeError, json.JSONDecodeError) as exc:
+            raise StudyRunError("generated state-v1 handoff is invalid") from exc
+    else:
+        raise StudyRunError(f"unsupported handoff format: {handoff_format}")
+    missing = validate_handoff(redacted)
+    if missing:
+        raise StudyRunError("generated handoff is missing canonical sections")
+    return redacted, redactions
+
+
 def _export_blinded_bundle(
     output: Path,
     run_dir: Path,
@@ -677,7 +783,9 @@ def _export_blinded_bundle(
     blind_dir = output / "blinded" / blind_id
     blind_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     context = (run_dir / "supplied-context.md").read_text(encoding="utf-8")
-    if run["condition"] == "oracle":
+    if run["condition"] == "handoff":
+        context = _render_blind_handoff(context)
+    elif run["condition"] == "oracle":
         context = re.sub(r"^# Oracle continuation state:", "# Continuation state:", context)
     (blind_dir / "supplied-context.md").write_text(context, encoding="utf-8")
     for name in (
@@ -712,6 +820,7 @@ def _export_blinded_bundle(
         "case": run["case"],
         "band": run["band"],
         "condition": run["condition"],
+        "handoff_format": run.get("handoff_format", DEFAULT_HANDOFF_FORMAT),
         "replicate": run["replicate"],
     }
     if existing not in (None, entry):
@@ -781,6 +890,8 @@ def _prepare_context(
     generation_workspace = run_dir / "handoff-input"
     generation_workspace.mkdir(mode=0o700, exist_ok=True)
     analysis_home.mkdir(mode=0o700, exist_ok=True)
+    handoff_format = _handoff_format(args)
+    handoff_prompt = _handoff_prompt(handoff_format)
     generation_access, generation_credential = _credential_mount(
         args, args.client, analysis_home
     )
@@ -814,7 +925,7 @@ def _prepare_context(
     generated = _invoke_agent(
         client=args.client,
         command=generation_command,
-        prompt=HANDOFF_PROMPT + transcript,
+        prompt=handoff_prompt + transcript,
         cwd=generation_workspace,
         env=generation_env,
         artifact_prefix=run_dir / "handoff-generation",
@@ -822,10 +933,7 @@ def _prepare_context(
     generation_trace = generated.pop("trace")
     if generation_trace:
         raise StudyRunError("handoff generator used a tool despite the isolated no-tool contract")
-    redacted, redactions = redact_secrets(generated["text"])
-    missing = validate_handoff(redacted)
-    if missing:
-        raise StudyRunError("generated handoff is missing canonical sections")
+    redacted, redactions = _render_generated_handoff(generated["text"], handoff_format)
     (run_dir / "handoff.md").write_text(redacted, encoding="utf-8")
     (run_dir / "supplied-context.md").write_text(redacted, encoding="utf-8")
     generated.pop("text")
@@ -841,6 +949,9 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
     verify_command = _manifest_command(run, "verify_command")
     acceptance_command = _manifest_command(run, "acceptance_command")
     evaluation_path = Path(getattr(args, "evaluation", study_root / "evaluation.json"))
+    handoff_format = _handoff_format(args)
+    if run.get("handoff_format", DEFAULT_HANDOFF_FORMAT) != handoff_format:
+        raise StudyRunError("selected run handoff_format does not match the requested format")
     run_id = _run_id(args)
     run_dir = args.output.resolve() / run_id
     state_path = run_dir / "state.json"
@@ -874,7 +985,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
         workspace = run_dir / "workspace"
         shutil.copytree(template, workspace)
         migration_provenance = _migration_provenance() if args.condition == "migrate" else {}
-        seed = f"{run_id}:native"
+        fixture_seed = _fixture_seed(args)
         runner_path = Path(__file__).resolve()
         state = {
             "schema_version": 1,
@@ -883,18 +994,21 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             "stage": "context",
             "provider_calls_started": 0,
             "blind_id": str(uuid.uuid4()),
-            "seed": seed,
-            "source_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, seed + ":source")),
-            "target_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, seed + ":target")),
+            "fixture_seed": fixture_seed,
+            "source_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, fixture_seed + ":source")),
+            "target_session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, fixture_seed + ":target")),
             "client": args.client,
             "model": args.model,
             "case": args.case,
             "band": args.band,
             "condition": args.condition,
+            "handoff_format": handoff_format,
             "replicate": args.replicate,
             "provenance": {
                 "prompt_version": PROMPT_VERSION,
-                "handoff_prompt_sha256": _sha256(HANDOFF_PROMPT),
+                "handoff_format": handoff_format,
+                "fixture_seed": fixture_seed,
+                "handoff_prompt_sha256": _sha256(_handoff_prompt(handoff_format)),
                 "continuation_prompt_sha256": _sha256(CONTINUATION_PROMPT),
                 "source_sha256": _sha256(transcript),
                 "oracle_sha256": _sha256(oracle_path.read_bytes()),
@@ -1049,6 +1163,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
             input_tokens=_sum_metric(calls, "input_tokens"),
             output_tokens=_sum_metric(calls, "output_tokens"),
             wall_seconds=time.monotonic() - started,
+            supplied_context_bytes=(run_dir / "supplied-context.md").stat().st_size,
         )
         _write_json(run_dir / "evaluation-run.json", evaluation_run)
         _export_blinded_bundle(
@@ -1100,6 +1215,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--case", required=True)
     result.add_argument("--band", required=True)
     result.add_argument("--condition", choices=CONDITIONS, required=True)
+    result.add_argument(
+        "--handoff-format",
+        choices=HANDOFF_FORMATS,
+        default=DEFAULT_HANDOFF_FORMAT,
+    )
     result.add_argument("--replicate", type=int, required=True)
     result.add_argument("--output", type=Path, default=Path("benchmark/results"))
     result.add_argument("--source", type=Path)
@@ -1138,6 +1258,7 @@ def main() -> int:
             "case": args.case,
             "band": args.band,
             "condition": args.condition,
+            "handoff_format": args.handoff_format,
             "replicate": args.replicate,
             "provider_calls": 2 if args.condition == "handoff" else 1,
             "synthetic_fixture": not bool(args.source),
