@@ -71,3 +71,13 @@ valid JSON, successful verification/acceptance, and zero classified trace
 failures. The 144-call full matrix was not mixed with the previous aggregate;
 it remains an owner-gated rerun after a semantically more discriminating study
 is defined.
+
+## Outcome (2026-08-31)
+
+The complete post-hardening candidate matrix was run separately with Luna
+`high`: 72/72 cells and 144/144 provider calls completed successfully. All 36
+state-v1 generations passed local validation and schema-hash checks; all 36
+paired comparisons passed identity and timestamp checks. Paired medians were
++38.1% context, +0.85% input tokens, +19.3% output tokens, and +8.4% wall time
+for state-v1 versus Markdown. Semantic counters remain unjudged, so the
+automatic rerun does not justify changing the default format.

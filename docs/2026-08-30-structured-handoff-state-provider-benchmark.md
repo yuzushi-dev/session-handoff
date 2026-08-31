@@ -96,3 +96,38 @@ same model and `high` effort. It completed **2/2** calls, produced valid JSON,
 passed task verification and acceptance, and recorded zero trace failures.
 This probe is not added to the original aggregate because the runner revision
 changed; a fresh full comparison would require the complete 144-call matrix.
+
+## Full post-hardening rerun (2026-08-31)
+
+- Runner revision: `45e9dcf`; same Codex CLI `0.151.0`, `gpt-5.6-luna`, and
+  `high` effort. New result directory:
+  `/tmp/session-handoff-provider-full-hardening-20260831`.
+- The complete candidate matrix finished: **72/72 cells**, **144/144 provider
+  calls**, all cells `completed`, all `task_success=true`. Visible verification
+  and hidden acceptance passed in every cell.
+- All 36 `state-v1` responses passed the local `server.handoff_state` validator;
+  the native schema hash matched in 36/36 runs. Pairing passed for **36/36**
+  Markdown/state pairs with no identity or timestamp errors.
+
+| Format | Cells | Median context | Median input tokens | Median output tokens | Median wall |
+|---|---:|---:|---:|---:|---:|
+| `markdown-v1` | 36/36 | 1,456 B | 95,179 | 1,124 | 36.82 s |
+| `state-v1` | 36/36 | 2,007.5 B | 101,205.5 | 1,355.5 | 41.22 s |
+
+Paired state-v1 minus Markdown medians: **+555 B context (+38.1%)**,
+**+807.5 input tokens (+0.85%)**, **+217 output tokens (+19.3%)**, and
+**+3.11 s wall time (+8.4%)**. Paired wall overhead by band was +13.7% at
+`short`, +8.5% at `long`, and +5.8% at `very_long`. Paired p95 deltas were
++904 B, +16,182 input tokens, +855 output tokens, and +17.68 s wall time.
+
+The trace classifier recorded 24 internal command failures (14 Markdown, 10
+state): 0 `pytest_unavailable`, 0 `git_outside_repository`, and 24 `other`.
+Inspection shows 17 `python`-unavailable commands, one missing `rg`/fixture
+path, and six exploratory no-match or pre-fix assertions. These did not affect
+the verification/acceptance result, but remain harness inefficiency.
+
+This rerun removes the prior generation-reliability failure, but it does not
+establish semantic superiority: semantic counters remain unjudged and no
+condition-blind human calibration was performed. `state-v1` therefore remains
+non-default; the automatic evidence still shows materially larger context and
+output, with wall overhead below 10% overall but above it for `short`.
