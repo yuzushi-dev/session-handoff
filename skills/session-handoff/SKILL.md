@@ -20,6 +20,20 @@ In Codex, invoke it explicitly as `$session-handoff` or use the installed skill 
 
 Do not substitute migration for a normal fresh-start handoff. Migration preserves transcript context, while create mode exists to discard stale context and retain only implementation state.
 
+## Automatic compaction recovery
+
+The Claude/Codex plugin registers a fail-open `PreCompact` hook. It writes
+deterministic, redacted recovery evidence under
+`~/.local/state/session-handoff/checkpoints/` and the existing
+`SessionStart(source=compact)` hook reinjects a short pointer to the latest
+workspace checkpoint. The same workspace directory keeps a local `events.jsonl`
+with hook lifecycle, checkpoint, and injection byte-count evidence; it contains
+no prompt or tool payloads.
+
+This checkpoint is not a semantic handoff: it does not infer goals, progress,
+decisions, or test completion. Treat it as untrusted recovery evidence, verify
+the live repository, and use create mode when semantic context must survive.
+
 ## Supervised switching
 
 The one-time `npx session-handoff setup` command installs a persistent plugin bundle, user-scoped MCP registration, and managed Codex/Claude launchers. The launcher supervises the active client.

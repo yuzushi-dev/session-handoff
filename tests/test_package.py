@@ -22,6 +22,7 @@ def test_portable_and_native_manifests_agree():
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
     assert portable["version"] == codex["version"] == claude["version"] == load_json("package.json")["version"]
+    assert codex["hooks"] == claude["hooks"] == "./hooks/hooks.json"
     assert set(portable) <= {
         "$schema",
         "name",
@@ -75,6 +76,21 @@ def test_native_mcp_config_supports_claude_and_codex():
     assert server["command"] == "python3"
     assert "${CLAUDE_PLUGIN_ROOT}" in server["args"][0]
     assert server["args"][0].endswith("server/handoff_mcp.py")
+
+
+def test_all_hooks_support_native_and_legacy_plugin_root_variables():
+    hooks = load_json("hooks/hooks.json")["hooks"]
+
+    commands = [
+        entry["command"]
+        for events in hooks.values()
+        for event in events
+        for entry in event["hooks"]
+        if entry["type"] == "command"
+    ]
+
+    assert commands
+    assert all("${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}" in command for command in commands)
 
 
 def test_skill_documents_create_and_resume_workflows():
@@ -149,23 +165,14 @@ def test_mcp_server_version_matches_package():
 
 
 def test_runtime_contains_only_the_internal_migration_engine():
-    assert (ROOT / "server/migration_engine.py").is_file()
+    package = load_json("package.json")
 
-    active_files = [
-        ROOT / "README.md",
-        ROOT / "package.json",
-        ROOT / "commands/handoff.md",
-        ROOT / "skills/session-handoff/SKILL.md",
-        ROOT / "server/handoff_mcp.py",
-        ROOT / "server/migration.py",
-        ROOT / "server/migration_engine.py",
-        ROOT / "server/command_matrix.py",
-        ROOT / "server/session_switch.py",
-        ROOT / "plugin.json",
-        ROOT / ".claude-plugin/plugin.json",
-        ROOT / ".codex-plugin/plugin.json",
-    ]
-    text = "\n".join(path.read_text(encoding="utf-8") for path in active_files)
+    assert (ROOT / "server/migration_engine.py").is_file()
+    assert (ROOT / "server/checkpoint.py").is_file()
+    assert not (ROOT / "server/session_migrate").exists()
+    assert not (ROOT / "THIRD_PARTY_NOTICES.md").exists()
+    assert package.get("dependencies", {}) == {}
+    assert package.get("optionalDependencies", {}) == {}
 
 
 def test_entrypoint_resolves_package_root_when_called_through_npm_bin(tmp_path):

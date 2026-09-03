@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import shlex
@@ -14,11 +15,13 @@ from server.session_switch import (
     _reconcile_claude_target,
     _operation_event,
     _fresh_session_args,
+    _telemetry_notice,
     handoff_prompt,
     write_migration_request,
     write_switch_request,
 )
 import server.session_switch as session_switch
+import server.telemetry as telemetry
 
 
 def test_handoff_prompt_is_a_manual_reference():
@@ -70,8 +73,10 @@ def test_supervisor_prefills_relaunch_without_submitting_prompt(tmp_path):
         "import json\n"
         "import os\n"
         "import sys\n"
+        "import time\n"
         "import tty\n"
         "from pathlib import Path\n"
+        "time.sleep(0.5)\n"
         "tty.setraw(sys.stdin.fileno())\n"
         "draft = os.read(sys.stdin.fileno(), 4096).decode()\n"
         "Path(sys.argv[1]).write_text(json.dumps({\n"
@@ -500,6 +505,21 @@ def test_supervisor_records_handoff_success_after_target_terminal_state(monkeypa
         "duration_seconds": summaries[0]["duration_seconds"],
     }
     assert summaries[0]["duration_seconds"] >= 0
+
+
+def test_operation_event_uses_package_version_and_real_origin(monkeypatch):
+    monkeypatch.setattr(session_switch, "TELEMETRY_PLUGIN_VERSION", "0.0.0")
+
+    event = _operation_event({
+        "operation": "handoff",
+        "source_client": "codex",
+        "target_client": "claude",
+        "result": "success",
+        "failure_stage": "none",
+    })
+
+    assert event["plugin_version"] == session_switch.PACKAGE_VERSION
+    assert event["origin"] == "real"
 
 
 def test_operation_event_marks_missing_duration_as_not_measured():
@@ -956,3 +976,100 @@ def test_supervisor_replaces_claude_print_prompt_on_relaunch(tmp_path):
     assert supervisor.run() == 0
     assert "original prompt" not in calls[1]
     assert calls[1][-1] == "reference [handoff.md] riparti da qui"
+
+
+class _FakeStream(io.StringIO):
+    def __init__(self, tty):
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def _consent_probe(monkeypatch, *, tty, state, claimed=True):
+    calls = {"claimed": 0}
+
+    def claim(home=None):
+        calls["claimed"] += 1
+        return claimed
+
+    monkeypatch.setattr(session_switch.telemetry, "do_not_track_enabled", lambda: False)
+    monkeypatch.setattr(session_switch.telemetry, "load_config", lambda home=None: None)
+    monkeypatch.setattr(session_switch.telemetry, "consent_state", lambda config: state)
+    monkeypatch.setattr(session_switch.telemetry, "claim_consent_prompt", claim)
+    return calls, _FakeStream(tty)
+
+
+def test_launcher_asks_codex_for_telemetry_consent_once(monkeypatch):
+    calls, stream = _consent_probe(monkeypatch, tty=True, state="unasked")
+    _telemetry_notice("codex", stream)
+    notice = stream.getvalue()
+    assert "npx session-handoff telemetry yes" in notice
+    assert "npx session-handoff telemetry no" in notice
+    assert calls["claimed"] == 1
+
+
+def test_launcher_leaves_the_claude_consent_prompt_to_its_hook(monkeypatch):
+    calls, stream = _consent_probe(monkeypatch, tty=True, state="unasked")
+    _telemetry_notice("claude", stream)
+    assert stream.getvalue() == ""
+    assert calls["claimed"] == 0
+
+
+def test_launcher_stays_silent_when_consent_is_settled(monkeypatch):
+    calls, stream = _consent_probe(monkeypatch, tty=True, state="asked")
+    _telemetry_notice("codex", stream)
+    assert stream.getvalue() == ""
+    assert calls["claimed"] == 0
+
+
+def test_launcher_stays_silent_without_a_terminal(monkeypatch):
+    calls, stream = _consent_probe(monkeypatch, tty=False, state="unasked")
+    _telemetry_notice("codex", stream)
+    assert stream.getvalue() == ""
+    assert calls["claimed"] == 0
+
+
+def test_launcher_does_not_ask_when_another_surface_claimed_first(monkeypatch):
+    _, stream = _consent_probe(monkeypatch, tty=True, state="unasked", claimed=False)
+    _telemetry_notice("codex", stream)
+    assert stream.getvalue() == ""
+
+
+def test_suite_run_without_isolated_home_does_not_queue_events(tmp_path, monkeypatch):
+    monkeypatch.delenv("SESSION_HANDOFF_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+
+    session_switch.record_terminal_outcome(
+        {
+            "operation": "handoff",
+            "source_client": "claude",
+            "target_client": "claude",
+            "result": "success",
+            "failure_stage": "none",
+        }
+    )
+
+    assert telemetry._load_counters(tmp_path)["days"] == {}
+
+
+def test_suite_run_with_isolated_home_still_queues_events(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    monkeypatch.setattr(telemetry, "spawn_detached_flush", lambda *_args, **_kwargs: None)
+
+    session_switch.record_terminal_outcome(
+        {
+            "operation": "handoff",
+            "source_client": "claude",
+            "target_client": "claude",
+            "result": "success",
+            "failure_stage": "none",
+        }
+    )
+
+    counters = telemetry._load_counters(tmp_path)
+    recorded = [entry["event"] for day in counters["days"].values() for entry in day]
+    assert any(event.get("operation") == "handoff" for event in recorded)

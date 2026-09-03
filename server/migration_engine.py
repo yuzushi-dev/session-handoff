@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from .version import PACKAGE_VERSION
+except ImportError:
+    from version import PACKAGE_VERSION
+
 MAX_RECORDS = 100_000
 MAX_LINE_BYTES = 16 * 1024 * 1024
 UTC = timezone.utc
@@ -437,7 +442,7 @@ def _write_codex(
             "timestamp": timestamp,
             "cwd": str(workspace),
             "originator": "session-handoff",
-            "cli_version": "0.149.1",
+            "cli_version": PACKAGE_VERSION,
             "source": "cli",
             "model_provider": "openai",
             "history_mode": "legacy",

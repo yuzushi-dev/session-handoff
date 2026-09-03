@@ -6,7 +6,6 @@ import multiprocessing
 import os
 import time
 import threading
-import urllib.error
 from datetime import datetime, timezone
 
 import pytest
@@ -23,10 +22,11 @@ from server.telemetry import (
 
 
 OPERATION = {
-    "schema_version": 1,
+    "schema_version": 2,
     "event": "operation_summary",
     "day_utc": "2026-08-25",
     "plugin_version": PACKAGE_VERSION,
+    "origin": "real",
     "operation": "handoff",
     "source_client": "codex",
     "target_client": "claude",
@@ -40,10 +40,11 @@ OPERATION = {
 }
 
 FEEDBACK = {
-    "schema_version": 1,
+    "schema_version": 2,
     "event": "context_feedback",
     "day_utc": "2026-08-25",
     "plugin_version": PACKAGE_VERSION,
+    "origin": "real",
     "operation": "migrate",
     "source_client": "claude",
     "target_client": "codex",
@@ -78,12 +79,67 @@ def test_do_not_track_zero_does_not_suppress_collection(tmp_path, monkeypatch):
     assert telemetry.increment_counter(OPERATION, tmp_path) == 1
 
 
+def test_default_home_uses_session_handoff_home(tmp_path, monkeypatch):
+    telemetry.write_config(tmp_path, telemetry.disabled_config())
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(telemetry.Path, "home", classmethod(lambda _cls: tmp_path / "wrong-home"))
+
+    assert telemetry.load_config() == telemetry.disabled_config()
+
+
 @pytest.mark.parametrize("payload", [OPERATION, FEEDBACK])
 def test_valid_events_validate_and_serialize(payload):
     assert validate_event(payload) == payload
     serialized = serialize_event(payload)
     assert json.loads(serialized) == payload
     assert len(serialized.encode("utf-8")) <= 2048
+
+
+@pytest.mark.parametrize("origin", sorted(telemetry.ORIGINS))
+def test_origin_enum_is_accepted(origin):
+    payload = OPERATION | {"origin": origin}
+
+    assert validate_event(payload) == payload
+
+
+def test_unknown_origin_is_rejected():
+    with pytest.raises(ValueError, match="invalid origin"):
+        validate_event(OPERATION | {"origin": "synthetic"})
+
+
+def test_increment_counter_emits_installed_package_version(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+
+    assert telemetry.increment_counter(OPERATION, tmp_path) == 1
+    closed = telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
+
+    assert [row["plugin_version"] for row in closed] == [PACKAGE_VERSION]
+
+
+def test_record_context_feedback_preserves_operation_origin(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    telemetry.increment_counter(OPERATION, tmp_path, now="2026-08-25T12:00:00Z")
+
+    feedback = telemetry.record_context_feedback(
+        "constraint",
+        "recoverable",
+        home=tmp_path,
+        now="2026-08-25T12:01:00Z",
+    )
+
+    assert feedback["origin"] == "real"
+    assert validate_event(feedback) == feedback
+
+
+def test_increment_counter_rejects_plugin_version_override(tmp_path):
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    override = "0.0.0" if PACKAGE_VERSION != "0.0.0" else "0.0.1"
+    payload = OPERATION | {"plugin_version": override}
+
+    assert validate_event(payload) == payload
+    with pytest.raises(ValueError, match="plugin version must match installed package"):
+        telemetry.increment_counter(payload, tmp_path)
+    assert telemetry._read_queue(tmp_path) == []
 
 
 def test_increment_and_close_day_aggregate_daily_rows(tmp_path):
@@ -106,7 +162,7 @@ def test_operation_aggregate_uses_client_route_and_omits_redaction_bucket():
     row = telemetry._aggregate_row(OPERATION, 3)
 
     assert set(row) == {
-        "schema_version", "event", "aggregate", "day_utc", "plugin_version",
+        "schema_version", "event", "aggregate", "day_utc", "plugin_version", "origin",
         "operation", "client_route", "count", "result", "failure_stage",
         "duration_bucket", "handoff_bytes_bucket", "dropped_events_bucket",
         "normalized_fields_bucket",
@@ -119,7 +175,7 @@ def test_context_feedback_aggregate_omits_operation_and_client_dimensions():
     row = telemetry._aggregate_row(FEEDBACK, 2)
 
     assert set(row) == {
-        "schema_version", "event", "aggregate", "day_utc", "plugin_version",
+        "schema_version", "event", "aggregate", "day_utc", "plugin_version", "origin",
         "count", "feedback_category", "feedback_severity",
     }
 
@@ -689,7 +745,7 @@ def test_close_day_deduplicates_rows_after_queue_commit_retry(tmp_path):
 
     telemetry.close_day(tmp_path, now="2026-08-26T00:00:00Z")
 
-    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == [row, {"day_utc": "2026-08-25", "event": "active_day", "plugin_version": PACKAGE_VERSION, "schema_version": 1}]
+    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == [row, {"day_utc": "2026-08-25", "event": "active_day", "plugin_version": PACKAGE_VERSION, "origin": "real", "schema_version": 2}]
 
 
 def test_config_read_is_capped_before_json_allocation(tmp_path, monkeypatch):
@@ -788,9 +844,13 @@ def test_invalid_acceptance_response_does_not_ack_batch(tmp_path, body):
     assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
 
-def test_partial_success_drops_entire_batch_and_records_rejection_count(tmp_path):
+def test_partial_success_keeps_entire_batch_when_rejected_rows_are_unidentified(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
-    telemetry._store_queue(tmp_path, [telemetry._aggregate_row(OPERATION, 1)] * 2)
+    rows = [
+        telemetry._aggregate_row(OPERATION | {"day_utc": day}, 1)
+        for day in ("2026-08-01", "2026-08-02", "2026-08-03")
+    ]
+    telemetry._store_queue(tmp_path, rows)
 
     class Response:
         status = 200
@@ -802,8 +862,8 @@ def test_partial_success_drops_entire_batch_and_records_rejection_count(tmp_path
         def close(self):
             return None
 
-    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response()) == 2
-    assert telemetry.load_batch(tmp_path) == []
+    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response()) == 0
+    assert telemetry.load_batch(tmp_path, now="2026-08-04T00:00:00Z") == rows
     assert telemetry.last_flush_diagnostics(tmp_path)["rejected_log_records"] == 1
 
 
@@ -1108,7 +1168,7 @@ def _telemetry_server():
     return server, thread
 
 
-def test_flush_queue_drops_partial_success_batch_and_records_remainder(tmp_path):
+def test_flush_queue_keeps_partial_success_batch_and_records_rejection(tmp_path):
     server, thread = _telemetry_server()
     try:
         telemetry.write_config(tmp_path, telemetry.enabled_config())
@@ -1121,10 +1181,10 @@ def test_flush_queue_drops_partial_success_batch_and_records_remainder(tmp_path)
             config = telemetry.enabled_config()
             config["endpoint"] = telemetry.ENDPOINT
             telemetry.write_config(tmp_path, config)
-            assert telemetry.flush_queue(tmp_path, now="2026-08-03T00:00:00Z") == 4
+            assert telemetry.flush_queue(tmp_path, now="2026-08-03T00:00:00Z") == 0
         finally:
             telemetry.ENDPOINT = original_endpoint
-        assert telemetry.load_batch(tmp_path, limit=2, now="2026-08-03T00:00:00Z") == []
+        assert len(telemetry.load_batch(tmp_path, limit=2, now="2026-08-03T00:00:00Z")) == 2
         sent_headers, _sent_body = _TelemetryHandler.requests[-1]
         assert sent_headers["User-Agent"] == telemetry._USER_AGENT
         assert "python-urllib" not in sent_headers["User-Agent"].lower()
@@ -1284,7 +1344,7 @@ def test_rejects_invalid_utc_days(day_utc):
         validate_event(OPERATION | {"day_utc": day_utc})
 
 
-@pytest.mark.parametrize("schema_version", [0, 2, True, 1.0, "1", None])
+@pytest.mark.parametrize("schema_version", [0, 1, 3, True, 2.0, "2", None])
 def test_rejects_invalid_schema_versions(schema_version):
     with pytest.raises(ValueError):
         validate_event(OPERATION | {"schema_version": schema_version})

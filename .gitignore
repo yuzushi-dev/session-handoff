@@ -1,6 +1,7 @@
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 *.py[cod]
-benchmark/generated/
-benchmark/results/
+benchmark/generated*/
+benchmark/results*/
 handoffs/

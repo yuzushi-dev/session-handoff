@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "calibration_set": "context-rot-v1-root-model-2026-09-02",
+  "source_results": "/tmp/session-handoff-provider-full-hardening-20260831",
+  "selection": "lexicographically first blind_id per case x band before unblinding",
+  "rubric": "benchmark/JUDGE.md",
+  "rubric_version": 1,
+  "judge_id": "codex-root",
+  "judge_model": "Codex GPT-5 (exact runtime model ID unavailable)",
+  "human_reviewed": false,
+  "condition_blind_during_scoring": true,
+  "presentation_blind": true,
+  "sample_size": 18,
+  "covered_cases": [
+    "buried-constraint",
+    "compound-rot",
+    "failed-attempt-trap",
+    "late-correction",
+    "partial-state",
+    "superseded-decision"
+  ],
+  "covered_bands": ["short", "long", "very_long"],
+  "covered_conditions": ["handoff"],
+  "covered_handoff_formats": ["markdown-v1", "state-v1"],
+  "agreement": null,
+  "agreement_reason": "No independent human reference labels exist for this sample.",
+  "critical_disagreements_adjudicated": false,
+  "decision_locked_before_unblinding": true,
+  "judgment_rule": {
+    "facts": "preserved",
+    "stale_traps": false,
+    "dod": true,
+    "counters": {
+      "recovery_reads": 0,
+      "repeated_failed_attempts": 0,
+      "stale_decisions_acted_on": 0
+    },
+    "evidence": "Each supplied context states the gold fact; each diff implements the stated next action; verify.stdout and the hidden acceptance result pass. Trace reads were targeted verification, not recovery of omitted facts. Failed shell probes were environment/tooling misses, not repeated rejected implementation attempts."
+  },
+  "runs": [
+    {"blind_id":"051e97af-3b35-435e-bcc8-9acfd9fd9857","case":"failed-attempt-trap","band":"very_long","condition":"handoff","handoff_format":"markdown-v1","replicate":2,"bundle_sha256":"9419ebd55eb91f8d581186d6c6e537c053b52d5dc6a0847b7b704584ec4e6a62","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"07f6e556-4139-4f70-9215-b76584750662","case":"partial-state","band":"very_long","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"c2b1450cc41eadaa16de300c6f02413837f09009f23e01a4b22328050f5fcea1","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"0b5dbf15-9e98-48af-8700-0d41897f8ddb","case":"partial-state","band":"long","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"2fa511fe59a9f1dedf052aa9f5b2426396fe86e53360599d4ff5f096cbf9f242","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"0f115d21-982e-4239-b793-701f621fa0fb","case":"superseded-decision","band":"short","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"80e035713c68a0052743356890ef2f00e3af2587732775971f6f8476c8004476","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"162e4c41-b175-43a2-a0b4-656cc821ab2a","case":"failed-attempt-trap","band":"long","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"ce4ccd856182a3fa0aace45e06c6275aeb4acc1cd863e996abcc945bd4a55346","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"1a4a37f5-4d05-4075-b197-caa9ca9006cc","case":"buried-constraint","band":"very_long","condition":"handoff","handoff_format":"markdown-v1","replicate":2,"bundle_sha256":"c494dff30ff1da3265afbb229ee821657f7a04093675cde4790de42e059095c0","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"26b6cdbf-ad7f-4ab8-abac-513950f5f57b","case":"late-correction","band":"short","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"7fbd7d68074c2600782af8fbf15a6bac430fec34813e3e12d56d86b42c486706","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"3240f80f-f439-4cbc-9531-1a4ea1973f10","case":"late-correction","band":"very_long","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"9eb1f00a42a092e396d3552f712038f630ee0acc36d133b1b35188698faa04c0","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"35b7286c-e5c7-4fe0-9256-9e85bca99712","case":"superseded-decision","band":"very_long","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"13b1c7517b382b741e40c7ef856463b7c53001fce093652f8e90e6bdddb2007d","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"3ab1c8f4-92a2-4843-8d2e-52873f3587d1","case":"late-correction","band":"long","condition":"handoff","handoff_format":"markdown-v1","replicate":2,"bundle_sha256":"a0618b04b56e6727dd55cb15eb35d5ed532528e7b924a44a4bc1abcdcaee5719","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"3af3d467-bcfe-4776-a178-47374c3cf90c","case":"buried-constraint","band":"short","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"8a51fc6668c56f48dacfcf04fc0b0d9e7e8efcc4e74d59e08d3521bf4c130b70","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"4879c0e0-38ad-43c8-ac26-2f5643bdee3e","case":"compound-rot","band":"long","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"82b7e41f4fdbacb86d7d23bd1c00eb8e3c7f711f2e863440c611e3cfb3603a4c","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved","F5":"preserved","F6":"preserved"},"stale_traps":{"T1":false,"T2":false,"T3":false},"dod":{"D1":true,"D2":true,"D3":true,"D4":true}},
+    {"blind_id":"54e22bee-806f-44e1-967b-722ea35f3ee3","case":"buried-constraint","band":"long","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"02ee906ead7112fc653ff8f7b92685cc1b3cda4bfe7ba42040f3f8d35ccdacfc","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"607a617c-eee6-47c3-9fe8-608b007bd54c","case":"compound-rot","band":"short","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"13fff729b3daae594de706e19324dd214d4659e09a0e655d684a1e95e03cd729","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved","F5":"preserved","F6":"preserved"},"stale_traps":{"T1":false,"T2":false,"T3":false},"dod":{"D1":true,"D2":true,"D3":true,"D4":true}},
+    {"blind_id":"7966bf88-ca13-4e86-a1a5-99b4029bcea1","case":"superseded-decision","band":"long","condition":"handoff","handoff_format":"state-v1","replicate":1,"bundle_sha256":"c56f68ec50299540636c5a63c95e56ddcc815fae4700c180f86f25fbb848c0e5","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"7b299d79-b1fe-4729-9aee-81b8f6f6b0e4","case":"compound-rot","band":"very_long","condition":"handoff","handoff_format":"state-v1","replicate":2,"bundle_sha256":"c0cd3b12db3d52263638a18a2db670250005c78f8906624aa9507c15cccac586","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved","F5":"preserved","F6":"preserved"},"stale_traps":{"T1":false,"T2":false,"T3":false},"dod":{"D1":true,"D2":true,"D3":true,"D4":true}},
+    {"blind_id":"82c31da4-5887-4cae-8420-759593744988","case":"failed-attempt-trap","band":"short","condition":"handoff","handoff_format":"markdown-v1","replicate":1,"bundle_sha256":"722355d9e22a094ff90dd6b504461b5b7419fbd24d6af39ad98e0159a9a182ec","facts":{"F1":"preserved","F2":"preserved","F3":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}},
+    {"blind_id":"83835124-2ce8-4d4f-ba94-fc67da670674","case":"partial-state","band":"short","condition":"handoff","handoff_format":"state-v1","replicate":1,"bundle_sha256":"4824d272d6b6a1d5ff83d54b365e24ba67dc8a76c990a43e08099084428db1e4","facts":{"F1":"preserved","F2":"preserved","F3":"preserved","F4":"preserved"},"stale_traps":{"T1":false},"dod":{"D1":true,"D2":true}}
+  ],
+  "result": {
+    "all_facts_preserved": true,
+    "any_stale_trap_activated": false,
+    "all_dod_passed": true,
+    "all_counters_zero": true,
+    "release_calibration_gate": "open",
+    "open_reasons": [
+      "The sample contains only handoff runs; full, migrate, and oracle completed release runs are unavailable.",
+      "No independent human reference labels exist, so agreement cannot be measured and human_reviewed remains false."
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-handoff",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev"
@@ -14,5 +14,6 @@
     "context",
     "codex",
     "claude"
-  ]
+  ],
+  "hooks": "./hooks/hooks.json"
 }

@@ -22,9 +22,9 @@ import urllib.request
 import urllib.error
 
 try:
-    from .version import VERSION_PATTERN
+    from .version import PACKAGE_VERSION, VERSION_PATTERN
 except ImportError:  # direct `python server/handoff_mcp.py` execution
-    from version import VERSION_PATTERN
+    from version import PACKAGE_VERSION, VERSION_PATTERN
 
 try:
     import fcntl
@@ -36,9 +36,11 @@ EVENTS = frozenset({"operation_summary", "context_feedback", "active_day"})
 OPERATIONS = frozenset({"handoff", "migrate"})
 CLIENTS = frozenset({"claude", "codex"})
 CLIENT_ROUTES = frozenset(f"{source}_to_{target}" for source in CLIENTS for target in CLIENTS)
+ORIGINS = frozenset({"real", "benchmark"})
+EVENT_SCHEMA_VERSION = 2
 RESULTS = frozenset({"success", "failure", "fallback"})
 FAILURE_STAGES = frozenset(
-    {"none", "validation", "control", "source_stop", "conversion", "target_resume", "source_resume", "unknown"}
+    {"none", "validation", "content_form", "state_schema", "size_limit", "missing_sections", "path_exists", "control", "source_stop", "conversion", "target_resume", "source_resume", "unknown"}
 )
 DURATION_BUCKETS = frozenset({"not_measured", "lt_1s", "1_to_5s", "5_to_30s", "30_to_120s", "gte_120s"})
 COUNT_BUCKETS = frozenset({"zero", "one", "2_to_5", "6_to_20", "gt_20"})
@@ -76,12 +78,12 @@ DENYLIST = frozenset(
     }
 )
 
-_COMMON_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version", "operation", "source_client", "target_client"})
+_COMMON_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version", "origin", "operation", "source_client", "target_client"})
 _OPERATION_FIELDS = _COMMON_FIELDS | frozenset(
     {"result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
 )
 _FEEDBACK_FIELDS = _COMMON_FIELDS | frozenset({"feedback_category", "feedback_severity"})
-_ACTIVE_DAY_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version"})
+_ACTIVE_DAY_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version", "origin"})
 _RETRY_DELAYS = (60, 300, 1800, 7200, 21600)
 _RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
 _RETRYABLE_EXCEPTIONS = (OSError, TimeoutError, urllib.error.URLError)
@@ -113,7 +115,8 @@ def do_not_track_enabled():
 
 
 def _home(home=None):
-    return Path(os.path.realpath(Path.home() if home is None else home))
+    selected = os.environ.get("SESSION_HANDOFF_HOME", Path.home()) if home is None else home
+    return Path(os.path.realpath(selected))
 
 
 def config_path(home=None):
@@ -956,7 +959,7 @@ def validate_event(payload):
     if set(payload) != fields:
         raise ValueError("wrong event shape")
 
-    if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool) or not isinstance(payload["schema_version"], int):
+    if payload["schema_version"] != EVENT_SCHEMA_VERSION or isinstance(payload["schema_version"], bool) or not isinstance(payload["schema_version"], int):
         raise ValueError("invalid schema version")
     for field in fields - {"schema_version"}:
         if not isinstance(payload[field], str) or len(payload[field]) > 32:
@@ -970,6 +973,8 @@ def validate_event(payload):
         raise ValueError("invalid UTC day") from exc
     if not _VERSION.fullmatch(payload["plugin_version"]):
         raise ValueError("invalid plugin version")
+    if payload["origin"] not in ORIGINS:
+        raise ValueError("invalid origin")
     if payload["event"] == "active_day":
         return payload
     if payload["operation"] not in OPERATIONS or payload["source_client"] not in CLIENTS or payload["target_client"] not in CLIENTS:
@@ -1192,7 +1197,10 @@ def _load_counters_locked(state_directory, state_fd):
                     raise ValueError("invalid counter entry")
                 if type(entry["count"]) is not int or not 1 <= entry["count"] <= 10000:
                     raise ValueError("invalid counter count")
-                event = entry["event"]
+                event = _normalize_legacy_event(entry["event"])
+                if event is not entry["event"]:
+                    entry["event"] = event
+                    entry["key"] = _event_key(event)
                 validate_event(event)
                 if event["day_utc"] != day or entry["key"] != _event_key(event) or entry["key"] in keys:
                     raise ValueError("invalid counter identity")
@@ -1211,8 +1219,24 @@ def _event_key(event):
     return json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+def _normalize_legacy_event(event):
+    """Upgrade events written before origin and schema version 2 existed."""
+    if not isinstance(event, dict):
+        return event
+    legacy_schema = type(event.get("schema_version")) is int and event["schema_version"] == 1
+    if "origin" in event and not legacy_schema:
+        return event
+    event = dict(event)
+    event.setdefault("origin", "real")
+    if legacy_schema:
+        event["schema_version"] = EVENT_SCHEMA_VERSION
+    return event
+
+
 def increment_counter(event, home=None, now=None):
     validate_event(event)
+    if event["plugin_version"] != PACKAGE_VERSION:
+        raise ValueError("plugin version must match installed package")
     if do_not_track_enabled():
         return 0
     with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
@@ -1222,7 +1246,13 @@ def increment_counter(event, home=None, now=None):
         day = event["day_utc"]
         counters = _load_counters_locked(state_directory, state_fd)
         if event["event"] != "active_day":
-            marker = {"schema_version": 1, "event": "active_day", "day_utc": day, "plugin_version": event["plugin_version"]}
+            marker = {
+                "schema_version": EVENT_SCHEMA_VERSION,
+                "event": "active_day",
+                "day_utc": day,
+                "plugin_version": event["plugin_version"],
+                "origin": event["origin"],
+            }
             marker_key = _event_key(marker)
             if not any(entry.get("key") == marker_key for entry in counters["days"].get(day, [])):
                 queued = _read_queue_locked(state_directory, state_fd)
@@ -1265,7 +1295,7 @@ def load_last_operation_summary(home=None, now=None):
             raise TelemetryConfigError("invalid last operation summary")
         try:
             recorded_at = _as_datetime(saved["recorded_at"])
-            event = dict(saved["event"])
+            event = _normalize_legacy_event(dict(saved["event"]))
             validate_event(event)
         except (KeyError, TypeError, ValueError) as exc:
             raise TelemetryConfigError("invalid last operation summary") from exc
@@ -1288,6 +1318,7 @@ def record_context_feedback(category, severity, home=None, now=None):
     if operation is None:
         raise TelemetryConfigError("no recent operation summary")
     event = {field: operation[field] for field in _COMMON_FIELDS}
+    event["plugin_version"] = PACKAGE_VERSION
     event.update({"event": "context_feedback", "feedback_category": category, "feedback_severity": severity})
     validate_event(event)
     if increment_counter(event, home=home, now=now) == 0:
@@ -1296,14 +1327,16 @@ def record_context_feedback(category, severity, home=None, now=None):
 
 
 def _aggregate_row(event, count):
+    event = _normalize_legacy_event(event)
     if event["event"] == "active_day":
         return dict(event)
     row = {
-        "schema_version": 1,
+        "schema_version": EVENT_SCHEMA_VERSION,
         "event": "daily_aggregate",
         "aggregate": "operation" if event["event"] == "operation_summary" else "context_feedback",
         "day_utc": event["day_utc"],
         "plugin_version": event["plugin_version"],
+        "origin": event["origin"],
         "count": count,
     }
     if row["aggregate"] == "operation":
@@ -1319,14 +1352,15 @@ def _aggregate_row(event, count):
 
 
 def _validate_aggregate(row):
-    if not isinstance(row, dict) or type(row.get("schema_version")) is not int or row["schema_version"] != 1:
+    row = _normalize_legacy_event(row)
+    if not isinstance(row, dict) or type(row.get("schema_version")) is not int or row["schema_version"] != EVENT_SCHEMA_VERSION:
         raise ValueError("invalid aggregate row")
     if set(row) == _ACTIVE_DAY_FIELDS and row.get("event") == "active_day":
         validate_event(row)
         return row
     if row.get("event") != "daily_aggregate" or type(row.get("count")) is not int or not 1 <= row["count"] <= 10000:
         raise ValueError("invalid aggregate row")
-    common = {"schema_version", "event", "aggregate", "day_utc", "plugin_version", "count"}
+    common = {"schema_version", "event", "aggregate", "day_utc", "plugin_version", "origin", "count"}
     if row.get("aggregate") == "operation":
         legacy = common | {"operation", "source_client", "target_client", "result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "redaction_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
         expected = common | {"operation", "client_route", "result", "failure_stage", "duration_bucket", "handoff_bytes_bucket", "dropped_events_bucket", "normalized_fields_bucket"}
@@ -1966,11 +2000,15 @@ def flush_queue(home=None, opener=None, now=None):
             rejected = len(batch) - accepted
             if rejected:
                 _record_diagnostics(home, rejected)
-            ack_batch(home, batch, digest=_batch_digest(batch))
+                # OTLP reports only the number of rejected records, not their
+                # positions. Keep the whole batch rather than deleting an
+                # unidentified prefix and risking data loss.
+                return sent
+            ack_batch(home, batch, accepted=accepted, digest=_batch_digest(batch))
             retry = {key: value for key, value in retry.items() if key not in {_retry_key(row) for row in batch}}
             _write_retry_state(home, retry)
             _clear_flush_error(home)
-            sent += len(batch)
+            sent += accepted
         except Exception as exc:
             if batch is not None and _is_retryable(exc):
                 _schedule_retry(home, batch, now, response or exc)

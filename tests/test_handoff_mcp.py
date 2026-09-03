@@ -12,6 +12,11 @@ import server.handoff_mcp as handoff_mcp
 SERVER = Path(__file__).parents[1] / "server" / "handoff_mcp.py"
 
 
+@pytest.fixture(autouse=True)
+def isolate_telemetry_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path / "telemetry-home"))
+
+
 def exchange(requests, env_overrides=None):
     payload = "\n".join(json.dumps(request) for request in requests) + "\n"
     result = subprocess.run(
@@ -50,7 +55,11 @@ def call(request_id, name, arguments):
 
 def tool_result(response):
     result = response["result"]
-    return result.get("structuredContent", result)
+    if result.get("isError"):
+        return result["structuredContent"]
+    if "content" not in result:
+        return result
+    return json.loads(result["content"][0]["text"])
 
 
 def structured_state():
@@ -92,6 +101,15 @@ def test_server_initializes_and_lists_handoff_tools():
     }
 
 
+@pytest.mark.parametrize("params", [None, [], "invalid"])
+def test_initialize_non_object_params_use_default_protocol_version(params):
+    response = handoff_mcp.handle_request(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}
+    )
+
+    assert response["result"]["protocolVersion"] == handoff_mcp.DEFAULT_PROTOCOL_VERSION
+
+
 def test_handoff_create_schema_accepts_exact_state_v1_contract():
     tool = next(tool for tool in handoff_mcp.TOOLS if tool["name"] == "handoff_create")
     schema = tool["inputSchema"]
@@ -122,6 +140,86 @@ def test_handoff_create_schema_accepts_exact_state_v1_contract():
     ]
     assert "maxLength" not in state["properties"]["goal"]
     assert "maxLength" not in state["properties"]["constraints_preferences"]["items"]
+
+
+def test_call_tool_rejects_unknown_top_level_parameter():
+    result = handoff_mcp._call_tool(
+        {
+            "name": "handoff_read",
+            "arguments": {},
+            "unexpected": True,
+        }
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["message"] == "unknown tool call parameter: unexpected"
+
+
+def test_call_tool_rejects_unknown_tool_argument():
+    result = handoff_mcp._call_tool(
+        {
+            "name": "handoff_read",
+            "arguments": {"workspace": ".", "path": "handoff.md", "unexpected": True},
+        }
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["message"] == "unknown tool argument: unexpected"
+
+
+@pytest.mark.parametrize("tool_name", ["handoff_read", "handoff_validate"])
+def test_read_tools_reject_oversized_handoff(tmp_path, tool_name):
+    path = tmp_path / "oversized.md"
+    path.write_bytes(b"x" * (handoff_mcp.MAX_CONTENT_BYTES + 1))
+
+    with pytest.raises(
+        handoff_mcp.HandoffError,
+        match=f"content exceeds {handoff_mcp.MAX_CONTENT_BYTES} bytes",
+    ):
+        getattr(handoff_mcp, "_read" if tool_name == "handoff_read" else "_validate")(
+            {"workspace": str(tmp_path), "path": path.name}
+        )
+
+
+def test_read_fails_closed_without_secure_relative_io(monkeypatch, tmp_path):
+    path = tmp_path / "handoff.md"
+    path.write_text("## Goal\nOnly\n", encoding="utf-8")
+    monkeypatch.setattr(handoff_mcp, "_secure_relative_io_supported", lambda: False)
+
+    with pytest.raises(handoff_mcp.HandoffError, match="secure filesystem"):
+        handoff_mcp._read({"workspace": str(tmp_path), "path": path.name})
+
+
+@pytest.mark.skipif(
+    not (
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+    ),
+    reason="secure relative directory primitives are unavailable",
+)
+def test_create_rejects_parent_directory_swap_before_write(monkeypatch, tmp_path):
+    content = "".join(f"{section}\nx\n\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    handoffs = tmp_path / "handoffs"
+    handoffs.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original = handoff_mcp._atomic_write
+
+    def swap_parent_then_write(*args, **kwargs):
+        handoffs.rename(tmp_path / "handoffs-real")
+        handoffs.symlink_to(outside, target_is_directory=True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(handoff_mcp, "_atomic_write", swap_parent_then_write)
+
+    with pytest.raises(OSError):
+        handoff_mcp._create(
+            {"workspace": str(tmp_path), "path": "handoffs/race.md", "content": content}
+        )
+
+    assert not (outside / "race.md").exists()
 
 
 def test_create_accepts_state_and_writes_canonical_headings(tmp_path):
@@ -358,12 +456,60 @@ def test_create_validation_failure_records_only_safe_summary(monkeypatch, tmp_pa
         "source_client": "codex",
         "target_client": "codex",
         "result": "failure",
-        "failure_stage": "validation",
+        "failure_stage": "missing_sections",
         "handoff_bytes": len("## Goal\ncontains /sensitive/path and session-id\n".encode()),
         "redacted_count": 0,
         "dropped_events": 0,
         "normalized_fields": 0,
     }
+
+
+def test_create_validation_failures_report_distinct_stages(monkeypatch, tmp_path):
+    """Each validation cause reports its own stage, so the dashboard can tell them apart."""
+    complete = "".join(f"{section}\nx\n\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+
+    def stage_for(arguments):
+        summaries = []
+        monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+        with pytest.raises(handoff_mcp.HandoffError):
+            handoff_mcp._create(arguments)
+        assert len(summaries) == 1
+        return summaries[0]["failure_stage"]
+
+    assert stage_for(
+        {
+            "workspace": str(tmp_path),
+            "path": "handoffs/missing.md",
+            "content": "## Goal\nonly a goal\n",
+        }
+    ) == "missing_sections"
+
+    assert stage_for(
+        {
+            "workspace": str(tmp_path),
+            "path": "handoffs/big.md",
+            "content": "x" * (handoff_mcp.MAX_CONTENT_BYTES + 1),
+        }
+    ) == "size_limit"
+
+    existing = tmp_path / "handoffs"
+    existing.mkdir()
+    (existing / "taken.md").write_text(complete, encoding="utf-8")
+    assert stage_for(
+        {
+            "workspace": str(tmp_path),
+            "path": "handoffs/taken.md",
+            "content": complete,
+        }
+    ) == "path_exists"
+
+    assert stage_for(
+        {
+            "workspace": str(tmp_path),
+            "path": "handoffs/state.md",
+            "state": {"goal": ""},
+        }
+    ) == "state_schema"
 
 
 def test_migrate_requests_supervised_native_switch(tmp_path):

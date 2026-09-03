@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +79,13 @@ _PRIVATE_KEY = re.compile(
 
 class HandoffError(ValueError):
     """An actionable input or workspace error returned by an MCP tool."""
+
+
+def _record_outcome(summary: dict[str, Any]) -> None:
+    try:
+        record_terminal_outcome(summary)
+    except Exception:
+        pass
 
 
 def _replace_assignment(match: re.Match[str]) -> str:
@@ -169,38 +176,128 @@ def _relative(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _read_file(root: Path, path: Path) -> tuple[str, int]:
+def _secure_relative_io_supported() -> bool:
+    supported = getattr(os, "supports_dir_fd", ())
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and all(
+            function in supported
+            for function in (os.open, os.mkdir, os.rename, os.link, os.unlink)
+        )
+    )
+
+
+def _open_relative_parent(root: Path, path: Path, *, create: bool) -> tuple[int, str]:
+    parts = Path(_relative(root, path)).parts
+    parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        raw = path.read_text(encoding="utf-8")
+        for part in parts[:-1]:
+            try:
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o755, dir_fd=parent_fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            os.close(parent_fd)
+            parent_fd = child_fd
+    except Exception:
+        os.close(parent_fd)
+        raise
+    return parent_fd, parts[-1]
+
+
+def _read_file(root: Path, path: Path) -> tuple[str, int]:
+    if _secure_relative_io_supported():
+        parent_fd, name = _open_relative_parent(root, path, create=False)
+        try:
+            file_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+        finally:
+            os.close(parent_fd)
+        with os.fdopen(file_fd, "rb") as handoff_file:
+            raw = handoff_file.read(MAX_CONTENT_BYTES + 1)
+    else:
+        raise HandoffError("secure filesystem primitives unavailable")
+    if len(raw) > MAX_CONTENT_BYTES:
+        raise HandoffError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
+    try:
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HandoffError("handoff file must be UTF-8 text") from exc
-    redacted, redacted_count = redact_secrets(raw)
+    redacted, redacted_count = redact_secrets(text)
     return redacted, redacted_count
 
 
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _atomic_write(root: Path, path: Path, content: str, *, overwrite: bool) -> None:
+    if not _secure_relative_io_supported():
+        raise HandoffError("secure filesystem primitives unavailable")
+
+    parent_fd, name = _open_relative_parent(root, path, create=True)
     temporary_name: str | None = None
+    temporary_fd: int | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_name = temporary.name
+        for _ in range(10):
+            candidate = f".{name}.{secrets.token_hex(8)}.tmp"
+            try:
+                temporary_fd = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if temporary_fd is None or temporary_name is None:
+            raise FileExistsError("unable to create temporary handoff file")
+        temporary = os.fdopen(temporary_fd, "w", encoding="utf-8")
+        temporary_fd = None
+        with temporary:
             temporary.write(content)
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_name, path)
+        if overwrite:
+            os.rename(
+                temporary_name,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+        else:
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        temporary_name = None
     finally:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
         if temporary_name:
             try:
-                Path(temporary_name).unlink(missing_ok=True)
+                os.unlink(temporary_name, dir_fd=parent_fd)
             except OSError:
                 pass
+        os.close(parent_fd)
 
 
 def _require_string(arguments: dict[str, Any], name: str) -> str:
@@ -273,65 +370,89 @@ def _state_schema() -> dict[str, Any]:
 
 
 def _create(arguments: dict[str, Any]) -> dict[str, Any]:
-    workspace = _require_string(arguments, "workspace")
-    requested_path = _require_string(arguments, "path")
-    root, path = _safe_path(workspace, requested_path)
+    try:
+        workspace = _require_string(arguments, "workspace")
+        requested_path = _require_string(arguments, "path")
+        root, path = _safe_path(workspace, requested_path)
+    except HandoffError:
+        raise
     has_content = "content" in arguments
     has_state = "state" in arguments
     if has_content == has_state:
         raise HandoffError("exactly one of content or state must be provided")
 
     if has_content:
-        content, redacted_count = redact_secrets(_require_string(arguments, "content"))
+        try:
+            content, redacted_count = redact_secrets(_require_string(arguments, "content"))
+        except HandoffError:
+            raise
     else:
         try:
             redacted_state, redacted_count = redact_state(arguments["state"])
             content = render_state(redacted_state)
         except HandoffStateError as exc:
-            record_terminal_outcome({
+            _record_outcome({
                 "operation": "handoff", "source_client": "codex", "target_client": "codex",
-                "result": "failure", "failure_stage": "validation",
+                "result": "failure", "failure_stage": "state_schema",
                 "handoff_bytes": 0, "redacted_count": 0, "dropped_events": 0,
                 "normalized_fields": 0,
             })
             raise HandoffError(f"invalid state: {exc}") from exc
 
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
-        record_terminal_outcome({
+        _record_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "validation",
+            "result": "failure", "failure_stage": "size_limit",
             "handoff_bytes": len(content.encode("utf-8")),
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
         })
         raise HandoffError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
-    overwrite = arguments.get("overwrite", False)
-    if not isinstance(overwrite, bool):
-        raise HandoffError("overwrite must be a boolean")
-    auto_switch = arguments.get("auto_switch", False)
-    if not isinstance(auto_switch, bool):
-        raise HandoffError("auto_switch must be a boolean")
+    try:
+        overwrite = arguments.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            raise HandoffError("overwrite must be a boolean")
+        auto_switch = arguments.get("auto_switch", False)
+        if not isinstance(auto_switch, bool):
+            raise HandoffError("auto_switch must be a boolean")
+    except HandoffError:
+        raise
 
     redacted = content
     missing_sections = validate_handoff(redacted)
     if missing_sections:
-        record_terminal_outcome({
+        _record_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "validation",
+            "result": "failure", "failure_stage": "missing_sections",
             "handoff_bytes": len(redacted.encode("utf-8")),
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
         })
         raise HandoffError("missing canonical sections: " + ", ".join(missing_sections))
     if path.exists() and not overwrite:
-        record_terminal_outcome({
+        _record_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "validation",
+            "result": "failure", "failure_stage": "path_exists",
             "handoff_bytes": len(redacted.encode("utf-8")),
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
         })
         raise HandoffError(
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
         )
-    _atomic_write(path, redacted)
+    try:
+        _atomic_write(root, path, redacted, overwrite=overwrite)
+    except FileExistsError:
+        if overwrite:
+            raise
+        _record_outcome({
+            "operation": "handoff", "source_client": "codex", "target_client": "codex",
+            "result": "failure", "failure_stage": "path_exists",
+            "handoff_bytes": len(redacted.encode("utf-8")),
+            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
+        })
+        raise HandoffError(
+            f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
+        )
+    except OSError:
+        raise
     result = {
         "path": _relative(root, path),
         "valid": True,
@@ -355,13 +476,13 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, OSError) as exc:
             result["auto_switch_requested"] = False
             result["auto_switch_error"] = str(exc)
-            record_terminal_outcome({
+            _record_outcome({
                 "operation": "handoff", "source_client": "codex", "target_client": "codex",
                 "result": "failure", "failure_stage": "control", "handoff_bytes": result["bytes"],
                 "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
             })
     else:
-        record_terminal_outcome({
+        _record_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
             "result": "success", "failure_stage": "none", "handoff_bytes": result["bytes"],
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
@@ -566,9 +687,10 @@ TOOLS = [
 
 
 def _success(data: dict[str, Any]) -> dict[str, Any]:
+    # No tool declares an outputSchema, so the spec's backwards-compatible
+    # duplicate in structuredContent only doubles the payload on the wire.
     return {
         "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}],
-        "structuredContent": data,
     }
 
 
@@ -582,12 +704,22 @@ def _error(message: str) -> dict[str, Any]:
 
 
 def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(params, dict):
+        return _error("tool call parameters must be a JSON object")
     name = params.get("name")
     arguments = params.get("arguments", {})
     if not isinstance(name, str) or name not in {tool["name"] for tool in TOOLS}:
         return _error(f"unknown tool: {name}")
+    unknown = next((key for key in params if key not in {"name", "arguments"}), None)
+    if unknown is not None:
+        return _error(f"unknown tool call parameter: {unknown}")
     if not isinstance(arguments, dict):
         return _error("tool arguments must be a JSON object")
+    tool = next(tool for tool in TOOLS if tool["name"] == name)
+    properties = tool["inputSchema"].get("properties", {})
+    unknown_argument = next((key for key in arguments if key not in properties), None)
+    if unknown_argument is not None:
+        return _error(f"unknown tool argument: {unknown_argument}")
     try:
         handlers = {
             "handoff_create": _create,
@@ -607,7 +739,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
     if method == "notifications/initialized" or (isinstance(method, str) and method.startswith("notifications/")):
         return None
     if method == "initialize":
-        requested = request.get("params", {}).get("protocolVersion", DEFAULT_PROTOCOL_VERSION)
+        params = request.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        requested = params.get("protocolVersion", DEFAULT_PROTOCOL_VERSION)
         protocol_version = requested if isinstance(requested, str) else DEFAULT_PROTOCOL_VERSION
         return {
             "jsonrpc": "2.0",

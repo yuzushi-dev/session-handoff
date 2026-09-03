@@ -71,17 +71,22 @@ def _operation_event(summary: dict[str, Any]) -> dict[str, Any]:
         "target_client",
         "result",
         "failure_stage",
+        "origin",
     }
     if not isinstance(summary, dict) or not set(summary) <= allowed:
         raise ValueError("telemetry summary contains an unauthorized field")
+    origin = summary.get("origin", "real")
+    if not isinstance(origin, str) or origin not in telemetry.ORIGINS:
+        raise ValueError("telemetry summary contains an invalid origin")
     safe = _safe_numeric_summary(
         {field: summary[field] for field in summary if field in TELEMETRY_SUMMARY_FIELDS}
     )
     event = {
-        "schema_version": 1,
+        "schema_version": telemetry.EVENT_SCHEMA_VERSION,
         "event": "operation_summary",
         "day_utc": datetime.now(timezone.utc).date().isoformat(),
-        "plugin_version": TELEMETRY_PLUGIN_VERSION,
+        "plugin_version": PACKAGE_VERSION,
+        "origin": origin,
         "operation": summary["operation"],
         "source_client": summary["source_client"],
         "target_client": summary["target_client"],
@@ -97,12 +102,22 @@ def _operation_event(summary: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
+def _suite_against_real_home() -> bool:
+    """True when a test run would queue its events as real usage.
+
+    Tests isolate collection with SESSION_HANDOFF_HOME. A suite run without it
+    writes into the operator's own queue, where a later flush uploads synthetic
+    outcomes indistinguishable from real ones.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ and "SESSION_HANDOFF_HOME" not in os.environ
+
+
 def record_terminal_outcome(summary: dict[str, Any]) -> None:
     """Record one validated, aggregate-only outcome before detached upload."""
     try:
-        if telemetry.do_not_track_enabled():
+        if telemetry.do_not_track_enabled() or _suite_against_real_home():
             return
-        home = Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+        home = telemetry._home()
         config = telemetry.load_config(home)
         if config is None or not config["enabled"]:
             return
@@ -547,7 +562,6 @@ class _DraftProcess:
         self._stdin_state: list[Any] | None = None
         self._draft = draft.encode("utf-8")
         self._draft_sent = False
-        self._draft_at = time.monotonic() + 0.25
         self._resize_requested = False
         self._previous_sigwinch: Any = None
         self._sigwinch_handler: Callable[..., Any] | None = None
@@ -604,9 +618,14 @@ class _DraftProcess:
         if self._resize_requested:
             self._resize_requested = False
             self._resize()
-        if not self._draft_sent and time.monotonic() >= self._draft_at:
-            os.write(self.master, self._draft)
-            self._draft_sent = True
+        if not self._draft_sent:
+            try:
+                terminal_mode = termios.tcgetattr(self.master)
+            except OSError:
+                terminal_mode = None
+            if terminal_mode is not None and not terminal_mode[3] & termios.ICANON:
+                os.write(self.master, self._draft)
+                self._draft_sent = True
         readers = [self.master]
         if self._stdin_fd is not None:
             readers.append(self._stdin_fd)
@@ -675,6 +694,34 @@ class _DraftProcess:
         if self.master >= 0:
             os.close(self.master)
             self.master = -1
+
+
+def _telemetry_notice(client: str, stream: Any = None) -> None:
+    """Ask the one-time telemetry consent question, once, on Codex only.
+
+    Claude asks in chat from its SessionStart hook. That hook does not run on
+    Codex, so the managed launcher asks there instead, after the client exits:
+    a full-screen client would otherwise paint over the notice.
+    """
+    stream = sys.stderr if stream is None else stream
+    try:
+        if client != "codex" or not stream.isatty():
+            return
+        if telemetry.do_not_track_enabled():
+            return
+        if telemetry.consent_state(telemetry.load_config()) != "unasked":
+            return
+        if not telemetry.claim_consent_prompt():
+            return
+        print(
+            "session-handoff telemetry is off by default. Run "
+            "`npx session-handoff telemetry yes` to enable anonymous aggregate "
+            "telemetry, or `npx session-handoff telemetry no` to decline. "
+            f"Details: {telemetry.TELEMETRY_DETAILS_URL}",
+            file=stream,
+        )
+    except Exception:
+        return
 
 
 class SessionSupervisor:

@@ -7,7 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from server import telemetry
+from server.checkpoint import capture_checkpoint
 
 
 ROOT = Path(__file__).parents[1]
@@ -27,7 +30,7 @@ def load_hook():
     return module
 
 
-def run_hook(home):
+def run_hook(home, payload=None):
     env = {**os.environ, "HOME": str(home)}
     return subprocess.run(
         [sys.executable, str(HOOK)],
@@ -35,7 +38,24 @@ def run_hook(home):
         capture_output=True,
         check=False,
         env=env,
+        input=json.dumps(payload) if payload is not None else None,
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [UnicodeError("invalid input"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")],
+)
+def test_session_start_hook_parsing_fails_open_on_unicode_errors(error, monkeypatch):
+    hook = load_hook()
+
+    class RaisingInput:
+        def read(self):
+            raise error
+
+    monkeypatch.setattr(hook.sys, "stdin", RaisingInput())
+
+    assert hook._hook_input() == {}
 
 
 def test_session_start_hook_nudges_until_consent_is_recorded(tmp_path):
@@ -172,10 +192,15 @@ def test_plugin_manifest_surfaces_include_session_start_hook():
     assert "hooks/user-prompt-submit.py" in user_prompt_submit[0]["hooks"][0]["command"]
     assert "CLAUDE_PLUGIN_ROOT" in user_prompt_submit[0]["hooks"][0]["command"]
 
+    pre_compact = hook_config["hooks"]["PreCompact"]
+    assert pre_compact[0]["matcher"] == "auto|manual"
+    assert "server/checkpoint.py" in pre_compact[0]["hooks"][0]["command"]
+
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     assert "hooks/hooks.json" in package["files"]
     assert "hooks/session-start.py" in package["files"]
     assert "hooks/user-prompt-submit.py" in package["files"]
+    assert "server/*.py" in package["files"]
 
 
 def test_consent_notice_links_to_the_public_details_url(tmp_path):
@@ -190,3 +215,70 @@ def test_consent_notice_links_to_the_public_details_url(tmp_path):
     assert result.returncode == 0
     message = json.loads(result.stdout)["systemMessage"]
     assert telemetry.TELEMETRY_DETAILS_URL in message
+
+
+def test_session_start_hook_reinjects_checkpoint_after_compact(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    checkpoint = capture_checkpoint(
+        {
+            "cwd": str(workspace),
+            "session_id": "session-123",
+            "hook_event_name": "PreCompact",
+            "trigger": "auto",
+        },
+        home=home,
+    )
+
+    result = run_hook(
+        home,
+        {
+            "cwd": str(workspace),
+            "hook_event_name": "SessionStart",
+            "source": "compact",
+            "session_id": "session-123",
+        },
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    context = payload["hookSpecificOutput"]["additionalContext"]
+    assert checkpoint["path"] in context
+    assert "non-semantic" in context
+
+    events = next((home / ".local/state/session-handoff/checkpoints").iterdir()) / "events.jsonl"
+    record = json.loads(events.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["event"] == "session_start"
+    assert record["trigger"] == "compact"
+    assert record["checkpoint_path"] == checkpoint["path"]
+    assert record["checkpoint_bytes"] == Path(checkpoint["path"]).stat().st_size
+    assert record["injected"] is True
+    assert record["injected_bytes"] > 0
+
+
+def test_session_start_hook_records_non_compact_without_injection(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+
+    result = run_hook(
+        home,
+        {
+            "cwd": str(workspace),
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "session_id": "session-123",
+        },
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["systemMessage"]
+    events = next((home / ".local/state/session-handoff/checkpoints").iterdir()) / "events.jsonl"
+    record = json.loads(events.read_text(encoding="utf-8"))
+    assert record["event"] == "session_start"
+    assert record["trigger"] == "startup"
+    assert record["checkpoint_path"] is None
+    assert record["checkpoint_bytes"] == 0
+    assert record["injected"] is False
+    assert record["injected_bytes"] == 0

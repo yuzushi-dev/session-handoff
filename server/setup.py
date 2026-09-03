@@ -32,6 +32,7 @@ BUNDLE_ENTRIES = (
     "server",
     "skills",
 )
+EXTERNAL_LAUNCHER_DIRS = (Path("/usr/bin"), Path("/usr/local/bin"))
 
 
 class SetupError(ValueError):
@@ -96,6 +97,113 @@ def _load_state(path: Path) -> dict[str, object]:
     if not isinstance(state, dict):
         raise SetupError(f"invalid session-handoff state: {path}")
     return state
+
+
+def _validated_path(value: object, label: str) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise SetupError(f"invalid session-handoff {label} path")
+    path = Path(value)
+    if not path.is_absolute():
+        raise SetupError(f"invalid session-handoff {label} path")
+    try:
+        return Path(os.path.abspath(path))
+    except (OSError, ValueError) as exc:
+        raise SetupError(f"invalid session-handoff {label} path") from exc
+
+
+def _validate_launcher(home: Path, client: str, value: object) -> Path:
+    launcher = _validated_path(value, f"{client} launcher")
+    if launcher.name != client:
+        raise SetupError(f"invalid session-handoff {client} launcher path")
+    try:
+        parent = launcher.parent.resolve(strict=False)
+        home_root = home.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise SetupError(f"invalid session-handoff {client} launcher path") from exc
+    if not parent.is_relative_to(home_root) and parent not in EXTERNAL_LAUNCHER_DIRS:
+        try:
+            trusted_external = launcher.is_symlink() or bool(launcher.stat().st_mode & 0o111)
+        except OSError:
+            trusted_external = False
+        if not trusted_external:
+            raise SetupError(f"invalid session-handoff {client} launcher path")
+    return launcher
+
+
+def _validate_backup(launcher: Path, value: object) -> Path:
+    backup = _validated_path(value, "backup")
+    expected = launcher.with_name(launcher.name + BACKUP_SUFFIX)
+    if backup != expected:
+        raise SetupError(f"invalid session-handoff backup path: {backup}")
+    return backup
+
+
+def _validate_target(launcher: Path, backup: Path, value: object) -> Path:
+    target = _validated_path(value, "target")
+    active_prefix = launcher.name + ".session-handoff-active"
+    if target == backup:
+        return target
+    if target.parent != launcher.parent or not (
+        target.name == active_prefix
+        or (
+            target.name.startswith(active_prefix + "-")
+            and target.name[len(active_prefix) + 1 :].isdigit()
+        )
+    ):
+        raise SetupError(f"invalid session-handoff target path: {target}")
+    return target
+
+
+def _validate_state_paths(
+    home: Path,
+    clients: list[str],
+    state: dict[str, object],
+    *,
+    fallback_launchers: dict[str, object] | None = None,
+) -> tuple[dict[str, Path], dict[str, Path], dict[str, Path]]:
+    expected_bundle = Path(os.path.abspath(home / BUNDLE_PATH))
+    if "bundle" in state and _validated_path(state["bundle"], "bundle") != expected_bundle:
+        raise SetupError(f"invalid session-handoff bundle path: {state['bundle']}")
+
+    mappings = {
+        name: state.get(name, {})
+        for name in ("launchers", "backups", "targets")
+    }
+    if not all(isinstance(value, dict) for value in mappings.values()):
+        raise SetupError("invalid session-handoff state paths")
+    if any(
+        client not in clients
+        for mapping in mappings.values()
+        for client in mapping
+    ):
+        raise SetupError("invalid session-handoff state paths")
+
+    launchers: dict[str, Path] = {}
+    backups: dict[str, Path] = {}
+    targets: dict[str, Path] = {}
+    for client in clients:
+        if client in mappings["launchers"]:
+            launcher_value = mappings["launchers"][client]
+            launcher = _validate_launcher(home, client, launcher_value)
+        elif fallback_launchers is not None and client in fallback_launchers:
+            launcher_value = fallback_launchers[client]
+            launcher = _validated_path(launcher_value, f"{client} launcher")
+            if launcher.name != client:
+                raise SetupError(f"invalid session-handoff {client} launcher path")
+        else:
+            raise SetupError(f"invalid session-handoff launcher path for {client}")
+        backup_value = mappings["backups"].get(
+            client,
+            launcher.with_name(launcher.name + BACKUP_SUFFIX),
+        )
+        backup = _validate_backup(launcher, backup_value)
+        target = _validate_target(
+            launcher,
+            backup,
+            mappings["targets"].get(client, backup),
+        )
+        launchers[client], backups[client], targets[client] = launcher, backup, target
+    return launchers, backups, targets
 
 
 def _digest(text: str) -> str:
@@ -199,27 +307,20 @@ def install_setup(
     skill_hashes = state.get("skill_hashes", {})
     if not isinstance(skill_hashes, dict):
         raise SetupError(f"invalid session-handoff state: {state_path}")
-    plan = setup_plan(package_root, home, all_clients, executable_paths={
-        client: executable_paths[client]
-        for client in selected
-        if client in executable_paths
-    } | {
-        client: Path(state["launchers"][client])
-        for client in managed
-        if isinstance(state.get("launchers"), dict) and client in state["launchers"]
-    })
+    launchers, backups, targets = _validate_state_paths(
+        home,
+        all_clients,
+        state,
+        fallback_launchers={
+            client: executable_paths[client]
+            for client in selected
+            if client in executable_paths
+        },
+    )
+    plan = setup_plan(package_root, home, all_clients, executable_paths=launchers)
     bundle = Path(plan["bundle"])
     server = Path(plan["server"])
     supervisor = bundle / "bin/session-handoff"
-    old_launchers = state.get("launchers", {})
-    old_backups = state.get("backups", {})
-    old_targets = state.get("targets", {})
-    if not all(isinstance(value, dict) for value in (old_launchers, old_backups, old_targets)):
-        raise SetupError(f"invalid session-handoff state: {state_path}")
-
-    launchers: dict[str, Path] = {}
-    backups: dict[str, Path] = {}
-    targets: dict[str, Path] = {}
 
     # Preflight all user-owned files before changing anything.
     for client in all_clients:
@@ -230,10 +331,7 @@ def install_setup(
             and not (client in managed and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")))
         ):
             raise SetupError(f"refusing to overwrite user-owned skill: {skill}")
-        launcher = Path(old_launchers[client]) if client in old_launchers else Path(executable_paths[client])
-        backup = Path(old_backups[client]) if client in old_backups else launcher.with_name(launcher.name + BACKUP_SUFFIX)
-        target = Path(old_targets[client]) if client in old_targets else backup
-        launchers[client], backups[client], targets[client] = launcher, backup, target
+        launcher, backup, target = launchers[client], backups[client], targets[client]
         executable = launcher
         if not executable.is_file() and not executable.is_symlink():
             if not (client in managed and backup.is_file()):
@@ -355,23 +453,18 @@ def restore_setup(
         return {"restored": False, "already_clean": True}
     state = _load_state(state_path)
     clients = state.get("clients", [])
-    launchers = state.get("launchers", {})
-    backups = state.get("backups", {})
-    targets = state.get("targets", {})
     skill_hashes = state.get("skill_hashes", {})
     if (
         not isinstance(clients, list)
         or any(client not in CLIENTS for client in clients)
-        or not all(isinstance(value, dict) for value in (launchers, backups, targets, skill_hashes))
-        or any(client not in launchers or client not in backups for client in clients)
+        or not isinstance(skill_hashes, dict)
     ):
         raise SetupError(f"invalid session-handoff state: {state_path}")
 
+    launchers, backups, targets = _validate_state_paths(home, clients, state)
     restore_plan: list[tuple[str, Path, Path, Path]] = []
     for client in clients:
-        launcher = Path(launchers[client])
-        backup = Path(backups[client])
-        target = Path(targets.get(client, backup))
+        launcher, backup, target = launchers[client], backups[client], targets[client]
         if not _is_wrapper(launcher, client):
             raise SetupError(f"managed launcher changed externally: {launcher}")
         if not (target.exists() or target.is_symlink() or backup.exists() or backup.is_symlink()):
@@ -394,7 +487,7 @@ def restore_setup(
         skill = _skill_path(home, client)
         if skill.is_file() and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")):
             _remove(skill)
-    bundle = Path(state.get("bundle", home / BUNDLE_PATH))
+    bundle = Path(os.path.abspath(home / BUNDLE_PATH))
     _remove(bundle)
     _remove(state_path)
     return {"restored": True, "already_clean": False, "clients": clients}

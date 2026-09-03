@@ -1,6 +1,5 @@
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 from server import setup as _setup_impl
@@ -349,6 +348,95 @@ def test_setup_reports_corrupt_state_as_a_setup_error(tmp_path):
         assert "state" in str(exc)
     else:
         raise AssertionError("corrupt state must be actionable")
+
+
+def test_setup_rejects_persisted_paths_outside_launcher_scope(tmp_path):
+    package = Path(__file__).parents[1]
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    launcher = outside / "codex"
+    backup = outside / "codex.session-handoff-original"
+    outside.mkdir()
+    launcher.write_text("outside launcher", encoding="utf-8")
+    backup.write_text("outside backup", encoding="utf-8")
+    state_path = home / ".config/session-handoff/state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "bundle": str(outside / "plugin"),
+                "clients": ["codex"],
+                "launchers": {"codex": str(launcher)},
+                "backups": {"codex": str(backup)},
+                "targets": {"codex": str(backup)},
+                "skill_hashes": {"codex": "unused"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        install_setup(
+            package,
+            home,
+            ["codex"],
+            executable_paths={"codex": home / ".local/bin/codex"},
+            runner=lambda _: None,
+        )
+    except SetupError:
+        pass
+    else:
+        raise AssertionError("setup must reject persisted paths outside its scope")
+
+    assert launcher.read_text(encoding="utf-8") == "outside launcher"
+    assert backup.read_text(encoding="utf-8") == "outside backup"
+    assert not (outside / "codex.session-handoff-active").exists()
+
+
+def test_restore_rejects_persisted_paths_outside_launcher_scope(tmp_path):
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    launcher = outside / "codex"
+    backup = outside / "codex.session-handoff-original"
+    bundle = outside / "plugin"
+    outside.mkdir()
+    launcher.write_text(
+        "#!/bin/sh\n"
+        "exec python3 /safe/session-handoff run codex --executable /safe/codex \"$@\"\n",
+        encoding="utf-8",
+    )
+    backup.write_text("outside backup", encoding="utf-8")
+    bundle.mkdir()
+    marker = bundle / "marker"
+    marker.write_text("outside bundle", encoding="utf-8")
+    state_path = home / ".config/session-handoff/state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "bundle": str(bundle),
+                "clients": ["codex"],
+                "launchers": {"codex": str(launcher)},
+                "backups": {"codex": str(backup)},
+                "targets": {"codex": str(backup)},
+                "skill_hashes": {"codex": "unused"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        restore_setup(home, runner=lambda _: None)
+    except SetupError:
+        pass
+    else:
+        raise AssertionError("restore must reject persisted paths outside its scope")
+
+    assert launcher.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    assert backup.read_text(encoding="utf-8") == "outside backup"
+    assert marker.read_text(encoding="utf-8") == "outside bundle"
 
 
 def test_setup_rewraps_a_client_symlink_replaced_by_an_update(tmp_path):

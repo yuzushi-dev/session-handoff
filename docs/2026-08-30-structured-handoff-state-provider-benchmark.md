@@ -1,6 +1,6 @@
 # Provider benchmark: structured handoff state-v1
 
-Date: 2026-08-30  
+Date: 2026-08-30
 Status: exploratory automatic evidence; not a release decision.
 
 ## Configuration

@@ -82,6 +82,19 @@ $session-handoff
 
 Use `migrate claude` or `migrate codex` when you want to preserve the native session while changing clients. A normal handoff starts a clean session and keeps the implementation state in the handoff file.
 
+Before Claude Code or Codex compacts a session, the plugin writes a small
+deterministic recovery checkpoint under
+`~/.local/state/session-handoff/checkpoints/`. After `SessionStart(source=compact)`
+it injects only a pointer to that file. The checkpoint contains redacted Git
+state and a local lifecycle event log; it is recovery evidence, not a semantic
+summary, and manual `$session-handoff` remains the semantic handoff path.
+Lifecycle events record only hook names, IDs, paths, timestamps, and byte
+counts; they never contain prompts or tool payloads.
+
+The checkpoint hook is fail-open: a write or Git-read failure does not block
+compaction. Do not treat its transcript path or Git output as secret-free
+project content; verify the live repository and transcript before acting.
+
 Check the local setup without starting a model session:
 
 ```bash

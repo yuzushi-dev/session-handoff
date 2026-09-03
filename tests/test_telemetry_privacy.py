@@ -13,10 +13,11 @@ ROOT = Path(__file__).parents[1]
 PUBLIC_NOTICE = ROOT / "docs/telemetry.md"
 
 OPERATION = {
-    "schema_version": 1,
+    "schema_version": 2,
     "event": "operation_summary",
     "day_utc": "2026-08-25",
     "plugin_version": PACKAGE_VERSION,
+    "origin": "real",
     "operation": "handoff",
     "source_client": "codex",
     "target_client": "claude",
@@ -48,7 +49,13 @@ def test_privacy_notice_covers_inventory_consent_processors_retention_and_comman
         "Collector",
         "Loki",
         "Grafana",
-        "[owner contact to be supplied by project owner]",
+        "privacy@yuzushi.party",
+        "self-hosted in Italy/UE",
+        "aggregate threshold of 5",
+        "usage/performance",
+        "not k-anonymity",
+        "no backups exist",
+        "access logs are disabled",
         "session-handoff telemetry disable",
         "session-handoff telemetry disable --purge",
         "no unique-user denominator",
@@ -57,7 +64,17 @@ def test_privacy_notice_covers_inventory_consent_processors_retention_and_comman
     assert "~/selfhosted" not in privacy
     assert "telemetry-privacy.md" not in privacy
     assert "telemetry-canary-report.md" not in privacy
-    assert "@" not in privacy
+    assert "[owner contact to be supplied by project owner]" not in privacy
+    assert "[processor contact to be supplied by project owner]" not in privacy
+    assert "[hosting details to be supplied by project owner]" not in privacy
+
+
+def test_server_threshold_is_not_distinct_user_anonymity():
+    privacy = PUBLIC_NOTICE.read_text(encoding="utf-8")
+    assert "aggregate threshold of 5" in privacy
+    assert "aggregate_count" in privacy
+    assert "no stable identifier" in privacy
+    assert "not k-anonymity" in privacy
 
 
 @pytest.mark.parametrize(
@@ -189,7 +206,9 @@ def test_tenant_and_schema_boundaries_drop_unknown_shapes():
     ):
         assert phrase in privacy
     assert "canary remains open" in privacy
-    assert "independent privacy review remains open" in privacy
+    assert "local root privacy/backend review is complete with fresh tests" in privacy
+    assert "cloudflare edge-data" in privacy.lower()
+    assert "retention is not verified" in privacy.lower()
 
     unknown = _row() | {"aggregate": "unknown", "bogus": "tenant-data"}
     mixed = _row() | {"aggregate": "context_feedback", "feedback_category": "other"}

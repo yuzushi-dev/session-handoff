@@ -1253,10 +1253,11 @@ def test_telemetry_preview_renders_otlp_without_upload(tmp_path, capsys, monkeyp
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "event": "operation_summary",
             "day_utc": "2026-08-25",
             "plugin_version": PACKAGE_VERSION,
+            "origin": "real",
             "operation": "handoff",
             "source_client": "codex",
             "target_client": "claude",
@@ -1287,10 +1288,11 @@ def test_telemetry_preview_uses_exact_upload_request_bytes_and_headers(tmp_path,
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "event": "operation_summary",
             "day_utc": "2026-08-25",
             "plugin_version": PACKAGE_VERSION,
+            "origin": "real",
             "operation": "handoff",
             "source_client": "codex",
             "target_client": "claude",
@@ -1322,10 +1324,11 @@ def test_telemetry_preview_with_disabled_config_does_not_leak_endpoint(tmp_path,
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.disabled_config())
     event = {
-        "schema_version": 1,
+        "schema_version": 2,
         "event": "operation_summary",
         "day_utc": "2026-08-25",
         "plugin_version": PACKAGE_VERSION,
+        "origin": "real",
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "claude",
@@ -1372,10 +1375,11 @@ def test_telemetry_flush_does_not_inherit_provider_environment(tmp_path, monkeyp
 
 def _recent_operation_event():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "event": "operation_summary",
         "day_utc": telemetry.datetime.now(telemetry.timezone.utc).date().isoformat(),
         "plugin_version": PACKAGE_VERSION,
+        "origin": "real",
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "codex",
@@ -1399,10 +1403,11 @@ def test_telemetry_report_records_enum_only_feedback_without_upload(tmp_path, mo
     assert cli._telemetry(["report", "--category", "constraint", "--severity", "recoverable"]) == 0
     event = json.loads(capsys.readouterr().out)
     assert event == {
-        "schema_version": 1,
+        "schema_version": 2,
         "event": "context_feedback",
         "day_utc": event["day_utc"],
         "plugin_version": PACKAGE_VERSION,
+        "origin": "real",
         "operation": "handoff",
         "source_client": "codex",
         "target_client": "codex",

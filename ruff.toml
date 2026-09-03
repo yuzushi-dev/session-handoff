@@ -1,0 +1,8 @@
+# Bug-catching rules only: pyflakes (F) plus syntax errors (E9).
+# Style rules are deliberately off — E402 would only flag the sys.path shims
+# the entrypoints structurally require before importing server.*.
+target-version = "py310"
+extend-exclude = ["benchmark/results*", "benchmark/generated*"]
+
+[lint]
+select = ["F", "E9"]

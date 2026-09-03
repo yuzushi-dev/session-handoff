@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev"
@@ -15,6 +15,7 @@
     "claude"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Session Handoff",
     "shortDescription": "Clean handoffs and native session migration.",

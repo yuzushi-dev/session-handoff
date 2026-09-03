@@ -1,0 +1,2115 @@
+{
+  "schema_version": 1,
+  "status": "model_scoring_complete_human_calibration_open",
+  "calibration_set": "context-rot-v1-root-model-all-conditions-2026-09-02",
+  "source_results": "/home/cristina/session-handoff/benchmark/results/release-luna-d5fe976",
+  "source_candidate": "release-luna-d5fe976",
+  "selection_manifest": "benchmark/calibration/2026-09-02-root-model-all-conditions.selection.json",
+  "blind_decisions": "benchmark/calibration/2026-09-02-root-model-all-conditions.blind.json",
+  "rubric": "benchmark/JUDGE.md",
+  "rubric_version": 1,
+  "judge_id": "codex-root",
+  "judge_model": "Codex GPT-5 (exact runtime model ID unavailable)",
+  "human_reviewed": false,
+  "condition_blind_during_scoring": true,
+  "decision_locked_before_unblinding": true,
+  "sample_size": 36,
+  "covered_cases": [
+    "buried-constraint",
+    "compound-rot",
+    "failed-attempt-trap",
+    "late-correction",
+    "partial-state",
+    "superseded-decision"
+  ],
+  "covered_bands": [
+    "long",
+    "short",
+    "very_long"
+  ],
+  "covered_conditions": [
+    "full",
+    "handoff",
+    "migrate",
+    "oracle"
+  ],
+  "coverage_counts": {
+    "cases": {
+      "buried-constraint": 10,
+      "compound-rot": 2,
+      "failed-attempt-trap": 7,
+      "late-correction": 3,
+      "partial-state": 12,
+      "superseded-decision": 2
+    },
+    "bands": {
+      "long": 13,
+      "short": 12,
+      "very_long": 11
+    },
+    "conditions": {
+      "full": 9,
+      "handoff": 8,
+      "migrate": 9,
+      "oracle": 10
+    }
+  },
+  "agreement": null,
+  "agreement_reason": "No independent human reference labels exist for this sample.",
+  "critical_disagreements_adjudicated": false,
+  "provenance_limitation": "The held-out bundles come from release-luna-d5fe976; this calibrates rubric application across all benchmark axes, not the efficacy of the current 0.7.1 candidate.",
+  "runs": [
+    {
+      "blind_id": "0acd0590-ee3d-48d5-83e1-a74470557d23",
+      "run_id": "failed-attempt-trap--long--handoff--codex--cdf4c52820--r02",
+      "case": "failed-attempt-trap",
+      "band": "long",
+      "condition": "handoff",
+      "replicate": 2,
+      "bundle_sha256": "6280827c0be2265d08a6b478d13b0c102850c4992715179429e05b6fcf301645",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/0acd0590-ee3d-48d5-83e1-a74470557d23/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "0aeb761a-551e-4737-a092-145c8a35d713",
+      "run_id": "buried-constraint--long--oracle--codex--cdf4c52820--r01",
+      "case": "buried-constraint",
+      "band": "long",
+      "condition": "oracle",
+      "replicate": 1,
+      "bundle_sha256": "874bbf471c9d00c090b9f5849214755e9457e1db64c8fd66822f7277689d493b",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/0aeb761a-551e-4737-a092-145c8a35d713/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "0b63d987-252b-4f89-a125-a0a234c7397e",
+      "run_id": "failed-attempt-trap--short--handoff--codex--cdf4c52820--r01",
+      "case": "failed-attempt-trap",
+      "band": "short",
+      "condition": "handoff",
+      "replicate": 1,
+      "bundle_sha256": "9757ff922eecaca2cc9cf2fe969043e65f852e3d7f9d9ecb954c5614c66083ca",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/0b63d987-252b-4f89-a125-a0a234c7397e/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "0f2d6f21-657c-43d1-a82f-e4f32378a9bf",
+      "run_id": "failed-attempt-trap--long--oracle--codex--cdf4c52820--r02",
+      "case": "failed-attempt-trap",
+      "band": "long",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "19de4bbaf264aedfb407a233afb35b36432c99e05a21639286b816835a352277",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/0f2d6f21-657c-43d1-a82f-e4f32378a9bf/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "12ba859d-b449-47bb-9f87-94807c4bf5b0",
+      "run_id": "late-correction--long--oracle--codex--cdf4c52820--r02",
+      "case": "late-correction",
+      "band": "long",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "9c1e8eb555d09da1f07509473d62b13c96286dca87432958cae367b039864251",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/supplied-context.md states the current task fact: The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/supplied-context.md states the current task fact: src/client/export.py still contains the obsolete endpoint."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/supplied-context.md states the current task fact: tests/client/test_export_endpoint.py must assert /api/v2/exports."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/workspace.diff and trace.json do not act on the rejected/superseded instruction: Continue using /api/v1/export because it appears repeatedly in older context."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Client uses /api/v2/exports."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Endpoint test passes with the v2 plural path."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/12ba859d-b449-47bb-9f87-94807c4bf5b0/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "1765f434-df7c-4a64-a259-25d4af963214",
+      "run_id": "superseded-decision--short--full--codex--cdf4c52820--r01",
+      "case": "superseded-decision",
+      "band": "short",
+      "condition": "full",
+      "replicate": 1,
+      "bundle_sha256": "6822cb9f6be6fda9114bb8da1501c6eddbe7fe99baa8263f1b84bf30d40adafe",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/supplied-context.md states the current task fact: The authoritative negative-cache TTL is 15 seconds; 60 seconds was superseded."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/supplied-context.md states the current task fact: cache/config.py already uses 15 seconds."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/supplied-context.md states the current task fact: tests/cache/test_negative_ttl.py still needs its 60-second expectation updated."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/workspace.diff and trace.json do not act on the rejected/superseded instruction: Use or restore the obsolete 60 second TTL."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Runtime config and focused test both use 15 seconds."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Focused cache test passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/1765f434-df7c-4a64-a259-25d4af963214/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "184d7597-d172-4292-83d4-ac1089b5060c",
+      "run_id": "partial-state--long--oracle--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "long",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "f7d77a5360bb5c77e85f58f07a4332e262158af3dde30683dc0a32068bcb4699",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/184d7597-d172-4292-83d4-ac1089b5060c/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "1900f88a-181e-43aa-805b-a2e2c78ea34e",
+      "run_id": "late-correction--long--full--codex--cdf4c52820--r02",
+      "case": "late-correction",
+      "band": "long",
+      "condition": "full",
+      "replicate": 2,
+      "bundle_sha256": "5fa5d0fc1d34611b898c2f6efc9fd536167ccd5a8c385204f124789fe818b7a7",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/supplied-context.md states the current task fact: The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/supplied-context.md states the current task fact: src/client/export.py still contains the obsolete endpoint."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/supplied-context.md states the current task fact: tests/client/test_export_endpoint.py must assert /api/v2/exports."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/workspace.diff and trace.json do not act on the rejected/superseded instruction: Continue using /api/v1/export because it appears repeatedly in older context."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Client uses /api/v2/exports."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Endpoint test passes with the v2 plural path."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/1900f88a-181e-43aa-805b-a2e2c78ea34e/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "1b3beec6-dd44-474b-a5b8-6ee9d2740200",
+      "run_id": "superseded-decision--long--full--codex--cdf4c52820--r02",
+      "case": "superseded-decision",
+      "band": "long",
+      "condition": "full",
+      "replicate": 2,
+      "bundle_sha256": "0e95cbb0a5339cff32c27279bae6acb97dacc06ec1d9b8a2c486c6d2db9cc558",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/supplied-context.md states the current task fact: The authoritative negative-cache TTL is 15 seconds; 60 seconds was superseded."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/supplied-context.md states the current task fact: cache/config.py already uses 15 seconds."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/supplied-context.md states the current task fact: tests/cache/test_negative_ttl.py still needs its 60-second expectation updated."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/workspace.diff and trace.json do not act on the rejected/superseded instruction: Use or restore the obsolete 60 second TTL."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Runtime config and focused test both use 15 seconds."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Focused cache test passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/1b3beec6-dd44-474b-a5b8-6ee9d2740200/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "1c619b9d-f3ec-4547-8600-7a48f0e45d13",
+      "run_id": "buried-constraint--long--oracle--codex--cdf4c52820--r02",
+      "case": "buried-constraint",
+      "band": "long",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "eb0f3e52ba9337ffe9d5e3d8ebfedad666234a6ad5228e48f1e8e33ad9b2aa07",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/1c619b9d-f3ec-4547-8600-7a48f0e45d13/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "23577a08-c858-4b7b-b59e-2644d01f8d67",
+      "run_id": "failed-attempt-trap--very_long--migrate--codex--cdf4c52820--r01",
+      "case": "failed-attempt-trap",
+      "band": "very_long",
+      "condition": "migrate",
+      "replicate": 1,
+      "bundle_sha256": "469485aacbb04659de9068079e5eea40cc65e8c079f63332cc71445bd0a72abe",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/23577a08-c858-4b7b-b59e-2644d01f8d67/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "23eb6ea9-4105-49c7-851a-e7f18c63e251",
+      "run_id": "buried-constraint--very_long--oracle--codex--cdf4c52820--r01",
+      "case": "buried-constraint",
+      "band": "very_long",
+      "condition": "oracle",
+      "replicate": 1,
+      "bundle_sha256": "10e9bc23e45ffa5a850880a2f7296ed67f3fe0199d38db61dc6cb14d172fa863",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/23eb6ea9-4105-49c7-851a-e7f18c63e251/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "24b416d7-bda5-4298-81ce-3e4b314371e7",
+      "run_id": "late-correction--very_long--migrate--codex--cdf4c52820--r01",
+      "case": "late-correction",
+      "band": "very_long",
+      "condition": "migrate",
+      "replicate": 1,
+      "bundle_sha256": "275bd541eca72601d62ae3c953e00d6d7175b66c6d194ad5add2ea033fad7ddd",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/supplied-context.md states the current task fact: The supported endpoint is /api/v2/exports; /api/v1/export is obsolete."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/supplied-context.md states the current task fact: src/client/export.py still contains the obsolete endpoint."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/supplied-context.md states the current task fact: tests/client/test_export_endpoint.py must assert /api/v2/exports."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/workspace.diff and trace.json do not act on the rejected/superseded instruction: Continue using /api/v1/export because it appears repeatedly in older context."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Client uses /api/v2/exports."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Endpoint test passes with the v2 plural path."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/24b416d7-bda5-4298-81ce-3e4b314371e7/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "24d894c4-1b22-4bd8-b026-d0f98dd8af0a",
+      "run_id": "buried-constraint--very_long--migrate--codex--cdf4c52820--r02",
+      "case": "buried-constraint",
+      "band": "very_long",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "9b42fb2240e766a3b584db4b1bf3ef7bcd244e898b016044d7d913f08be28749",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/24d894c4-1b22-4bd8-b026-d0f98dd8af0a/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d",
+      "run_id": "partial-state--very_long--full--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "very_long",
+      "condition": "full",
+      "replicate": 2,
+      "bundle_sha256": "63f16bf816dd77c1eb27fe9230efa2fd8f84d3cca701d6e8feb725a6679a53c5",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/265202e9-8b0c-45f2-bdb8-e8b0a79c5f7d/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "26bea905-cf9a-4016-991c-51104ace7bd4",
+      "run_id": "partial-state--very_long--oracle--codex--cdf4c52820--r01",
+      "case": "partial-state",
+      "band": "very_long",
+      "condition": "oracle",
+      "replicate": 1,
+      "bundle_sha256": "ee8e7a3cd0e427adb93c25374d5c5039a862c84dd80f98317a9f70a5009d8380",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/26bea905-cf9a-4016-991c-51104ace7bd4/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "26e47192-a694-43c1-807a-1bf749083bc9",
+      "run_id": "buried-constraint--long--migrate--codex--cdf4c52820--r01",
+      "case": "buried-constraint",
+      "band": "long",
+      "condition": "migrate",
+      "replicate": 1,
+      "bundle_sha256": "bcdc3616d72d89b87db38538c4af63a2f51a70e9bdda50d835359ffcff684939",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/26e47192-a694-43c1-807a-1bf749083bc9/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "28bd4dbb-aaae-42e6-8146-933308bc7965",
+      "run_id": "failed-attempt-trap--short--full--codex--cdf4c52820--r02",
+      "case": "failed-attempt-trap",
+      "band": "short",
+      "condition": "full",
+      "replicate": 2,
+      "bundle_sha256": "434d64b36562e49faf62c278d6b5ebcd7503c08433798133d528c279ac5112ee",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/28bd4dbb-aaae-42e6-8146-933308bc7965/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8",
+      "run_id": "partial-state--long--full--codex--cdf4c52820--r01",
+      "case": "partial-state",
+      "band": "long",
+      "condition": "full",
+      "replicate": 1,
+      "bundle_sha256": "978fa23d977524a041ee7c4ee13064ec850c4e877098be8cffb8d6805ded2ad3",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/2aeeccf1-fd65-40a9-bc79-91e5bc11a8f8/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "3030b3ee-b085-4685-8377-1ef4aaf1fbac",
+      "run_id": "buried-constraint--short--full--codex--cdf4c52820--r02",
+      "case": "buried-constraint",
+      "band": "short",
+      "condition": "full",
+      "replicate": 2,
+      "bundle_sha256": "a7dc08d61b994998015d0e6a45a6734f684314f43e048ee8225cec529f615f9d",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/3030b3ee-b085-4685-8377-1ef4aaf1fbac/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "33231996-452d-4916-89e8-0cc22ea01a8b",
+      "run_id": "partial-state--long--handoff--codex--cdf4c52820--r01",
+      "case": "partial-state",
+      "band": "long",
+      "condition": "handoff",
+      "replicate": 1,
+      "bundle_sha256": "3419372bd6491c362ccead546622a216bd965ce1310be41d69e49b3100930eaf",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/33231996-452d-4916-89e8-0cc22ea01a8b/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "34cd208e-2b89-4073-b275-4e48f5b0e8e6",
+      "run_id": "buried-constraint--very_long--handoff--codex--cdf4c52820--r01",
+      "case": "buried-constraint",
+      "band": "very_long",
+      "condition": "handoff",
+      "replicate": 1,
+      "bundle_sha256": "1b352c5374149e872ef597e957775c3aabe44105862e57de630bb51584535c19",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/34cd208e-2b89-4073-b275-4e48f5b0e8e6/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "372a23bb-c2a9-447d-8766-e86a193c0ec6",
+      "run_id": "partial-state--long--migrate--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "long",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "ddb05f2ea5de3726f8346a0efe793e35c9ee58c89c8422be90948b29f509235b",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/372a23bb-c2a9-447d-8766-e86a193c0ec6/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "393aaa97-2730-4871-8031-03e54a8e416e",
+      "run_id": "failed-attempt-trap--very_long--full--codex--cdf4c52820--r01",
+      "case": "failed-attempt-trap",
+      "band": "very_long",
+      "condition": "full",
+      "replicate": 1,
+      "bundle_sha256": "288109ce156259e537c4617df1db73b167f2cbcaaee1e92e35419a417f232234",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/393aaa97-2730-4871-8031-03e54a8e416e/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "430395e0-1967-407b-838e-bcfdad390d44",
+      "run_id": "compound-rot--long--full--codex--cdf4c52820--r01",
+      "case": "compound-rot",
+      "band": "long",
+      "condition": "full",
+      "replicate": 1,
+      "bundle_sha256": "0a607059e267f5b20e2ab747d8c0a17de3280720d1e396f57f4703f8500496ec",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: RetryPolicy.should_retry(error) must remain public and synchronous."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: The final retry cap is 3; the earlier cap of 5 is obsolete."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: Broad Exception handling was tried and rejected because it retries programming errors."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: src/retry/policy.py already uses cap=3."
+        },
+        {
+          "id": "F5",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: The next code change is to add TimeoutError to TRANSIENT_ERRORS."
+        },
+        {
+          "id": "F6",
+          "status": "preserved",
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/supplied-context.md states the current task fact: test_timeout_is_retried must pass while test_type_error_is_not_retried remains passing."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff and trace.json do not act on the rejected/superseded instruction: Restore or preserve retry cap 5."
+        },
+        {
+          "id": "T2",
+          "activated": false,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff and trace.json do not act on the rejected/superseded instruction: Use broad Exception handling to make TimeoutError retryable."
+        },
+        {
+          "id": "T3",
+          "activated": false,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff and trace.json do not act on the rejected/superseded instruction: Spend continuation work on the completed metrics-label investigation."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Retry cap remains 3."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff plus verify.stdout and acceptance.stdout satisfy: TimeoutError is treated as transient without broad Exception handling."
+        },
+        {
+          "id": "D3",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Both focused retry tests pass."
+        },
+        {
+          "id": "D4",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public synchronous should_retry API remains unchanged."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/430395e0-1967-407b-838e-bcfdad390d44/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4386d3cd-9eba-42b7-a78c-c95cc6baf046",
+      "run_id": "partial-state--short--handoff--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "short",
+      "condition": "handoff",
+      "replicate": 2,
+      "bundle_sha256": "14f3804e586897a185616a556d6fe8790425f18305788ca682f187ab0d8890ad",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4386d3cd-9eba-42b7-a78c-c95cc6baf046/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "49cdab09-9c8e-406d-98c0-2c57d37014d8",
+      "run_id": "failed-attempt-trap--short--migrate--codex--cdf4c52820--r02",
+      "case": "failed-attempt-trap",
+      "band": "short",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "1740345d367e1dcc487147118e7b79ffa6ff8f21dc45ccfbbb8a0afae68f1179",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/supplied-context.md states the current task fact: A regex-only sanitizer change was already tried and failed; it must not be repeated."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/supplied-context.md states the current task fact: The intended next approach is NFC normalization with unicodedata.normalize before the existing sanitizer."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/supplied-context.md states the current task fact: tests/slug/test_unicode.py::test_decomposed_accent is the focused regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/workspace.diff and trace.json do not act on the rejected/superseded instruction: Retry or expand the regex-only sanitizer as the primary fix."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/workspace.diff plus verify.stdout and acceptance.stdout satisfy: NFC normalization is applied before sanitization."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_decomposed_accent passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/49cdab09-9c8e-406d-98c0-2c57d37014d8/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4ad78969-bb8e-4901-9409-72a88606cd5d",
+      "run_id": "partial-state--very_long--oracle--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "very_long",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "28126e713c602436ac77c09810457dbbe891e9710c80401b82cdba5f7ec65aed",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4ad78969-bb8e-4901-9409-72a88606cd5d/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4bbbd068-cbca-47ab-a582-d8ffe5d94d48",
+      "run_id": "partial-state--very_long--migrate--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "very_long",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "a35f5a3f3086d1d1f19c21a1b7afab796071a1158491d1f262943414f7b4ef0b",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4bbbd068-cbca-47ab-a582-d8ffe5d94d48/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4cf8f778-f82e-447b-b543-4f7bc3404536",
+      "run_id": "partial-state--short--oracle--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "short",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "3d73d820b0958c92adc376441401c283ef871c306f6aa28890c8d0366d71fffe",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4cf8f778-f82e-447b-b543-4f7bc3404536/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4d8b7870-7d81-47d0-bf7a-887238cea0f1",
+      "run_id": "partial-state--short--migrate--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "short",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "504052c1232d843da2af6eb09dcc89da868cf39446b3f4609d27cb688fc9fcd7",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4d8b7870-7d81-47d0-bf7a-887238cea0f1/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "4f9be4b6-12cd-426e-8391-87ec92a09f8b",
+      "run_id": "partial-state--very_long--handoff--codex--cdf4c52820--r02",
+      "case": "partial-state",
+      "band": "very_long",
+      "condition": "handoff",
+      "replicate": 2,
+      "bundle_sha256": "dc4859daf17abf77d927a65212733cf541b13bb91e87c4b502b9364d45563dff",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/supplied-context.md states the current task fact: src/codec/writer.py is already complete and its v3 writer test passes."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/supplied-context.md states the current task fact: fixtures/v3/basic.json is already regenerated and validated."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/supplied-context.md states the current task fact: src/codec/reader.py still needs dual v2/v3 compatibility."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/supplied-context.md states the current task fact: tests/codec/test_reader_compat.py fails on v2 payloads."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/workspace.diff and trace.json do not act on the rejected/superseded instruction: Redo writer.py or regenerate the v3 fixture without evidence that they are wrong."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Reader accepts both v2 and v3 payloads."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_reader_compat passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/4f9be4b6-12cd-426e-8391-87ec92a09f8b/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "5037c44e-b4b6-4ce2-a0e4-4f20425b1441",
+      "run_id": "buried-constraint--short--handoff--codex--cdf4c52820--r01",
+      "case": "buried-constraint",
+      "band": "short",
+      "condition": "handoff",
+      "replicate": 1,
+      "bundle_sha256": "3ec6124407e853d73fac77a966e9cf95758d6378e7efc987c5ffef2cce317813",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/5037c44e-b4b6-4ce2-a0e4-4f20425b1441/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "517117b1-dd7e-41bb-a46c-b32c04d56159",
+      "run_id": "buried-constraint--short--migrate--codex--cdf4c52820--r02",
+      "case": "buried-constraint",
+      "band": "short",
+      "condition": "migrate",
+      "replicate": 2,
+      "bundle_sha256": "46babbedf3036336d9cedf33667263e2da93e966540e4ccad7aa2b9bfd25da99",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/517117b1-dd7e-41bb-a46c-b32c04d56159/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "51b8ef99-cc16-4d0f-b384-f7224b2e6e90",
+      "run_id": "compound-rot--short--handoff--codex--cdf4c52820--r02",
+      "case": "compound-rot",
+      "band": "short",
+      "condition": "handoff",
+      "replicate": 2,
+      "bundle_sha256": "4e4a9df05021b2391e3e62e93795abb2ca60a195989950621ea6da2586d34135",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: RetryPolicy.should_retry(error) must remain public and synchronous."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: The final retry cap is 3; the earlier cap of 5 is obsolete."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: Broad Exception handling was tried and rejected because it retries programming errors."
+        },
+        {
+          "id": "F4",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: src/retry/policy.py already uses cap=3."
+        },
+        {
+          "id": "F5",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: The next code change is to add TimeoutError to TRANSIENT_ERRORS."
+        },
+        {
+          "id": "F6",
+          "status": "preserved",
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/supplied-context.md states the current task fact: test_timeout_is_retried must pass while test_type_error_is_not_retried remains passing."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff and trace.json do not act on the rejected/superseded instruction: Restore or preserve retry cap 5."
+        },
+        {
+          "id": "T2",
+          "activated": false,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff and trace.json do not act on the rejected/superseded instruction: Use broad Exception handling to make TimeoutError retryable."
+        },
+        {
+          "id": "T3",
+          "activated": false,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff and trace.json do not act on the rejected/superseded instruction: Spend continuation work on the completed metrics-label investigation."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Retry cap remains 3."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff plus verify.stdout and acceptance.stdout satisfy: TimeoutError is treated as transient without broad Exception handling."
+        },
+        {
+          "id": "D3",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Both focused retry tests pass."
+        },
+        {
+          "id": "D4",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public synchronous should_retry API remains unchanged."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/51b8ef99-cc16-4d0f-b384-f7224b2e6e90/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    },
+    {
+      "blind_id": "56f403ca-4486-4cb9-9451-c4690d2f1746",
+      "run_id": "buried-constraint--short--oracle--codex--cdf4c52820--r02",
+      "case": "buried-constraint",
+      "band": "short",
+      "condition": "oracle",
+      "replicate": 2,
+      "bundle_sha256": "eccbaca82398b9e5f50f1c1ed9a763af26d72eef862f97cdea4098ce5385729f",
+      "facts": [
+        {
+          "id": "F1",
+          "status": "preserved",
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/supplied-context.md states the current task fact: refresh_session(user_id, token) must remain synchronous and keep the same public signature."
+        },
+        {
+          "id": "F2",
+          "status": "preserved",
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/supplied-context.md states the current task fact: The implementation target is src/auth/session.py, specifically validate_refresh()."
+        },
+        {
+          "id": "F3",
+          "status": "preserved",
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/supplied-context.md states the current task fact: tests/auth/test_refresh.py::test_expired_refresh_token is the focused failing regression test."
+        }
+      ],
+      "stale_traps": [
+        {
+          "id": "T1",
+          "activated": false,
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/workspace.diff and trace.json do not act on the rejected/superseded instruction: Convert refresh_session to async or change its signature."
+        }
+      ],
+      "dod": [
+        {
+          "id": "D1",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/workspace.diff plus verify.stdout and acceptance.stdout satisfy: Public refresh_session signature and sync behavior remain unchanged."
+        },
+        {
+          "id": "D2",
+          "passed": true,
+          "automated_pass": true,
+          "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/workspace.diff plus verify.stdout and acceptance.stdout satisfy: test_expired_refresh_token passes."
+        }
+      ],
+      "counters": {
+        "recovery_reads": 0,
+        "repeated_failed_attempts": 0,
+        "stale_decisions_acted_on": 0,
+        "evidence": "blinded/56f403ca-4486-4cb9-9451-c4690d2f1746/trace.json shows targeted inspection/verification and no stale implementation action."
+      }
+    }
+  ],
+  "result": {
+    "all_facts_preserved": true,
+    "any_stale_trap_activated": false,
+    "all_dod_passed": true,
+    "all_counters_zero": true,
+    "release_calibration_gate": "open",
+    "open_reasons": [
+      "No independent human labels exist, so agreement >= 0.8 is not measurable and critical disagreements cannot be adjudicated."
+    ]
+  }
+}

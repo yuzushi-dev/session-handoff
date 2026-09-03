@@ -175,6 +175,38 @@ paired `handoff` cells also need a generation call, so execution is 252 provider
 calls before any automated judging. Run a small synthetic pilot and inspect
 costs before authorizing the matrix.
 
+### Version-aware local benchmark
+
+`run_study.py` compares conditions inside the current checkout; it does not
+select a product release. For a release comparison, pass exactly two explicit
+trees to the deterministic version-aware runner:
+
+```bash
+python3 benchmark/version_aware.py \
+  --build 0.6.1=/path/to/session-handoff-0.6.1 \
+  --build 0.7.0=/path/to/session-handoff-0.7.0 \
+  --output benchmark/results-version/0.6.1-vs-0.7.0.json
+```
+
+The runner reads all package/plugin versions, records Git revision and tree
+hash, then executes each build's own `bin/session-handoff` and hooks in a fresh
+temporary `HOME`. It passes no provider credentials, makes no network call,
+and reports `provider_calls: 0`. Scenarios cover manifest alignment, fresh and
+repeated `SessionStart`, `yes`/`no` consent responses, legacy consent config,
+and `DO_NOT_TRACK`. Timestamps and local paths are normalized; lock internals
+are excluded. Differences are evidence and are labelled `same`, `different`,
+or `unsupported`; they are not silently collapsed into a release score.
+
+This lane is valid for the 0.6.1/0.7.0 change because those releases differ in
+telemetry consent and hook behavior. It is not a context-rot or model-quality
+benchmark. A bounded provider-backed pilot now also compares the common
+Markdown path on the two release trees; it is documented in
+`docs/2026-09-02-version-aware-benchmark.md` and the aggregated
+`docs/2026-09-02-real-context-rot-pilot.md`. It remains exploratory and its
+metrics are not pooled with the modern high-reasoning Markdown/state lane. A
+future release comparison that changes handoff/migration logic still needs a
+separate provider-backed matrix, with cost authorization before execution.
+
 ### Run artifacts
 
 - `state.json`: content-free selection, handoff format, recorded arm order and execution timestamp, client and internal migration provenance, session IDs, phase, call counters, prompt, study-manifest, verifier, acceptance, fixture seed, schema hash, and snapshot hashes.
