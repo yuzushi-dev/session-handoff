@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.2 — unreleased candidate
+## 0.7.2 — 2026-09-03
 
 - Add fail-open automatic compaction checkpoints with redacted local Git state,
   lifecycle evidence, and pointer-only `SessionStart` reinjection.
@@ -18,10 +18,8 @@
   2026-09-02 pilot reports.
 - Keep the Markdown handoff as the default; structured state remains opt-in.
 
-Release gates still open: independent privacy/security review and backend
-retention, purge, backup, hosting, contact, and abuse-control verification.
-No npm publish, GitHub release, tag mutation, or deploy is performed by this
-candidate preparation.
+Operational follow-ups: the post-push CI run and the seven-day telemetry
+canary still need to complete. npm publishing remains owner-controlled.
 
 ## 0.7.0
 
