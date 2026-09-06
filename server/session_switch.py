@@ -36,6 +36,8 @@ except ImportError:
 
 CONTROL_PATH_ENV = "SESSION_HANDOFF_CONTROL"
 CONTROL_TOKEN_ENV = "SESSION_HANDOFF_CONTROL_TOKEN"
+CONTROL_PROTOCOL_ENV = "SESSION_HANDOFF_CONTROL_PROTOCOL"
+CONTROL_PROTOCOL_VERSION = "2"
 REQUEST_LIMIT = 64 * 1024
 SUPPORTED_CLIENTS = {"codex", "claude"}
 TELEMETRY_PLUGIN_VERSION = PACKAGE_VERSION
@@ -192,6 +194,8 @@ def write_switch_request(
 
     control, token = _control_credentials(control_path, token)
     if (handoff_path is None) == (handoff_ref is None): raise ValueError("exactly one of handoff_path or handoff_ref is required")
+    if handoff_ref is not None and os.environ.get(CONTROL_PROTOCOL_ENV) != CONTROL_PROTOCOL_VERSION:
+        raise ValueError("central handoff switching requires restart of the session-handoff launcher")
     payload = {"token": token, "workspace": str(Path(workspace).expanduser().resolve())}
     if handoff_ref is not None:
         try:
@@ -469,10 +473,12 @@ def _resume_args(client: str, session_id: str) -> list[str]:
 def _with_control_path(client: str, args: list[str], control: Path) -> list[str]:
     if client != "codex":
         return list(args)
-    setting = f"mcp_servers.session-handoff.env.{CONTROL_PATH_ENV}={json.dumps(str(control))}"
-    if setting in args:
-        return list(args)
-    return ["-c", setting, *args]
+    settings = [
+        f"mcp_servers.session-handoff.env.{CONTROL_PATH_ENV}={json.dumps(str(control))}",
+        f"mcp_servers.session-handoff.env.{CONTROL_PROTOCOL_ENV}={json.dumps(CONTROL_PROTOCOL_VERSION)}",
+    ]
+    prefix = [item for setting in settings if setting not in args for item in ("-c", setting)]
+    return [*prefix, *args]
 
 
 def _managed_launcher(executable: str, client: str) -> Path | None:
@@ -803,6 +809,7 @@ class SessionSupervisor:
         os.chmod(token_file, 0o600)
         env = os.environ.copy()
         env[CONTROL_PATH_ENV] = str(control)
+        env[CONTROL_PROTOCOL_ENV] = CONTROL_PROTOCOL_VERSION
         env.pop(CONTROL_TOKEN_ENV, None)
 
         current_client = self.client

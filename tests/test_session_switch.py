@@ -743,7 +743,7 @@ if not marker.exists():
     fake_codex = tmp_path / "codex"
     fake_codex.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = \"-c\" ]; then shift 2; fi\n"
+        "while [ \"$1\" = \"-c\" ]; do shift 2; done\n"
         f"exec {shlex.quote(sys.executable)} \"$@\"\n",
         encoding="utf-8",
     )
@@ -814,7 +814,31 @@ def test_codex_receives_control_path_as_mcp_config_override(tmp_path):
     assert seen[0][:2] == ["codex", "-c"]
     assert seen[0][2].startswith("mcp_servers.session-handoff.env.SESSION_HANDOFF_CONTROL=")
     assert str(tmp_path / "control" / "switch.json") in seen[0][2]
+    assert "mcp_servers.session-handoff.env.SESSION_HANDOFF_CONTROL_PROTOCOL=\"2\"" in seen[0]
     assert seen[0][-2:] == ["exec", "--ephemeral"]
+
+
+def test_supervisor_advertises_central_ref_protocol(tmp_path):
+    seen = []
+
+    class Process:
+        def poll(self):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        seen.append(kwargs["env"])
+        return Process()
+
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=fake_popen,
+        temp_dir=tmp_path / "control",
+        executable="codex",
+    )
+
+    assert supervisor.run() == 0
+    assert seen[0]["SESSION_HANDOFF_CONTROL_PROTOCOL"] == "2"
 
 
 def test_supervisor_strips_resume_selectors_for_the_fresh_session(tmp_path):
@@ -1075,9 +1099,24 @@ def test_suite_run_with_isolated_home_still_queues_events(tmp_path, monkeypatch)
     counters = telemetry._load_counters(tmp_path)
     recorded = [entry["event"] for day in counters["days"].values() for entry in day]
     assert any(event.get("operation") == "handoff" for event in recorded)
+def test_central_switch_requires_ref_capable_supervisor(tmp_path, monkeypatch):
+    control = tmp_path / "control.json"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL_PROTOCOL", raising=False)
+    ref = handoff_store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")["ref"]
+
+    with pytest.raises(ValueError, match="restart.*launcher"):
+        write_switch_request(str(control), "secret-token", str(workspace), handoff_ref=ref)
+
+    assert not control.exists()
+
+
 def test_write_switch_request_carries_central_ref(tmp_path, monkeypatch):
     control = tmp_path / "control.json"; token = "secret-token"; workspace = tmp_path / "workspace"; workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL_PROTOCOL", "2")
     ref = handoff_store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")["ref"]
     write_switch_request(str(control), token, str(workspace), handoff_ref=ref)
     payload = json.loads(control.read_text())
@@ -1088,6 +1127,7 @@ def test_write_switch_request_carries_central_ref(tmp_path, monkeypatch):
 def test_write_switch_request_rejects_other_project_ref(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL_PROTOCOL", "2")
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
