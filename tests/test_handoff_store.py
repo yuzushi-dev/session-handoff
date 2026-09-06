@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import os
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -88,10 +89,76 @@ def test_concurrent_registration_and_names_share_project(tmp_path, monkeypatch):
 def test_publication_failure_does_not_expose_partial_record(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"; workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    project = store.register_project(str(workspace)); real_replace = store.os.replace
-    def fail_replace(src, dst):
+    project = store.register_project(str(workspace)); real_rename = store.os.rename
+    def fail_rename(src, dst, **kwargs):
         if ".staging" in str(src): raise OSError("injected publication failure")
-        return real_replace(src, dst)
-    monkeypatch.setattr(store.os, "replace", fail_replace)
+        return real_rename(src, dst, **kwargs)
+    monkeypatch.setattr(store.os, "rename", fail_rename)
     with pytest.raises(OSError): store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")
     assert not list((tmp_path / "data" / "session-handoff" / "projects" / project / "handoffs").iterdir())
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"extra": True},
+        {"created_at": "not-a-timestamp"},
+        {"origin": "not-an-object"},
+    ],
+)
+def test_bundle_manifest_is_strictly_validated_before_registration(
+    tmp_path, monkeypatch, change
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = workspace / "bundle"
+    bundle.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    document = "## Goal\ncentral\n"
+    handoff_id = str(uuid.uuid4())
+    manifest = {
+        "schema_version": 1,
+        "handoff_id": handoff_id,
+        "name": "next.md",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "sha256": __import__("hashlib").sha256(document.encode()).hexdigest(),
+        "origin": {
+            "project_id": str(uuid.uuid4()),
+            "handoff_id": handoff_id,
+            "kind": "create",
+        },
+    }
+    manifest.update(change)
+    (bundle / "document.md").write_text(document, encoding="utf-8")
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(store.HandoffStoreError, match="manifest"):
+        store.import_bundle(str(workspace), str(bundle))
+
+    assert not (tmp_path / "state").exists()
+
+
+def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    missing = tmp_path / "data/session-handoff/missing.json"
+
+    with pytest.raises(FileNotFoundError):
+        store._read(missing, 10)
+
+
+def test_global_list_reports_truncated_totals(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(store, "MAX_PROJECTS", 1, raising=False)
+    projects = tmp_path / "data/session-handoff/projects"
+    for _ in range(2):
+        project = projects / str(uuid.uuid4())
+        (project / "handoffs").mkdir(parents=True)
+
+    result = store.list_records(str(workspace), scope="all")
+
+    assert result["scan_truncated"] is True
+    assert result["total_count"] is None

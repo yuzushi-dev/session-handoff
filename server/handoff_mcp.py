@@ -969,7 +969,7 @@ TOOLS = [
     {
         "name": "handoff_export", "description": "Export a central handoff as a portable bundle.",
         "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace","ref","directory"], "properties":{"workspace":{"type":"string"},"ref":{"type":"string"},"directory":{"type":"string"}}},
-        "annotations": {"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
+        "annotations": {"readOnlyHint":False,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
     },
 ]
 

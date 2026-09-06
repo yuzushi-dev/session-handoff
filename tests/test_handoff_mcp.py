@@ -104,6 +104,12 @@ def test_server_initializes_and_lists_handoff_tools():
         "handoff_export",
     }
 
+    export = next(
+        tool for tool in tool_result(responses[1])["tools"]
+        if tool["name"] == "handoff_export"
+    )
+    assert export["annotations"]["readOnlyHint"] is False
+
 
 def test_stdio_central_create_read_list_search_roundtrip(tmp_path):
     workspace = tmp_path / "work"; workspace.mkdir()

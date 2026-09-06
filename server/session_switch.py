@@ -194,6 +194,12 @@ def write_switch_request(
     if (handoff_path is None) == (handoff_ref is None): raise ValueError("exactly one of handoff_path or handoff_ref is required")
     payload = {"token": token, "workspace": str(Path(workspace).expanduser().resolve())}
     if handoff_ref is not None:
+        try:
+            from . import handoff_store
+        except ImportError:
+            import handoff_store  # type: ignore[no-redef]
+        try: handoff_store.read_record(handoff_ref, workspace)
+        except handoff_store.HandoffStoreError as exc: raise ValueError(str(exc)) from exc
         payload["ref"] = handoff_ref
     else:
         root, path = _safe_path(workspace, handoff_path or "", must_exist=True)

@@ -1083,3 +1083,21 @@ def test_write_switch_request_carries_central_ref(tmp_path, monkeypatch):
     payload = json.loads(control.read_text())
     assert payload["ref"].startswith("handoff://") and "path" not in payload and payload["token"] == token
     assert _read_switch_request(control, token)["ref"] == payload["ref"]
+
+
+def test_write_switch_request_rejects_other_project_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    ref = handoff_store.create_record(str(first), "next.md", "## Goal\ncentral\n")["ref"]
+
+    with pytest.raises(ValueError, match="outside workspace project"):
+        write_switch_request(
+            str(tmp_path / "control.json"),
+            "secret-token",
+            str(second),
+            handoff_ref=ref,
+        )

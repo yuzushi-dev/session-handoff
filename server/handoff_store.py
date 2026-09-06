@@ -17,6 +17,7 @@ from typing import Any, Iterator
 
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
+MAX_PROJECTS = 256
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -73,6 +74,16 @@ def validate_name(name: str) -> str:
     if not isinstance(name, str) or not _NAME.fullmatch(name) or name.startswith("."):
         raise HandoffStoreError("name must contain only ASCII letters, digits, _, -, . and be at most 128 bytes")
     return name
+
+
+def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
+    if set(manifest) != {"schema_version", "handoff_id", "name", "created_at", "sha256", "origin"} or manifest.get("schema_version") != 1: raise HandoffStoreError("invalid manifest schema")
+    if not isinstance(manifest.get("handoff_id"), str) or not _UUID.fullmatch(manifest["handoff_id"]): raise HandoffStoreError("invalid manifest handoff_id")
+    validate_name(manifest.get("name"))
+    if not isinstance(manifest.get("created_at"), str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", manifest["created_at"]): raise HandoffStoreError("invalid manifest created_at")
+    if not isinstance(manifest.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["sha256"]) or manifest["sha256"] != hashlib.sha256(document.encode()).hexdigest(): raise HandoffStoreError("invalid manifest sha256")
+    origin = manifest.get("origin")
+    if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
 
 
 def _mkdir(path: Path) -> None:
@@ -222,7 +233,7 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
     if len(raw) > MAX_DOCUMENT_BYTES: raise HandoffStoreError("central document exceeds size limit")
     created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest = preserved_manifest if preserved_manifest is not None else {"schema_version":1,"handoff_id":handoff_id,"name":name,"created_at":created,"sha256":hashlib.sha256(raw).hexdigest(),"origin":origin}
-    if manifest.get("handoff_id") != handoff_id or manifest.get("sha256") != hashlib.sha256(raw).hexdigest(): raise HandoffStoreError("invalid preserved manifest")
+    if preserved_manifest is not None: _validate_manifest(manifest, document)
     project = data_root() / "projects" / project_id; _metadata(project_id); target = project / "handoffs" / handoff_id
     with _lock():
         if target.exists(): raise HandoffStoreError("central handoff already exists")
@@ -257,7 +268,7 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     if not projects and scope == "all" and (data_root() / "projects").is_dir():
         projects = []
         for entry in sorted((data_root() / "projects").iterdir(), key=lambda p: p.name):
-            if len(projects) >= 256: break
+            if len(projects) >= MAX_PROJECTS: break
             if entry.is_dir() and _UUID.fullmatch(entry.name): projects.append(entry.name)
     items: list[dict[str, Any]] = []
     for project in sorted(projects):
@@ -272,7 +283,8 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
             except HandoffStoreError: continue
     page = items[offset:offset + limit]
     more = offset + len(page) < len(items)
-    return {"items": page, "count": len(page), "total_count": len(items), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None}
+    truncated = len(projects) >= MAX_PROJECTS
+    return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more or truncated, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated}
 
 
 def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
@@ -307,10 +319,10 @@ def import_bundle(workspace: str, source: str, document: str | None = None, mani
         document = _read(Path(source) / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
     if not isinstance(document, str) or not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise HandoffStoreError("invalid handoff bundle")
-    handoff_id = manifest.get("handoff_id"); name = manifest.get("name"); project_id = register_project(workspace)
+    handoff_id = manifest.get("handoff_id"); name = manifest.get("name")
     if not isinstance(handoff_id, str) or not _UUID.fullmatch(handoff_id): raise HandoffStoreError("invalid handoff bundle identity")
-    validate_name(name)
-    if manifest.get("sha256") != hashlib.sha256(document.encode()).hexdigest(): raise HandoffStoreError("handoff document hash mismatch")
+    _validate_manifest(manifest, document)
+    project_id = register_project(workspace)
     target = data_root() / "projects" / project_id / "handoffs" / handoff_id
     if target.exists():
         existing = read_record(make_ref(project_id, handoff_id), workspace)
