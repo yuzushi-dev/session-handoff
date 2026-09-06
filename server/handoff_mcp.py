@@ -30,6 +30,7 @@ try:
         write_switch_request,
     )
     from .version import PACKAGE_VERSION
+    from . import handoff_store
 except ImportError:  # direct `python server/handoff_mcp.py` execution
     from handoff_state import (  # type: ignore[no-redef]
         HandoffStateError,
@@ -45,6 +46,7 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
         write_switch_request,
     )
     from version import PACKAGE_VERSION
+    import handoff_store  # type: ignore[no-redef]
 
 SERVER_NAME = "session-handoff"
 SERVER_VERSION = PACKAGE_VERSION
@@ -390,8 +392,17 @@ def _state_schema() -> dict[str, Any]:
 def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     try:
         workspace = _require_string(arguments, "workspace")
-        requested_path = _require_string(arguments, "path")
-        root, path = _safe_path(workspace, requested_path)
+        has_path = "path" in arguments
+        has_name = "name" in arguments
+        if has_path == has_name:
+            raise HandoffError("exactly one of path or name must be provided")
+        if has_name:
+            handoff_store.validate_name(arguments["name"])
+            root = _workspace_root(workspace)
+            path = None
+        else:
+            requested_path = _require_string(arguments, "path")
+            root, path = _safe_path(workspace, requested_path)
     except HandoffError:
         raise
     has_content = "content" in arguments
@@ -445,6 +456,20 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
         })
         raise HandoffError("missing canonical sections: " + ", ".join(missing_sections))
+    if path is None:
+        if overwrite:
+            raise HandoffError("overwrite is not supported for central handoffs")
+        try:
+            central = handoff_store.create_record(workspace, arguments["name"], redacted)
+        except handoff_store.HandoffStoreError as exc:
+            raise HandoffError(str(exc)) from exc
+        result = {"ref": central["ref"], "project_id": central["project_id"], "handoff_id": central["handoff_id"], "name": central["name"], "storage": "central", "valid": True, "redacted_count": redacted_count, "bytes": len(redacted.encode("utf-8"))}
+        if auto_switch:
+            result["auto_switch_requested"] = False
+            result["auto_switch_error"] = "central reference switching is unavailable"
+        else:
+            _record_outcome({"operation":"handoff","source_client":"codex","target_client":"codex","result":"success","failure_stage":"none","handoff_bytes":result["bytes"],"redacted_count":redacted_count,"dropped_events":0,"normalized_fields":0})
+        return result
     if path.exists() and not overwrite:
         _record_outcome({
             "operation": "handoff", "source_client": "codex", "target_client": "codex",
@@ -541,6 +566,13 @@ def _migrate(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read(arguments: dict[str, Any]) -> dict[str, Any]:
+    if "ref" in arguments:
+        if "path" in arguments: raise HandoffError("exactly one of path or ref must be provided")
+        try: record = handoff_store.read_record(_require_string(arguments, "ref"), _require_string(arguments, "workspace"), arguments.get("scope", "project"))
+        except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+        missing_sections = validate_handoff(record["content"])
+        return {"ref": record["ref"], "project_id": record["project_id"], "handoff_id": record["handoff_id"], "name": record["name"], "content": record["content"], "valid": not missing_sections, "missing_sections": missing_sections, "redacted_count": 0, "storage": "central"}
+    if "path" not in arguments: raise HandoffError("exactly one of path or ref must be provided")
     root, path = _safe_path(
         _require_string(arguments, "workspace"),
         _require_string(arguments, "path"),
@@ -558,6 +590,13 @@ def _read(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate(arguments: dict[str, Any]) -> dict[str, Any]:
+    if "ref" in arguments:
+        if "path" in arguments: raise HandoffError("exactly one of path or ref must be provided")
+        try: record = handoff_store.read_record(_require_string(arguments, "ref"), _require_string(arguments, "workspace"), arguments.get("scope", "project"))
+        except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+        missing_sections = validate_handoff(record["content"])
+        return {"ref": record["ref"], "project_id": record["project_id"], "handoff_id": record["handoff_id"], "valid": not missing_sections, "missing_sections": missing_sections, "redacted_count": 0, "storage": "central"}
+    if "path" not in arguments: raise HandoffError("exactly one of path or ref must be provided")
     root, path = _safe_path(
         _require_string(arguments, "workspace"),
         _require_string(arguments, "path"),
@@ -575,6 +614,16 @@ def _validate(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _list(arguments: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(_require_string(arguments, "workspace"))
+    storage = arguments.get("storage", "workspace")
+    if storage == "central":
+        if "directory" in arguments: raise HandoffError("directory is not supported for central storage")
+        scope = arguments.get("scope", "project")
+        if scope not in {"project", "all"}: raise HandoffError("scope must be project or all")
+        limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT: raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0: raise HandoffError("offset must be a non-negative integer")
+        try: return handoff_store.list_records(str(root), scope, limit, offset)
+        except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
     directory = arguments.get("directory", "handoffs")
     if not isinstance(directory, str) or not directory.strip():
         raise HandoffError("directory must be a non-empty workspace-relative path")
@@ -740,6 +789,7 @@ TOOLS = [
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace, for example handoffs/2026-08-12-feature.md."},
+                "name": {"type": "string", "description": "Display name for an immutable central handoff."},
                 "content": {"type": "string", "description": "Complete handoff with all canonical sections."},
                 "state": _state_schema(),
                 "overwrite": {"type": "boolean", "default": False, "description": "Explicitly allow replacing an existing handoff."},
@@ -778,6 +828,8 @@ TOOLS = [
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace."},
+                "ref": {"type": "string", "description": "Canonical central handoff reference."},
+                "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
@@ -788,10 +840,12 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["workspace", "path"],
+            "required": ["workspace"],
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace."},
+                "ref": {"type": "string", "description": "Canonical central handoff reference."},
+                "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
@@ -806,6 +860,8 @@ TOOLS = [
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "directory": {"type": "string", "default": "handoffs", "description": "Directory relative to workspace."},
+                "storage": {"type": "string", "enum": ["workspace", "central"], "default": "workspace"},
+                "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": 20},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
