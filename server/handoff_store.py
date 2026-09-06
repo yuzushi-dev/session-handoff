@@ -1,19 +1,21 @@
 """Private, immutable central storage for semantic handoffs."""
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
 import os
-import stat
 import re
 import secrets
+import sqlite3
+import stat
 import subprocess
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 try:
     from .redaction import redact_secrets
@@ -22,15 +24,24 @@ except ImportError:
 
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
-MAX_PROJECTS = 256
-MAX_PROJECT_ENTRIES = 256
 MAX_RECORDS_SCAN = 256
+CATALOG_SCHEMA_VERSION = 1
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
 class HandoffStoreError(ValueError):
     pass
+
+
+class HandoffBudgetExceeded(HandoffStoreError):
+    pass
+
+
+class HandoffRecordError(HandoffStoreError):
+    def __init__(self, message: str, scanned_bytes: int):
+        super().__init__(message)
+        self.scanned_bytes = scanned_bytes
 
 
 def _parent_fd(path: Path, create: bool = False) -> tuple[int, str]:
@@ -62,6 +73,14 @@ def data_root() -> Path:
 
 def state_root() -> Path:
     return _base("XDG_STATE_HOME", Path.home() / ".local" / "state")
+
+
+def catalog_path() -> Path:
+    return state_root() / "catalog.sqlite3"
+
+
+def _catalog_dirty_path() -> Path:
+    return state_root() / "catalog.dirty"
 
 
 def parse_ref(value: str) -> tuple[str, str]:
@@ -132,6 +151,18 @@ def _check_private_file(path: Path) -> None:
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent); st = os.fstat(fd); os.close(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central file permissions")
+    finally: os.close(parent)
+
+
+def _private_file_size(path: Path) -> int:
+    parent, name = _parent_fd(path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            value = os.fstat(fd)
+            if not stat.S_ISREG(value.st_mode) or value.st_uid != os.geteuid() or value.st_mode & 0o077: raise HandoffStoreError("unsafe central file permissions")
+            return value.st_size
+        finally: os.close(fd)
     finally: os.close(parent)
 
 
@@ -211,6 +242,90 @@ def _lock() -> Iterator[None]:
         os.close(fd); raise HandoffStoreError("unsafe bindings lock")
     try: fcntl.flock(fd, fcntl.LOCK_EX); yield
     finally: fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
+
+
+def _create_catalog(path: Path) -> sqlite3.Connection:
+    parent, name = _parent_fd(path, create=True)
+    try:
+        fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent)
+        os.close(fd)
+    finally:
+        os.close(parent)
+    connection = sqlite3.connect(path)
+    connection.execute(f"PRAGMA user_version = {CATALOG_SCHEMA_VERSION}")
+    connection.execute("CREATE TABLE metadata (generation TEXT NOT NULL)")
+    connection.execute("INSERT INTO metadata VALUES (?)", (secrets.token_hex(16),))
+    connection.execute("CREATE TABLE records (sequence INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, handoff_id TEXT NOT NULL, UNIQUE(project_id, handoff_id))")
+    connection.execute("CREATE INDEX records_project_sequence ON records(project_id, sequence)")
+    connection.commit()
+    return connection
+
+
+def _open_catalog() -> sqlite3.Connection:
+    root = state_root(); _mkdir(root); path = catalog_path()
+    if not path.exists() and not path.is_symlink(): return _rebuild_catalog()
+    try: _check_private_dir(root); _check_private_file(path)
+    except OSError as exc: raise HandoffStoreError("unsafe catalog file") from exc
+    connection = sqlite3.connect(path)
+    try:
+        version = connection.execute("PRAGMA user_version").fetchone()
+        generation = connection.execute("SELECT generation FROM metadata").fetchone()
+        connection.execute("SELECT sequence, project_id, handoff_id FROM records LIMIT 1").fetchone()
+        if version != (CATALOG_SCHEMA_VERSION,) or not generation or not isinstance(generation[0], str) or not re.fullmatch(r"[0-9a-f]{32}", generation[0]):
+            raise sqlite3.DatabaseError("unsupported catalog schema")
+        connection.execute("CREATE INDEX IF NOT EXISTS records_project_sequence ON records(project_id, sequence)")
+        connection.commit()
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
+def _catalog_generation(connection: sqlite3.Connection) -> str:
+    return str(connection.execute("SELECT generation FROM metadata").fetchone()[0])
+
+
+def _mark_catalog_dirty(project_id: str) -> None:
+    _write(_catalog_dirty_path(), project_id.encode("ascii"))
+
+
+def _dirty_catalog_project() -> str | None:
+    path = _catalog_dirty_path()
+    if not path.exists() and not path.is_symlink(): return None
+    try: _check_private_file(path); project_id = _read(path, 36).decode("ascii")
+    except (OSError, UnicodeDecodeError) as exc: raise HandoffStoreError("unsafe catalog recovery marker") from exc
+    if not _UUID.fullmatch(project_id): raise HandoffStoreError("invalid catalog recovery marker")
+    return project_id
+
+
+def _clear_catalog_dirty() -> None:
+    path = _catalog_dirty_path(); parent, name = _parent_fd(path)
+    try:
+        try: os.unlink(name, dir_fd=parent)
+        except FileNotFoundError: return
+        os.fsync(parent)
+    finally: os.close(parent)
+
+
+def _encode_cursor(operation: str, scope: str, project_id: str | None, generation: str, sequence: int, query_digest: str | None = None) -> str:
+    value: dict[str, Any] = {"v": 1, "op": operation, "scope": scope, "project": project_id, "generation": generation, "sequence": sequence}
+    if query_digest is not None: value["query"] = query_digest
+    raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(cursor: str, operation: str, scope: str, project_id: str | None, generation: str, query_digest: str | None = None) -> int:
+    try:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 2048 or not re.fullmatch(r"[A-Za-z0-9_-]+", cursor): raise ValueError
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HandoffStoreError("invalid cursor") from exc
+    expected = {"v", "op", "scope", "project", "generation", "sequence"}
+    if query_digest is not None: expected.add("query")
+    if not isinstance(value, dict) or set(value) != expected or type(value.get("v")) is not int or value["v"] != 1 or value.get("op") != operation or value.get("scope") != scope or value.get("project") != project_id or value.get("generation") != generation or value.get("query") != query_digest or type(value.get("sequence")) is not int or not 0 <= value["sequence"] <= 2**63 - 1:
+        raise HandoffStoreError("cursor does not match this request")
+    return value["sequence"]
 
 
 def _remove_staging(path: Path) -> None:
@@ -300,18 +415,35 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
     if preserved_manifest is not None: _validate_manifest(manifest, document)
     project = data_root() / "projects" / project_id; _metadata(project_id); target = project / "handoffs" / handoff_id
     with _lock():
+        dirty_project = _dirty_catalog_project()
+        if dirty_project:
+            connection = _catalog()
+            try: _sync_catalog(connection, [dirty_project])
+            finally: connection.close()
+            _clear_catalog_dirty()
         if target.exists(): raise HandoffStoreError("central handoff already exists")
+        _mark_catalog_dirty(project_id)
         _mkdir(target.parent); staging = target.parent / ("." + handoff_id + "." + secrets.token_hex(8) + ".staging"); _mkdir(staging)
         try:
             _write(staging / "document.md", raw); _write(staging / "manifest.json", json.dumps(manifest, separators=(",", ":")).encode())
             parent, target_name = _parent_fd(target); os.rename(staging.name, target_name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
+            connection = None
+            try:
+                connection = _catalog()
+                connection.execute("INSERT OR IGNORE INTO records(project_id, handoff_id) VALUES (?, ?)", (project_id, handoff_id))
+                connection.commit()
+                _clear_catalog_dirty()
+            except (HandoffStoreError, OSError, sqlite3.Error):
+                pass
+            finally:
+                if connection is not None: connection.close()
         finally:
             try: _remove_staging(staging)
             except FileNotFoundError: pass
     return {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id, "name": name, "document": document, "manifest": manifest}
 
 
-def read_record(ref: str, workspace: str, scope: str = "project") -> dict[str, Any]:
+def read_record(ref: str, workspace: str, scope: str = "project", max_document_bytes: int | None = None) -> dict[str, Any]:
     project_id, handoff_id = parse_ref(ref); bound = lookup_project(workspace)
     if scope != "all" and bound != project_id: raise HandoffStoreError("handoff reference is outside workspace project")
     _metadata(project_id)
@@ -320,56 +452,132 @@ def read_record(ref: str, workspace: str, scope: str = "project") -> dict[str, A
     _check_private_dir(record.parent); _check_private_dir(record); _check_private_file(record / "manifest.json"); _check_private_file(record / "document.md")
     manifest = _json(record / "manifest.json")
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
-    document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
-    _validate_manifest(manifest, document)
+    document_size = _private_file_size(record / "document.md")
+    if document_size > MAX_DOCUMENT_BYTES: raise HandoffStoreError("central record exceeds size limit")
+    if max_document_bytes is not None and document_size > max_document_bytes: raise HandoffBudgetExceeded("central search byte budget reached")
+    try:
+        document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+        _validate_manifest(manifest, document)
+    except (HandoffStoreError, OSError, UnicodeDecodeError) as exc:
+        raise HandoffRecordError(str(exc), document_size) from exc
     return {"ref": ref, "project_id": project_id, "handoff_id": handoff_id, "name": manifest.get("name"), "content": document, "manifest": manifest}
 
 
-def list_records(workspace: str, scope: str = "project", limit: int = 20, offset: int = 0) -> dict[str, Any]:
+def _record_summary(project_id: str, handoff_id: str) -> dict[str, Any]:
+    record = data_root() / "projects" / project_id / "handoffs" / handoff_id
+    _check_private_dir(record.parent); _check_private_dir(record)
+    _check_private_file(record / "manifest.json"); _check_private_file(record / "document.md")
+    manifest = _json(record / "manifest.json")
+    if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
+    document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+    _validate_manifest(manifest, document)
+    return {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id, "name": manifest.get("name"), "created_at": manifest.get("created_at")}
+
+
+def _project_ids() -> Iterator[str]:
+    projects = data_root() / "projects"
+    if not projects.exists(): return
+    _check_private_dir(data_root()); _check_private_dir(projects)
+    with os.scandir(projects) as entries:
+        for entry in entries:
+            if _UUID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False): yield entry.name
+
+
+def _sync_catalog(connection: sqlite3.Connection, projects: Iterable[str]) -> None:
+    for project_id in projects:
+        try: _metadata(project_id)
+        except (HandoffStoreError, FileNotFoundError): continue
+        handoffs = data_root() / "projects" / project_id / "handoffs"
+        if not handoffs.is_dir(): continue
+        _check_private_dir(handoffs)
+        with os.scandir(handoffs) as entries:
+            for entry in entries:
+                handoff_id = entry.name
+                if not _UUID.fullmatch(handoff_id) or not entry.is_dir(follow_symlinks=False) or connection.execute("SELECT 1 FROM records WHERE project_id = ? AND handoff_id = ?", (project_id, handoff_id)).fetchone(): continue
+                connection.execute("INSERT OR IGNORE INTO records(project_id, handoff_id) VALUES (?, ?)", (project_id, handoff_id))
+    connection.commit()
+
+
+def _rebuild_catalog() -> sqlite3.Connection:
+    root = state_root(); _mkdir(root); path = catalog_path()
+    if path.exists(): _check_private_file(path)
+    temporary = root / (".catalog." + secrets.token_hex(8) + ".tmp")
+    connection = _create_catalog(temporary)
+    try:
+        _sync_catalog(connection, _project_ids())
+        connection.close()
+        parent, name = _parent_fd(path, create=True)
+        try:
+            os.rename(temporary.name, name, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+        finally: os.close(parent)
+    except Exception:
+        connection.close()
+        try: temporary.unlink()
+        except FileNotFoundError: pass
+        raise
+    return _open_catalog()
+
+
+def _catalog() -> sqlite3.Connection:
+    try: return _open_catalog()
+    except sqlite3.DatabaseError: return _rebuild_catalog()
+
+
+def _catalog_page(connection: sqlite3.Connection, bound: str | None, scope: str, limit: int, cursor: str | None, cursor_operation: str, cursor_query: str | None, dirty_project: str | None) -> dict[str, Any]:
+    generation = _catalog_generation(connection)
+    if dirty_project and (scope == "all" or dirty_project == bound): _sync_catalog(connection, [dirty_project])
+    sequence = _decode_cursor(cursor, cursor_operation, scope, bound if scope == "project" else None, generation, cursor_query) if cursor is not None else 0
+    where = "project_id = ? AND sequence > ?" if scope == "project" else "sequence > ?"
+    params: tuple[Any, ...] = (bound, sequence) if scope == "project" else (sequence,)
+    items: list[dict[str, Any]] = []; skipped_count = 0; scanned = 0; last = sequence
+    while len(items) < limit and scanned < MAX_RECORDS_SCAN:
+        rows = connection.execute(f"SELECT sequence, project_id, handoff_id FROM records WHERE {where} ORDER BY sequence LIMIT ?", (*params[:-1], last, min(32, MAX_RECORDS_SCAN - scanned))).fetchall()
+        if not rows: break
+        for row_sequence, project_id, handoff_id in rows:
+            last = row_sequence; scanned += 1
+            try:
+                item = _record_summary(project_id, handoff_id) if cursor_operation == "list" else {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id}
+                if cursor_operation != "list": item["_cursor"] = _encode_cursor(cursor_operation, scope, bound if scope == "project" else None, generation, row_sequence, cursor_query)
+                items.append(item)
+            except (HandoffStoreError, OSError, UnicodeDecodeError): skipped_count += 1
+            if len(items) >= limit or scanned >= MAX_RECORDS_SCAN: break
+    more_params: tuple[Any, ...] = (bound, last) if scope == "project" else (last,)
+    more = connection.execute(f"SELECT 1 FROM records WHERE {where} LIMIT 1", more_params).fetchone() is not None
+    next_cursor = _encode_cursor(cursor_operation, scope, bound if scope == "project" else None, generation, last, cursor_query) if more else None
+    total_count = 0 if cursor is None and not items and not skipped_count and not more else None
+    return {"items": items, "count": len(items), "total_count": total_count, "offset": 0, "has_more": more, "next_offset": None, "next_cursor": next_cursor, "scan_truncated": False, "skipped_count": skipped_count}
+
+
+def list_records(workspace: str, scope: str = "project", limit: int = 20, offset: int = 0, cursor: str | None = None, *, cursor_operation: str = "list", cursor_query: str | None = None) -> dict[str, Any]:
+    if scope not in {"project", "all"}: raise HandoffStoreError("scope must be project or all")
+    if offset: raise HandoffStoreError("offset is not supported for central storage; use cursor")
     bound = lookup_project(workspace)
     if not bound and scope != "all":
-        return {"items": [], "count": 0, "total_count": 0, "offset": offset, "has_more": False, "next_offset": None}
-    projects = [bound] if bound and scope != "all" else []
-    if (data_root() / "projects").exists(): _check_private_dir(data_root()); _check_private_dir(data_root() / "projects")
-    truncated = False
-    scanned_project_entries = 0
-    if not projects and scope == "all" and (data_root() / "projects").is_dir():
-        projects = []
-        with os.scandir(data_root() / "projects") as entries:
-            for entry in entries:
-                scanned_project_entries += 1
-                if scanned_project_entries > min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
-                if entry.is_dir(follow_symlinks=False) and _UUID.fullmatch(entry.name): projects.append(entry.name)
-    items: list[dict[str, Any]] = []; skipped_count = 0
-    scanned_records = 0
-    for project in sorted(projects):
-        try: _metadata(project)
-        except (HandoffStoreError, FileNotFoundError): continue
-        if scanned_records >= MAX_RECORDS_SCAN: truncated = True; break
-        handoffs = data_root() / "projects" / project / "handoffs"
-        if not handoffs.is_dir(): continue
-        try: _check_private_dir(handoffs)
-        except (HandoffStoreError, OSError): skipped_count += 1; continue
-        with os.scandir(handoffs) as entries:
-          for entry in entries:
-            scanned_records += 1
-            if scanned_records > MAX_RECORDS_SCAN: truncated = True; break
-            if not _UUID.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False): continue
-            entry_path = Path(entry.path)
+        if cursor is not None: raise HandoffStoreError("cursor does not match this request")
+        return {"items": [], "count": 0, "total_count": 0, "offset": 0, "has_more": False, "next_offset": None, "next_cursor": None, "scan_truncated": False, "skipped_count": 0}
+    if not (data_root() / "projects").exists():
+        if cursor is not None: raise HandoffStoreError("cursor does not match this request")
+        return {"items": [], "count": 0, "total_count": 0, "offset": 0, "has_more": False, "next_offset": None, "next_cursor": None, "scan_truncated": False, "skipped_count": 0}
+    _check_private_dir(data_root()); _check_private_dir(data_root() / "projects")
+    with _lock():
+        dirty_project = _dirty_catalog_project()
+        for attempt in range(2):
+            connection = None
             try:
-                _check_private_dir(entry_path)
-                _check_private_file(entry_path / "manifest.json")
-                _check_private_file(entry_path / "document.md")
-                manifest = _json(entry_path / "manifest.json")
-                if manifest.get("handoff_id") != entry.name: continue
-                _validate_manifest(manifest, _read(entry_path / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8"))
-                items.append({"ref": make_ref(project, entry.name), "project_id": project, "handoff_id": entry.name, "name": manifest.get("name"), "created_at": manifest.get("created_at")})
-            except (HandoffStoreError, OSError, UnicodeDecodeError): skipped_count += 1; continue
-    items.sort(key=lambda item: (item["project_id"], item["handoff_id"]))
-    page = items[offset:offset + limit]
-    more = offset + len(page) < len(items)
-    if scanned_records >= MAX_RECORDS_SCAN and len(projects) > 1: truncated = True
-    return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated, "skipped_count": skipped_count}
+                connection = _catalog() if attempt == 0 else _rebuild_catalog()
+                result = _catalog_page(connection, bound, scope, limit, cursor, cursor_operation, cursor_query, dirty_project)
+                if dirty_project and (scope == "all" or dirty_project == bound): _clear_catalog_dirty()
+                return result
+            except sqlite3.DatabaseError as exc:
+                if cursor is not None:
+                    if connection is not None: connection.close(); connection = None
+                    rebuilt = _rebuild_catalog(); rebuilt.close()
+                    raise HandoffStoreError("cursor invalidated by catalog rebuild") from exc
+                if attempt: raise HandoffStoreError("corrupt central catalog") from exc
+            finally:
+                if connection is not None: connection.close()
+    raise HandoffStoreError("corrupt central catalog")
 
 
 def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:

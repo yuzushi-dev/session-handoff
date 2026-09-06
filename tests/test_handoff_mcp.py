@@ -546,6 +546,153 @@ def test_search_paginates_and_counts_unreadable_handoffs(tmp_path):
     assert second["has_more"] is False
 
 
+def test_central_search_cursor_reaches_match_beyond_file_budget(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    handoff_mcp.handoff_store.create_record(str(workspace), "first.md", "nothing")
+    expected = handoff_mcp.handoff_store.create_record(str(workspace), "second.md", "needle")
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_FILES", 1)
+
+    first = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
+    second = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle", "cursor": first["next_cursor"]})
+
+    assert first["items"] == [] and first["has_more"] is True
+    assert second["items"][0]["ref"] == expected["ref"]
+    assert second["has_more"] is False
+
+
+def test_central_search_cursor_is_bound_to_query(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for index in range(2): handoff_mcp.handoff_store.create_record(str(workspace), f"{index}.md", "needle")
+    first = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle", "limit": 1})
+
+    with pytest.raises(handoff_mcp.HandoffError, match="cursor"):
+        handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "different", "cursor": first["next_cursor"]})
+
+
+def test_central_search_does_not_preload_catalog_documents(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = handoff_mcp.handoff_store.create_record(str(workspace), "one.md", "needle")
+    monkeypatch.setattr(handoff_mcp.handoff_store, "_record_summary", lambda *_: pytest.fail("catalog page preloaded document"))
+
+    result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
+
+    assert result["items"][0]["ref"] == expected["ref"]
+
+
+def test_central_search_skips_record_corrupted_after_indexing(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    record = handoff_mcp.handoff_store.create_record(str(workspace), "one.md", "needle")
+    document = handoff_mcp.handoff_store.data_root() / "projects" / record["project_id"] / "handoffs" / record["handoff_id"] / "document.md"
+    document.write_bytes(b"needle \xff"); document.chmod(0o600)
+
+    result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
+
+    assert result["items"] == []
+    assert result["skipped_count"] == 1
+
+
+def test_central_search_charges_corrupt_documents_to_byte_budget(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    records = [handoff_mcp.handoff_store.create_record(str(workspace), f"{index}.md", "needle!") for index in range(2)]
+    for record in records:
+        document = handoff_mcp.handoff_store.data_root() / "projects" / record["project_id"] / "handoffs" / record["handoff_id"] / "document.md"
+        document.write_bytes(b"needle\xff"); document.chmod(0o600)
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_BYTES", len(b"needle\xff"))
+    real_read = handoff_mcp.handoff_store._read
+    document_reads = 0
+
+    def counted_read(path, limit):
+        nonlocal document_reads
+        if path.name == "document.md": document_reads += 1
+        return real_read(path, limit)
+
+    monkeypatch.setattr(handoff_mcp.handoff_store, "_read", counted_read)
+    result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
+
+    assert document_reads == 1
+    assert result["scanned_bytes"] == len(b"needle\xff")
+    assert result["skipped_count"] == 1
+    assert result["has_more"] is True
+
+
+def test_central_search_checks_byte_budget_before_reading_next_record(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for index in range(2): handoff_mcp.handoff_store.create_record(str(workspace), f"{index}.md", "needle")
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_BYTES", len("needle".encode()))
+    real_read = handoff_mcp.handoff_store._read
+    document_reads = 0
+
+    def counted_read(path, limit):
+        nonlocal document_reads
+        if path.name == "document.md": document_reads += 1
+        return real_read(path, limit)
+
+    monkeypatch.setattr(handoff_mcp.handoff_store, "_read", counted_read)
+    result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
+
+    assert document_reads == 1
+    assert result["has_more"] is True
+    assert result["next_cursor"] is not None
+
+
+def test_central_search_output_budget_measures_rendered_payload(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for index in range(5): handoff_mcp.handoff_store.create_record(str(workspace), f"{index}.md", "needle " + "x" * 80)
+    baseline = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle", "limit": 100})
+    compact = len(json.dumps(baseline, ensure_ascii=False).encode())
+    rendered = len(json.dumps(baseline, ensure_ascii=False, indent=2).encode())
+    budget = (compact + rendered) // 2
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_OUTPUT_BYTES", budget)
+
+    result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle", "limit": 100})
+
+    assert len(json.dumps(result, ensure_ascii=False, indent=2).encode()) <= budget
+    assert result["output_truncated"] is True
+    assert result["next_cursor"] is not None
+
+
+def test_central_list_accepts_cursor_but_not_nonzero_offset(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = [handoff_mcp.handoff_store.create_record(str(workspace), f"{index}.md", "doc")["ref"] for index in range(2)]
+
+    first = handoff_mcp._list({"workspace": str(workspace), "storage": "central", "limit": 1})
+    second = handoff_mcp._list({"workspace": str(workspace), "storage": "central", "limit": 1, "cursor": first["next_cursor"]})
+
+    assert [first["items"][0]["ref"], second["items"][0]["ref"]] == expected
+    with pytest.raises(handoff_mcp.HandoffError, match="offset"):
+        handoff_mcp._list({"workspace": str(workspace), "storage": "central", "offset": 1})
+
+
+def test_list_and_search_schemas_expose_central_cursor():
+    tools = {tool["name"]: tool for tool in handoff_mcp.TOOLS}
+
+    assert tools["handoff_list"]["inputSchema"]["properties"]["cursor"]["type"] == "string"
+    assert tools["handoff_search"]["inputSchema"]["properties"]["cursor"]["type"] == "string"
+
+
+def test_workspace_list_and_search_reject_central_cursor(tmp_path):
+    with pytest.raises(handoff_mcp.HandoffError, match="central"):
+        handoff_mcp._list({"workspace": str(tmp_path), "cursor": "opaque"})
+    with pytest.raises(handoff_mcp.HandoffError, match="central"):
+        handoff_mcp._search({"workspace": str(tmp_path), "query": "x", "cursor": "opaque"})
+
+
 def test_search_rejects_custom_directory_scope(tmp_path):
     result = handoff_mcp._call_tool(
         {

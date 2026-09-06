@@ -4,9 +4,9 @@ Offline verification (2026-09-06):
 
 ```text
 rtk pytest -q
-743 passed, 2 skipped
-rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py tests/test_session_switch.py
-95 focused tests passed
+766 passed, 2 skipped
+rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py
+85 cursor/catalog focused tests passed
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py -k 'concurrent or stdio'
 2 passed
 rtk pytest -q tests/test_package.py -k central_store
@@ -28,7 +28,7 @@ Legacy import→export→idempotent reimport stdio test: `1 passed`; source byte
 
 The consumer revalidates the central reference against the current workspace binding and record at consume time; forged, cross-project, missing-record, and exact-one path/ref payloads are rejected. Export requires exactly the two regular bundle files and compares both bytes on idempotent retry.
 
-The store rejects secret-bearing documents and metadata, unsafe ownership/modes, corrupt manifests, symlinked records, and non-UTF-8 bundles. Project/record discovery is capped and reports `scan_truncated`; the capped subset is deterministic but does not yet expose a continuation cursor beyond the scan window.
+The store rejects secret-bearing documents and metadata, unsafe ownership/modes, corrupt manifests, symlinked records, and non-UTF-8 bundles. Central list and search use an opaque continuation cursor over a private SQLite catalog in XDG state. Each page remains bounded, but every valid catalogued record is reachable. Cursors are bound to catalog generation, operation, scope, project, and (for search) the redacted case-folded query; a mismatched or stale cursor is rejected. The catalog is derived from canonical record identities and rebuilt atomically when absent or corrupt. Rebuild is a one-time O(n) directory walk and does not preload document bodies; canonical validation occurs on returned pages. A private recovery marker closes the crash window between durable record publication and catalog commit across MCP processes.
 
 ## Real-client acceptance (Linux, 2026-09-06)
 
@@ -36,4 +36,4 @@ The store rejects secret-bearing documents and metadata, unsafe ownership/modes,
 - Codex CLI `0.153.4`, model `gpt-5.6-luna`, reasoning `medium`: MCP discovery, central create/read/validate/list/search/export/import, second-invocation resume, legacy create/read/import, worktree-shared identity, and separate-clone identity passed. The supervised run terminated the source and opened a fresh TUI with the exact ref as an unsent draft. The draft was submitted, but the controlled PTY ended before a readable post-submit tool result was captured; that last evidence remains partial.
 - Real-client testing exposed and fixed two compatibility bugs: Claude sends the standard MCP `_meta` tool-call parameter, and managed setup previously left the shared application data root at `0775` while the store requires `0700`. Setup now validates ownership/type and makes only its own application root private. The managed bundle and both launchers are installed locally; original launchers remain backed up as `*.session-handoff-original`.
 
-Pending acceptance: a continuation contract beyond the bounded discovery window; readable post-submit evidence for the supervised Codex run; macOS Claude and macOS Codex. Linux worktree/clone identity is complete. No push, publish, or deploy was performed.
+Pending acceptance: readable post-submit evidence for the supervised Codex run; macOS Claude and macOS Codex. Linux worktree/clone identity and continuation beyond the bounded discovery window are complete. No push, publish, or deploy was performed.

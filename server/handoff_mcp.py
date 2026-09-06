@@ -7,6 +7,7 @@ plugin works immediately in Codex and Claude without a package installation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -558,8 +559,12 @@ def _list(arguments: dict[str, Any]) -> dict[str, Any]:
         limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT: raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0: raise HandoffError("offset must be a non-negative integer")
-        try: return handoff_store.list_records(str(root), scope, limit, offset)
+        if offset: raise HandoffError("offset is not supported for central list; use cursor")
+        cursor = arguments.get("cursor")
+        if cursor is not None and not isinstance(cursor, str): raise HandoffError("cursor must be a string")
+        try: return handoff_store.list_records(str(root), scope, limit, cursor=cursor)
         except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+    if "cursor" in arguments: raise HandoffError("cursor is supported only for central storage")
     directory = arguments.get("directory", "handoffs")
     if not isinstance(directory, str) or not directory.strip():
         raise HandoffError("directory must be a non-empty workspace-relative path")
@@ -632,23 +637,44 @@ def _search(arguments: dict[str, Any]) -> dict[str, Any]:
     if arguments.get("storage") == "central":
         query = _require_string(arguments, "query"); query, _ = redact_secrets(query); needle = query.casefold()
         if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES: raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
-        scope = arguments.get("scope", "project")
-        listing = handoff_store.list_records(_require_string(arguments, "workspace"), scope, MAX_SEARCH_FILES, 0)
-        matches = []
-        scanned_bytes = 0; skipped_count = listing.get("skipped_count", 0); scan_truncated = listing.get("scan_truncated", False) or listing.get("has_more", False)
-        for item in listing["items"][:MAX_SEARCH_FILES]:
-            try: record = handoff_store.read_record(item["ref"], _require_string(arguments, "workspace"), "all" if scope == "all" else "project")
-            except (handoff_store.HandoffStoreError, OSError): skipped_count += 1; continue
+        if offset: raise HandoffError("offset is not supported for central search; use cursor")
+        cursor = arguments.get("cursor")
+        if cursor is not None and not isinstance(cursor, str): raise HandoffError("cursor must be a string")
+        workspace = _require_string(arguments, "workspace"); scope = arguments.get("scope", "project")
+        digest = hashlib.sha256(needle.encode("utf-8")).hexdigest()
+        try: listing = handoff_store.list_records(workspace, scope, MAX_SEARCH_FILES, cursor=cursor, cursor_operation="search", cursor_query=digest)
+        except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+        matches = []; scanned_files = 0
+        scanned_bytes = 0; skipped_count = listing.get("skipped_count", 0); next_cursor = listing.get("next_cursor"); has_more = listing.get("has_more", False); prior_cursor = cursor
+        for index, item in enumerate(listing["items"]):
+            item_cursor = item.pop("_cursor")
+            try: record = handoff_store.read_record(item["ref"], workspace, "all" if scope == "all" else "project", MAX_SEARCH_BYTES - scanned_bytes)
+            except handoff_store.HandoffBudgetExceeded:
+                next_cursor = prior_cursor; has_more = True; break
+            except handoff_store.HandoffRecordError as exc:
+                scanned_files += 1; scanned_bytes += exc.scanned_bytes; skipped_count += 1; prior_cursor = item_cursor; continue
+            except (handoff_store.HandoffStoreError, OSError, UnicodeDecodeError): skipped_count += 1; prior_cursor = item_cursor; continue
             size = len(record["content"].encode("utf-8"))
-            if scanned_bytes + size > MAX_SEARCH_BYTES: scan_truncated = True; break
-            scanned_bytes += size
-            lines = [{"line": n, "snippet": _truncate_utf8(line.strip(), MAX_SEARCH_SNIPPET_BYTES)} for n,line in enumerate(record["content"].splitlines(), 1) if needle in line.casefold()][:MAX_SEARCH_MATCHES_PER_FILE]
-            if lines: matches.append({"ref": item["ref"], "project_id": item["project_id"], "name": item["name"], "matches": lines})
-        page = matches[offset:offset + limit]; more = offset + len(page) < len(matches)
-        response = {"query": query, "items": page, "count": len(page), "total_count": len(matches) if not scan_truncated else None, "offset": offset, "has_more": more or scan_truncated, "next_offset": offset + len(page) if more else None, "skipped_count": skipped_count, "scanned_files": min(len(listing["items"]), MAX_SEARCH_FILES), "scanned_bytes": scanned_bytes, "scan_truncated": scan_truncated, "output_truncated": False}
-        while len(json.dumps(response, ensure_ascii=False).encode()) > MAX_SEARCH_OUTPUT_BYTES and page:
-            page.pop(); response["count"] = len(page); response["output_truncated"] = True
+            scanned_files += 1; scanned_bytes += size
+            lines = []
+            for line_number, line in enumerate(record["content"].splitlines(), 1):
+                if needle not in line.casefold(): continue
+                lines.append({"line": line_number, "snippet": _truncate_utf8(line.strip(), MAX_SEARCH_SNIPPET_BYTES)})
+                if len(lines) >= MAX_SEARCH_MATCHES_PER_FILE: break
+            if lines: matches.append({"ref": item["ref"], "project_id": item["project_id"], "name": record["name"], "matches": lines, "_before_cursor": prior_cursor})
+            prior_cursor = item_cursor
+            if len(matches) >= limit:
+                has_more = index + 1 < len(listing["items"]) or listing.get("has_more", False)
+                next_cursor = item_cursor if has_more else None
+                break
+        scan_truncated = has_more
+        page = matches
+        response = {"query": query, "items": page, "count": len(page), "total_count": len(page) if not has_more and cursor is None and not skipped_count else None, "offset": 0, "has_more": has_more, "next_offset": None, "next_cursor": next_cursor, "skipped_count": skipped_count, "scanned_files": scanned_files, "scanned_bytes": scanned_bytes, "scan_truncated": scan_truncated, "output_truncated": False}
+        while len(json.dumps(response, ensure_ascii=False, indent=2).encode()) > MAX_SEARCH_OUTPUT_BYTES and len(page) > 1:
+            removed = page.pop(); response["count"] = len(page); response["output_truncated"] = True; response["has_more"] = True; response["scan_truncated"] = True; response["total_count"] = None; response["next_cursor"] = removed["_before_cursor"]
+        for match in page: match.pop("_before_cursor")
         return response
+    if "cursor" in arguments: raise HandoffError("cursor is supported only for central storage")
     root = _workspace_root(_require_string(arguments, "workspace"))
     query = _require_string(arguments, "query")
     if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES:
@@ -877,6 +903,7 @@ TOOLS = [
                 "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": 20},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "cursor": {"type": "string", "description": "Opaque continuation cursor for central storage."},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
@@ -895,6 +922,7 @@ TOOLS = [
                 "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": 20},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "cursor": {"type": "string", "description": "Opaque continuation cursor for central storage."},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},

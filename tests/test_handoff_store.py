@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import multiprocessing
 import os
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -15,6 +17,13 @@ def _concurrent_create(args):
     workspace, data, state = args
     os.environ["XDG_DATA_HOME"] = data; os.environ["XDG_STATE_HOME"] = state
     return store.create_record(workspace, "same.md", "## Goal\ncentral\n")["ref"]
+
+
+def _publish_with_failed_index(args):
+    workspace, data, state = args
+    os.environ["XDG_DATA_HOME"] = data; os.environ["XDG_STATE_HOME"] = state
+    store._catalog = lambda: (_ for _ in ()).throw(store.HandoffStoreError("injected catalog failure"))
+    return store.create_record(workspace, "child.md", "child")["ref"]
 
 
 def test_store_root_uses_absolute_xdg_and_home_fallback(tmp_path, monkeypatch):
@@ -38,6 +47,25 @@ def test_reference_parser_is_strict():
     assert store.parse_ref(f"handoff://{project}/{handoff}") == (project, handoff)
     for value in ("/tmp/x", f"handoff://{project}/{handoff}.md", f"handoff://{project}/{handoff}?x=1", f"handoff://{project}/nope"):
         with pytest.raises(store.HandoffStoreError): store.parse_ref(value)
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_cursor_version_requires_an_integer(version):
+    generation = "a" * 32
+    payload = {"v": version, "op": "list", "scope": "all", "project": None, "generation": generation, "sequence": 0}
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store._decode_cursor(cursor, "list", "all", None, generation)
+
+
+def test_cursor_sequence_must_fit_sqlite_integer():
+    generation = "a" * 32
+    payload = {"v": 1, "op": "list", "scope": "all", "project": None, "generation": generation, "sequence": 2**100}
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store._decode_cursor(cursor, "list", "all", None, generation)
 
 
 def test_create_and_read_record_is_immutable(tmp_path, monkeypatch):
@@ -177,19 +205,23 @@ def test_application_root_world_writable_is_rejected(tmp_path, monkeypatch):
     with pytest.raises(store.HandoffStoreError, match="permissions"): store._mkdir(store.data_root())
 
 
-def test_bounded_global_discovery_reports_truncation(tmp_path, monkeypatch):
+def test_record_scan_budget_returns_a_continuation_cursor(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"; workspace.mkdir(); monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state")); monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
-    project = store.register_project(str(workspace))
-    for _ in range(3): store.publish_record(project, str(uuid.uuid4()), "x.md", "doc", {"project_id": project, "handoff_id": str(uuid.uuid4()), "kind": "create"})
-    result = store.list_records(str(workspace)); assert result["scan_truncated"] is True and result["total_count"] is None and len(result["items"]) <= 1
+    for index in range(3): store.create_record(str(workspace), f"{index}.md", "doc")
+    first = store.list_records(str(workspace))
+    second = store.list_records(str(workspace), cursor=first["next_cursor"])
+    assert first["scan_truncated"] is False and first["has_more"] is True
+    assert len(first["items"]) == len(second["items"]) == 1
+    assert first["items"] != second["items"]
 
 
-def test_record_scan_cap_is_global_across_projects(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"; workspace.mkdir(); monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state")); monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
-    first = store.register_project(str(workspace)); store.publish_record(first, str(uuid.uuid4()), "x.md", "doc", {"project_id":first,"handoff_id":str(uuid.uuid4()),"kind":"create"})
-    second = str(uuid.uuid4()); store._mkdir(store.data_root() / "projects" / second); store._mkdir(store.data_root() / "projects" / second / "handoffs")
-    result = store.list_records(str(workspace), scope="all")
-    assert len(result["items"]) <= 1 and result["scan_truncated"] is True
+def test_record_scan_cursor_continues_across_projects(tmp_path, monkeypatch):
+    first = tmp_path / "first"; second = tmp_path / "second"; first.mkdir(); second.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state")); monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
+    records = [store.create_record(str(first), "x.md", "first"), store.create_record(str(second), "x.md", "second")]
+    page = store.list_records(str(first), scope="all")
+    following = store.list_records(str(first), scope="all", cursor=page["next_cursor"])
+    assert {page["items"][0]["ref"], following["items"][0]["ref"]} == {record["ref"] for record in records}
 
 
 def test_read_paths_reject_world_writable_data_root(tmp_path, monkeypatch):
@@ -220,7 +252,7 @@ def test_list_is_sorted_and_skips_corrupt_records(tmp_path, monkeypatch):
     manifest = json.loads(corrupt.read_text()); manifest["schema_version"] = 999; corrupt.write_text(json.dumps(manifest)); corrupt.chmod(0o600)
     result = store.list_records(str(workspace))
     refs = [item["ref"] for item in result["items"]]
-    assert refs == sorted(refs)
+    assert refs == [records[0]["ref"], records[2]["ref"]]
     assert records[1]["ref"] not in refs
     assert result["skipped_count"] == 1
 
@@ -233,21 +265,178 @@ def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch)
         store._read(missing, 10)
 
 
-def test_global_list_reports_truncated_totals(tmp_path, monkeypatch):
+def test_global_list_catalog_discovers_all_projects(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; other = tmp_path / "other"
+    workspace.mkdir(); other.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = {store.create_record(str(workspace), "a.md", "a")["ref"], store.create_record(str(other), "b.md", "b")["ref"]}
+
+    result = store.list_records(str(workspace), scope="all")
+
+    assert {item["ref"] for item in result["items"]} == expected
+    assert result["scan_truncated"] is False
+    assert result["total_count"] is None
+
+
+def test_central_cursor_reaches_every_record_beyond_scan_cap(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(store, "MAX_PROJECTS", 1, raising=False)
-    projects = tmp_path / "data/session-handoff/projects"
-    projects.mkdir(parents=True)
-    projects.parent.chmod(0o700); projects.chmod(0o700)
-    for _ in range(2):
-        project = projects / str(uuid.uuid4())
-        (project / "handoffs").mkdir(parents=True)
-        project.chmod(0o700); (project / "handoffs").chmod(0o700)
+    monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
+    expected = [
+        store.create_record(str(workspace), f"{index}.md", f"doc {index}")["ref"]
+        for index in range(5)
+    ]
 
-    result = store.list_records(str(workspace), scope="all")
+    cursor = None
+    actual = []
+    while True:
+        page = store.list_records(str(workspace), limit=2, cursor=cursor)
+        actual.extend(item["ref"] for item in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
 
-    assert result["scan_truncated"] is True
-    assert result["total_count"] is None
+    assert actual == expected
+    assert len(set(actual)) == len(expected)
+    assert page["has_more"] is False
+    assert page["scan_truncated"] is False
+
+
+def test_central_cursor_is_bound_to_scope_and_project(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir(); second.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    store.create_record(str(first), "a.md", "a")
+    store.create_record(str(first), "b.md", "b")
+    cursor = store.list_records(str(first), limit=1)["next_cursor"]
+
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store.list_records(str(first), scope="all", cursor=cursor)
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store.list_records(str(second), cursor=cursor)
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store.list_records(str(first), cursor="not-a-cursor")
+    with pytest.raises(store.HandoffStoreError, match="offset"):
+        store.list_records(str(first), offset=1)
+
+
+def test_corrupt_catalog_is_rebuilt_and_invalidates_old_cursor(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = [store.create_record(str(workspace), f"{index}.md", "doc")["ref"] for index in range(2)]
+    cursor = store.list_records(str(workspace), limit=1)["next_cursor"]
+    store.catalog_path().write_bytes(b"not sqlite")
+    store.catalog_path().chmod(0o600)
+
+    with pytest.raises(store.HandoffStoreError, match="cursor"):
+        store.list_records(str(workspace), limit=1, cursor=cursor)
+    rebuilt = store.list_records(str(workspace))
+
+    assert {item["ref"] for item in rebuilt["items"]} == set(expected)
+
+
+def test_non_text_catalog_generation_is_rebuilt(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = store.create_record(str(workspace), "one.md", "doc")["ref"]
+    connection = sqlite3.connect(store.catalog_path())
+    connection.execute("UPDATE metadata SET generation = ?", (sqlite3.Binary(b"broken"),))
+    connection.commit(); connection.close()
+
+    result = store.list_records(str(workspace))
+    assert [item["ref"] for item in result["items"]] == [expected]
+
+
+def test_failed_publish_index_is_reconciled_without_restart(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    first = store.create_record(str(workspace), "first.md", "first")
+    store.list_records(str(workspace))
+    real_catalog = store._catalog
+    calls = 0
+
+    def fail_once():
+        nonlocal calls
+        calls += 1
+        if calls == 1: raise store.HandoffStoreError("injected catalog failure")
+        return real_catalog()
+
+    monkeypatch.setattr(store, "_catalog", fail_once)
+    second = store.create_record(str(workspace), "second.md", "second")
+
+    result = store.list_records(str(workspace))
+    assert {item["ref"] for item in result["items"]} == {first["ref"], second["ref"]}
+
+
+def test_failed_publish_index_is_reconciled_across_processes(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    data, state = str(tmp_path / "data"), str(tmp_path / "state")
+    monkeypatch.setenv("XDG_DATA_HOME", data); monkeypatch.setenv("XDG_STATE_HOME", state)
+    first = store.create_record(str(workspace), "first.md", "first")
+    store.list_records(str(workspace))
+    with multiprocessing.get_context("fork").Pool(1) as pool:
+        second_ref = pool.apply(_publish_with_failed_index, ((str(workspace), data, state),))
+    third = store.create_record(str(workspace), "third.md", "third")
+
+    result = store.list_records(str(workspace))
+    assert {item["ref"] for item in result["items"]} == {first["ref"], second_ref, third["ref"]}
+
+
+def test_catalog_has_project_sequence_index(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    store.create_record(str(workspace), "one.md", "doc")
+
+    connection = __import__("sqlite3").connect(store.catalog_path())
+    indexes = {row[1] for row in connection.execute("PRAGMA index_list(records)")}
+    connection.close()
+
+    assert "records_project_sequence" in indexes
+
+
+def test_late_catalog_corruption_rebuilds_before_listing(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    expected = store.create_record(str(workspace), "one.md", "doc")["ref"]
+    real_catalog = store._catalog
+    failed = False
+
+    class LateCorruption:
+        def __init__(self, connection): self.connection = connection
+        def execute(self, sql, parameters=()):
+            nonlocal failed
+            if not failed and "ORDER BY sequence" in sql:
+                failed = True
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return self.connection.execute(sql, parameters)
+        def __getattr__(self, name): return getattr(self.connection, name)
+
+    monkeypatch.setattr(store, "_catalog", lambda: LateCorruption(real_catalog()))
+
+    result = store.list_records(str(workspace))
+    assert [item["ref"] for item in result["items"]] == [expected]
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_catalog_symlink_is_rejected(tmp_path, monkeypatch, target_exists):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    store.register_project(str(workspace))
+    store.state_root().mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "outside.sqlite3"
+    if target_exists: target.write_bytes(b"")
+    store.catalog_path().symlink_to(target)
+
+    with pytest.raises(store.HandoffStoreError, match="catalog"):
+        store.list_records(str(workspace))
