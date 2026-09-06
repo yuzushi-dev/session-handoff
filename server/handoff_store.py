@@ -25,6 +25,22 @@ class HandoffStoreError(ValueError):
     pass
 
 
+def _parent_fd(path: Path, create: bool = False) -> tuple[int, str]:
+    parts = path.absolute().parts
+    fd = os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts[1:-1]:
+            try: child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not create: raise
+                os.mkdir(part, 0o700, dir_fd=fd)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        return fd, parts[-1]
+    except Exception:
+        os.close(fd); raise
+
+
 def _base(env: str, fallback: Path) -> Path:
     raw = os.environ.get(env, "")
     value = Path(raw) if raw and Path(raw).is_absolute() else fallback
@@ -71,12 +87,11 @@ def _mkdir(path: Path) -> None:
 
 
 def _read(path: Path, limit: int) -> bytes:
-    if path.is_symlink() or not path.is_file():
-        raise HandoffStoreError("central record must be a regular file")
+    parent, name = _parent_fd(path)
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
         st = os.fstat(fd)
-        if not __import__("stat").S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode):
             raise HandoffStoreError("central record must be a regular file")
         chunks = []; remaining = limit + 1
         while remaining:
@@ -86,7 +101,8 @@ def _read(path: Path, limit: int) -> bytes:
         data = b"".join(chunks)
     finally:
         try: os.close(fd)
-        except (UnboundLocalError, OSError): pass
+        except OSError: pass
+        os.close(parent)
     if len(data) > limit:
         raise HandoffStoreError("central record exceeds size limit")
     return data
@@ -100,22 +116,23 @@ def _json(path: Path, limit: int = MAX_MANIFEST_BYTES) -> dict[str, Any]:
 
 
 def _write(path: Path, payload: bytes) -> None:
-    temporary = path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp"
+    parent, name = _parent_fd(path, create=True)
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(temporary, flags, 0o600)
+    fd = os.open(temporary, flags, 0o600, dir_fd=parent)
     try:
         view = memoryview(payload)
-        while view:
-            view = view[os.write(fd, view):]
-        os.fsync(fd)
-    finally: os.close(fd)
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
-    try:
-        parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        os.fsync(parent_fd); os.close(parent_fd)
-    except OSError:
-        pass
+        while view: view = view[os.write(fd, view):]
+        os.fsync(fd); os.close(fd)
+        os.rename(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    except Exception:
+        try: os.close(fd)
+        except OSError: pass
+        try: os.unlink(temporary, dir_fd=parent)
+        except OSError: pass
+        raise
+    finally: os.close(parent)
 
 
 def _bindings() -> dict[str, str]:
@@ -211,7 +228,8 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
         if target.exists(): raise HandoffStoreError("central handoff already exists")
         _mkdir(target.parent); staging = target.parent / ("." + handoff_id + "." + secrets.token_hex(8) + ".staging"); _mkdir(staging)
         try:
-            _write(staging / "document.md", raw); _write(staging / "manifest.json", json.dumps(manifest, separators=(",", ":")).encode()); os.replace(staging, target)
+            _write(staging / "document.md", raw); _write(staging / "manifest.json", json.dumps(manifest, separators=(",", ":")).encode())
+            parent, target_name = _parent_fd(target); os.rename(staging.name, target_name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
         finally:
             if staging.exists():
                 for p in staging.iterdir(): p.unlink(missing_ok=True)
@@ -222,7 +240,9 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
 def read_record(ref: str, workspace: str, scope: str = "project") -> dict[str, Any]:
     project_id, handoff_id = parse_ref(ref); bound = lookup_project(workspace)
     if scope != "all" and bound != project_id: raise HandoffStoreError("handoff reference is outside workspace project")
-    record = data_root() / "projects" / project_id / "handoffs" / handoff_id; manifest = _json(record / "manifest.json")
+    record = data_root() / "projects" / project_id / "handoffs" / handoff_id
+    if not record.is_dir(): raise HandoffStoreError("central handoff not found")
+    manifest = _json(record / "manifest.json")
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
     document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
     if hashlib.sha256(document.encode()).hexdigest() != manifest.get("sha256"): raise HandoffStoreError("handoff document hash mismatch")
@@ -273,7 +293,7 @@ def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
     try:
         _write(staging / "document.md", record["content"].encode())
         _write(staging / "manifest.json", json.dumps(record["manifest"], separators=(",", ":")).encode())
-        os.replace(staging, destination)
+        parent, name = _parent_fd(destination); os.rename(staging.name, name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
     finally:
         if staging.exists():
             for p in staging.iterdir(): p.unlink(missing_ok=True)
