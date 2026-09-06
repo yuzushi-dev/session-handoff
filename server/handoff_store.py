@@ -22,6 +22,7 @@ MAX_PROJECT_ENTRIES = 256
 MAX_RECORDS_SCAN = 256
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_RAW_SECRET = re.compile(r"(?i)\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD)\b\s*[:=]\s*(?!\[REDACTED\])[^\s]+")
 
 
 class HandoffStoreError(ValueError):
@@ -90,7 +91,8 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     origin = manifest.get("origin")
     if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
     if "source_path" in origin and (not isinstance(origin["source_path"], str) or not origin["source_path"] or len(origin["source_path"].encode()) > 512 or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
-    if re.search(r"(?i)\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD)\b\s*[:=]\s*(?!\[REDACTED\])[^\s]+", document): raise HandoffStoreError("portable document contains secrets")
+    if _RAW_SECRET.search(document) or re.search(r"(?i)\bBearer\s+(?!\[REDACTED\])\S+|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\b(?:sk-|gh[pousr]_)[A-Za-z0-9_-]{10,}", document): raise HandoffStoreError("portable document contains secrets")
+    if manifest["origin"].get("handoff_id") != manifest["handoff_id"]: raise HandoffStoreError("invalid manifest origin")
 
 
 def _mkdir(path: Path) -> None:
@@ -114,6 +116,14 @@ def _check_private_dir(path: Path) -> None:
             st = os.fstat(fd)
             if st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central directory permissions")
         finally: os.close(fd)
+    finally: os.close(parent)
+
+
+def _check_private_file(path: Path) -> None:
+    parent, name = _parent_fd(path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent); st = os.fstat(fd); os.close(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central file permissions")
     finally: os.close(parent)
 
 
@@ -235,6 +245,7 @@ def _metadata(project_id: str) -> dict[str, Any]:
     _check_private_dir(data_root()); _check_private_dir(data_root() / "projects")
     path = data_root() / "projects" / project_id / "project.json"
     _check_private_dir(path.parent)
+    _check_private_file(path)
     value = _json(path)
     if value.get("schema_version") != 1 or value.get("project_id") != project_id or not isinstance(value.get("label"), str):
         raise HandoffStoreError("corrupt project metadata")
@@ -295,6 +306,7 @@ def read_record(ref: str, workspace: str, scope: str = "project") -> dict[str, A
     _metadata(project_id)
     record = data_root() / "projects" / project_id / "handoffs" / handoff_id
     if not record.is_dir(): raise HandoffStoreError("central handoff not found")
+    _check_private_dir(record.parent); _check_private_dir(record); _check_private_file(record / "manifest.json"); _check_private_file(record / "document.md")
     manifest = _json(record / "manifest.json")
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
     document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
@@ -320,6 +332,8 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     items: list[dict[str, Any]] = []
     scanned_records = 0
     for project in sorted(projects):
+        try: _metadata(project)
+        except (HandoffStoreError, FileNotFoundError): continue
         if scanned_records >= MAX_RECORDS_SCAN: truncated = True; break
         handoffs = data_root() / "projects" / project / "handoffs"
         if not handoffs.is_dir(): continue
@@ -332,6 +346,7 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
             try:
                 manifest = _json(entry_path / "manifest.json")
                 if manifest.get("handoff_id") != entry.name: continue
+                _validate_manifest(manifest, _read(entry_path / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8"))
                 items.append({"ref": make_ref(project, entry.name), "project_id": project, "handoff_id": entry.name, "name": manifest.get("name"), "created_at": manifest.get("created_at")})
             except HandoffStoreError: continue
     page = items[offset:offset + limit]
