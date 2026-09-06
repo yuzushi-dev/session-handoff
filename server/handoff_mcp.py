@@ -1032,7 +1032,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
             "handoff_export": _export,
         }
         return _success(handlers[name](arguments))
-    except (HandoffError, OSError) as exc:
+    except (HandoffError, handoff_store.HandoffStoreError, OSError) as exc:
         return _error(str(exc))
 
 
