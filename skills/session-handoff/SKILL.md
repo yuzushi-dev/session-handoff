@@ -116,7 +116,7 @@ Migrate mode currently supports only Claude Code ↔ Codex and requires the mana
 6. If the result has `auto_switch_requested: true`, stop working in the source session. The supervisor will terminate this client, run the native migration, and open the target with its generated session ID.
 7. If `auto_switch_requested` is false, report that migrate mode requires the managed launcher and include the returned reason. Do not convert a transcript that the active client may still be appending to.
 
-The supervisor prints the migration's content-free `warnings` and `dropped_events` summary before opening the target. Treat any such counters as evidence that some source-native structures were transformed or omitted.
+The supervisor prints the migration's content-free `warnings` and `dropped_events` summary before opening the target. Treat any such counters as evidence that some source-native structures were transformed or omitted. Migration carries supported transcript items only; client-private state outside that contract is not migrated.
 
 ## Tool contract
 
@@ -127,5 +127,6 @@ The bundled MCP server exposes:
 - `handoff_read`: reads one handoff and redacts credential-like values in the returned text.
 - `handoff_validate`: checks canonical sections without changing the file.
 - `handoff_list`: lists Markdown handoffs under `handoffs/` with `limit` and `offset` pagination.
+- `handoff_search`: searches redacted Markdown handoffs under `handoffs/` with bounded scanning and pagination.
 
 Pass an absolute `workspace` path and a workspace-relative `path` to every file-oriented tool. The server rejects traversal outside the workspace. Creation is the only file mutation; `overwrite=true` is an explicit replacement request and should be used sparingly.

@@ -84,6 +84,16 @@ def test_project_paginated_codex_reads_canonical_items_without_mutating_source(t
     ):
         assert sentinel in projected_text
     assert projection.dropped == {"reasoning": 1}
+    assert projection.warnings == (
+        {
+            "code": "codex_paginated_projection",
+            "message": "Codex canonical paginated items were projected into a temporary legacy view",
+        },
+        {
+            "code": "client_private_state_not_migrated",
+            "message": "Codex client-private state outside supported transcript items is not part of portable migration",
+        },
+    )
     assert projection.normalized_fields["commandExecution"] == ["exitCode", "status"]
     assert {"arguments", "mcpAppResourceUri", "result", "status"} <= set(
         projection.normalized_fields["mcpToolCall"]

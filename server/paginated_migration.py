@@ -174,6 +174,10 @@ def project_paginated_codex(
                 "code": "codex_paginated_projection",
                 "message": "Codex canonical paginated items were projected into a temporary legacy view",
             },
+            {
+                "code": "client_private_state_not_migrated",
+                "message": "Codex client-private state outside supported transcript items is not part of portable migration",
+            },
         ),
     )
 

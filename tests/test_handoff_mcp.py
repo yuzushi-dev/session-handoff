@@ -98,6 +98,7 @@ def test_server_initializes_and_lists_handoff_tools():
         "handoff_read",
         "handoff_validate",
         "handoff_list",
+        "handoff_search",
     }
 
 
@@ -375,6 +376,124 @@ Keep the API stable.
     assert tool_result(responses[2])["isError"] is True
     read = tool_result(responses[3])
     assert "API_TOKEN=[REDACTED]" in read["content"]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("API_TOKEN=[REDACTED]secret-value", "API_TOKEN=[REDACTED]"),
+        ("API_TOKEN='[REDACTED]'secret-value", "API_TOKEN='[REDACTED]'"),
+    ],
+)
+def test_redact_secrets_removes_text_attached_to_redacted_marker(source, expected):
+    redacted, count = handoff_mcp.redact_secrets(source)
+
+    assert redacted == expected
+    assert count == 1
+
+
+def test_search_returns_redacted_matches_from_handoffs(tmp_path):
+    handoffs = tmp_path / "handoffs"
+    nested = handoffs / "archive"
+    nested.mkdir(parents=True)
+    (handoffs / "a.md").write_text(
+        "## Goal\nNeedle API_TOKEN=top-secret\n", encoding="utf-8"
+    )
+    (nested / "b.md").write_text("## Goal\nAnother needle\n", encoding="utf-8")
+
+    responses = exchange(
+        [
+            initialized(),
+            call(2, "handoff_search", {"workspace": str(tmp_path), "query": "needle"}),
+        ]
+    )
+
+    result = tool_result(responses[1])
+    assert [item["path"] for item in result["items"]] == [
+        "handoffs/a.md",
+        "handoffs/archive/b.md",
+    ]
+    assert result["items"][0]["matches"] == [
+        {"line": 2, "snippet": "Needle API_TOKEN=[REDACTED]"}
+    ]
+    assert result["scan_truncated"] is False
+
+
+def test_search_stops_at_global_file_budget(monkeypatch, tmp_path):
+    handoffs = tmp_path / "handoffs"
+    handoffs.mkdir()
+    (handoffs / "a.md").write_text("needle\n", encoding="utf-8")
+    (handoffs / "b.md").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_FILES", 1, raising=False)
+
+    result = handoff_mcp._search({"workspace": str(tmp_path), "query": "needle"})
+
+    assert result["scanned_files"] == 1
+    assert result["total_count"] == 1
+    assert result["scan_truncated"] is True
+
+
+def test_search_stops_before_global_byte_budget(monkeypatch, tmp_path):
+    handoffs = tmp_path / "handoffs"
+    handoffs.mkdir()
+    (handoffs / "a.md").write_text("needle\n", encoding="utf-8")
+    (handoffs / "b.md").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_BYTES", 7, raising=False)
+
+    result = handoff_mcp._search({"workspace": str(tmp_path), "query": "needle"})
+
+    assert result["scanned_bytes"] == 7
+    assert result["total_count"] == 1
+    assert result["scan_truncated"] is True
+
+
+def test_search_trims_page_to_global_output_budget(monkeypatch, tmp_path):
+    handoffs = tmp_path / "handoffs"
+    handoffs.mkdir()
+    for name in ("a.md", "b.md", "c.md"):
+        (handoffs / name).write_text(f"needle {'x' * 400}\n", encoding="utf-8")
+    monkeypatch.setattr(handoff_mcp, "MAX_SEARCH_OUTPUT_BYTES", 1_000, raising=False)
+
+    result = handoff_mcp._search({"workspace": str(tmp_path), "query": "needle"})
+
+    assert len(json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")) <= 1_000
+    assert result["output_truncated"] is True
+    assert result["count"] < result["total_count"]
+    assert result["next_offset"] == result["count"]
+
+
+def test_search_paginates_and_counts_unreadable_handoffs(tmp_path):
+    handoffs = tmp_path / "handoffs"
+    handoffs.mkdir()
+    (handoffs / "a.md").write_text("needle\n", encoding="utf-8")
+    (handoffs / "b.md").write_text("needle\n", encoding="utf-8")
+    (handoffs / "bad.md").write_bytes(b"needle \xff\n")
+
+    first = handoff_mcp._search(
+        {"workspace": str(tmp_path), "query": "needle", "limit": 1}
+    )
+    second = handoff_mcp._search(
+        {"workspace": str(tmp_path), "query": "needle", "limit": 1, "offset": 1}
+    )
+
+    assert first["count"] == 1
+    assert first["total_count"] == 2
+    assert first["next_offset"] == 1
+    assert first["skipped_count"] == 1
+    assert second["items"][0]["path"] == "handoffs/b.md"
+    assert second["has_more"] is False
+
+
+def test_search_rejects_custom_directory_scope(tmp_path):
+    result = handoff_mcp._call_tool(
+        {
+            "name": "handoff_search",
+            "arguments": {"workspace": str(tmp_path), "query": "x", "directory": "."},
+        }
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["message"] == "unknown tool argument: directory"
 
 
 def test_create_requests_automatic_switch_when_supervised(tmp_path):

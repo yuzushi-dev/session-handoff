@@ -13,7 +13,7 @@ import re
 import secrets
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 try:
     from .handoff_state import (
@@ -50,6 +50,12 @@ SERVER_NAME = "session-handoff"
 SERVER_VERSION = PACKAGE_VERSION
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MAX_LIST_LIMIT = 100
+MAX_SEARCH_QUERY_BYTES = 512
+MAX_SEARCH_SNIPPET_BYTES = 512
+MAX_SEARCH_MATCHES_PER_FILE = 8
+MAX_SEARCH_FILES = 256
+MAX_SEARCH_BYTES = 4 * 1024 * 1024
+MAX_SEARCH_OUTPUT_BYTES = 64 * 1024
 
 REQUIRED_SECTIONS = (
     "## Goal",
@@ -60,10 +66,16 @@ REQUIRED_SECTIONS = (
     "## Next Steps",
 )
 
+_SECRET_KEY_PATTERN = r"\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTHORIZATION)\b"
 _ASSIGNMENT = re.compile(
-    r"(?P<key>\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTHORIZATION)\b)"
+    rf"(?P<key>{_SECRET_KEY_PATTERN})"
     r"(?P<spacing>\s*)(?P<separator>[:=])(?P<after>\s*)"
     r"(?P<quote>['\"]?)(?P<value>[^\s'\"`;,\)\]]+)(?P=quote)",
+    re.IGNORECASE,
+)
+_MALFORMED_REDACTED = re.compile(
+    rf"(?P<prefix>{_SECRET_KEY_PATTERN}\s*[:=]\s*(?P<quote>['\"]?)\[REDACTED\](?P=quote))"
+    r"(?P<attached>[^\s'\"`;)\],]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -90,7 +102,7 @@ def _record_outcome(summary: dict[str, Any]) -> None:
 
 def _replace_assignment(match: re.Match[str]) -> str:
     value = match.group("value")
-    if value.startswith("[REDACTED]"):
+    if value == "[REDACTED" and match.end() < len(match.string) and match.string[match.end()] == "]":
         return match.group(0)
     return (
         f"{match.group('key')}{match.group('spacing')}{match.group('separator')}"
@@ -125,9 +137,15 @@ def redact_secrets(text: str) -> tuple[str, int]:
             count += 1
         return replacement
 
+    def replace_malformed_marker(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return match.group("prefix")
+
     redacted = _PRIVATE_KEY.sub(replace_private, text)
     redacted = _BEARER.sub(replace_bearer, redacted)
     redacted = _KNOWN_TOKEN.sub(replace_token, redacted)
+    redacted = _MALFORMED_REDACTED.sub(replace_malformed_marker, redacted)
     redacted = _ASSIGNMENT.sub(replace_assignment, redacted)
     return redacted, count
 
@@ -600,6 +618,117 @@ def _list(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _truncate_utf8(value: str, limit: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    suffix = b"..."
+    return encoded[: limit - len(suffix)].decode("utf-8", errors="ignore") + "..."
+
+
+def _markdown_files(directory: Path) -> Iterator[Path]:
+    for current, directories, files in os.walk(directory, followlinks=False):
+        directories[:] = sorted(
+            name for name in directories if not (Path(current) / name).is_symlink()
+        )
+        for name in sorted(files):
+            if name.endswith(".md"):
+                yield Path(current) / name
+
+
+def _search(arguments: dict[str, Any]) -> dict[str, Any]:
+    root = _workspace_root(_require_string(arguments, "workspace"))
+    query = _require_string(arguments, "query")
+    if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES:
+        raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
+    query, _ = redact_secrets(query)
+    needle = query.casefold()
+    _, handoff_dir = _safe_path(str(root), "handoffs", allow_directory=True)
+    limit = arguments.get("limit", 20)
+    offset = arguments.get("offset", 0)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
+        raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise HandoffError("offset must be a non-negative integer")
+
+    matches: list[dict[str, Any]] = []
+    skipped_count = 0
+    scanned_files = 0
+    scanned_bytes = 0
+    scan_truncated = False
+    if handoff_dir.exists():
+        if not handoff_dir.is_dir():
+            raise HandoffError("handoffs must identify a directory")
+        for candidate in _markdown_files(handoff_dir):
+            resolved = candidate.resolve(strict=False)
+            try:
+                resolved.relative_to(handoff_dir)
+            except ValueError:
+                continue
+            if not resolved.is_file():
+                continue
+            if scanned_files >= MAX_SEARCH_FILES:
+                scan_truncated = True
+                break
+            try:
+                file_bytes = resolved.stat().st_size
+            except OSError:
+                skipped_count += 1
+                continue
+            if scanned_bytes + file_bytes > MAX_SEARCH_BYTES:
+                scan_truncated = True
+                break
+            scanned_files += 1
+            scanned_bytes += file_bytes
+            try:
+                content, _ = _read_file(root, resolved)
+            except (HandoffError, OSError):
+                skipped_count += 1
+                continue
+            file_matches = []
+            for line_number, line in enumerate(content.splitlines(), start=1):
+                if needle not in line.casefold():
+                    continue
+                file_matches.append(
+                    {
+                        "line": line_number,
+                        "snippet": _truncate_utf8(line.strip(), MAX_SEARCH_SNIPPET_BYTES),
+                    }
+                )
+                if len(file_matches) >= MAX_SEARCH_MATCHES_PER_FILE:
+                    break
+            if file_matches:
+                matches.append({"path": _relative(root, resolved), "matches": file_matches})
+
+    page = matches[offset : offset + limit]
+    has_more = offset + len(page) < len(matches)
+    response = {
+        "query": query,
+        "items": page,
+        "count": len(page),
+        "total_count": len(matches),
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + len(page) if has_more else None,
+        "skipped_count": skipped_count,
+        "scanned_files": scanned_files,
+        "scanned_bytes": scanned_bytes,
+        "scan_truncated": scan_truncated,
+        "output_truncated": False,
+    }
+    while (
+        len(json.dumps(response, ensure_ascii=False, indent=2).encode("utf-8"))
+        > MAX_SEARCH_OUTPUT_BYTES
+        and len(page) > 1
+    ):
+        page.pop()
+        response["count"] = len(page)
+        response["has_more"] = offset + len(page) < len(matches)
+        response["next_offset"] = offset + len(page) if response["has_more"] else None
+        response["output_truncated"] = True
+    return response
+
+
 TOOLS = [
     {
         "name": "handoff_create",
@@ -683,6 +812,22 @@ TOOLS = [
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },
+    {
+        "name": "handoff_search",
+        "description": "Search redacted text in Markdown handoffs with bounded, stable pagination.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["workspace", "query"],
+            "properties": {
+                "workspace": {"type": "string", "description": "Absolute workspace directory."},
+                "query": {"type": "string", "minLength": 1, "description": "Literal, case-insensitive text to find."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": 20},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    },
 ]
 
 
@@ -727,6 +872,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
             "handoff_read": _read,
             "handoff_validate": _validate,
             "handoff_list": _list,
+            "handoff_search": _search,
         }
         return _success(handlers[name](arguments))
     except (HandoffError, OSError) as exc:
