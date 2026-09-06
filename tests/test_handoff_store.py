@@ -83,3 +83,15 @@ def test_concurrent_registration_and_names_share_project(tmp_path, monkeypatch):
         refs = pool.map(_concurrent_create, [(str(workspace), data, state)] * 4)
     assert len(set(refs)) == 4
     assert len({ref.split("/")[2] for ref in refs}) == 1
+
+
+def test_publication_failure_does_not_expose_partial_record(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    project = store.register_project(str(workspace)); real_replace = store.os.replace
+    def fail_replace(src, dst):
+        if ".staging" in str(src): raise OSError("injected publication failure")
+        return real_replace(src, dst)
+    monkeypatch.setattr(store.os, "replace", fail_replace)
+    with pytest.raises(OSError): store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")
+    assert not list((tmp_path / "data" / "session-handoff" / "projects" / project / "handoffs").iterdir())
