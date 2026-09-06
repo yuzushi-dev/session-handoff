@@ -692,16 +692,24 @@ def _markdown_files(directory: Path) -> Iterator[Path]:
 def _search(arguments: dict[str, Any]) -> dict[str, Any]:
     if arguments.get("storage") == "central":
         query = _require_string(arguments, "query"); query, _ = redact_secrets(query); needle = query.casefold()
+        if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES: raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
         scope = arguments.get("scope", "project"); limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
         listing = handoff_store.list_records(_require_string(arguments, "workspace"), scope, MAX_SEARCH_FILES, 0)
         matches = []
+        scanned_bytes = 0; skipped_count = 0; scan_truncated = listing.get("has_more", False)
         for item in listing["items"][:MAX_SEARCH_FILES]:
             try: record = handoff_store.read_record(item["ref"], _require_string(arguments, "workspace"), "all" if scope == "all" else "project")
-            except (handoff_store.HandoffStoreError, OSError): continue
+            except (handoff_store.HandoffStoreError, OSError): skipped_count += 1; continue
+            size = len(record["content"].encode("utf-8"))
+            if scanned_bytes + size > MAX_SEARCH_BYTES: scan_truncated = True; break
+            scanned_bytes += size
             lines = [{"line": n, "snippet": _truncate_utf8(line.strip(), MAX_SEARCH_SNIPPET_BYTES)} for n,line in enumerate(record["content"].splitlines(), 1) if needle in line.casefold()][:MAX_SEARCH_MATCHES_PER_FILE]
             if lines: matches.append({"ref": item["ref"], "project_id": item["project_id"], "name": item["name"], "matches": lines})
         page = matches[offset:offset + limit]; more = offset + len(page) < len(matches)
-        return {"query": query, "items": page, "count": len(page), "total_count": len(matches), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None, "skipped_count": 0, "scanned_files": len(listing["items"]), "scanned_bytes": 0, "scan_truncated": listing.get("has_more", False), "output_truncated": False}
+        response = {"query": query, "items": page, "count": len(page), "total_count": len(matches) if not scan_truncated else None, "offset": offset, "has_more": more or scan_truncated, "next_offset": offset + len(page) if more else None, "skipped_count": skipped_count, "scanned_files": min(len(listing["items"]), MAX_SEARCH_FILES), "scanned_bytes": scanned_bytes, "scan_truncated": scan_truncated, "output_truncated": False}
+        while len(json.dumps(response, ensure_ascii=False).encode()) > MAX_SEARCH_OUTPUT_BYTES and page:
+            page.pop(); response["count"] = len(page); response["output_truncated"] = True
+        return response
     root = _workspace_root(_require_string(arguments, "workspace"))
     query = _require_string(arguments, "query")
     if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES:
@@ -907,6 +915,7 @@ TOOLS = [
                 "ref": {"type": "string", "description": "Canonical central handoff reference."},
                 "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
             },
+            "allOf": [{"oneOf": [{"required": ["path"], "not": {"required": ["ref"]}}, {"required": ["ref"], "not": {"required": ["path"]}}]}],
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },
