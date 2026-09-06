@@ -818,7 +818,15 @@ def _import(arguments: dict[str, Any]) -> dict[str, Any]:
             name = arguments.get("name", path.name); handoff_store.validate_name(name)
             project = handoff_store.register_project(workspace)
             hid = str(__import__("uuid").uuid5(__import__("uuid").UUID(project), "legacy:" + _relative(root, path) + ":" + __import__("hashlib").sha256(content.encode()).hexdigest()))
-            result = handoff_store.publish_record(project, hid, name, content, {"project_id": project, "handoff_id": hid, "kind": "legacy", "source_path": _relative(root, path)})
+            origin = {"project_id": project, "handoff_id": hid, "kind": "legacy", "source_path": _relative(root, path)}
+            ref = handoff_store.make_ref(project, hid)
+            try:
+                existing = handoff_store.read_record(ref, workspace)
+                if existing["content"] != content: raise HandoffError("central handoff identity conflict")
+                result = existing
+                result["idempotent"] = True
+            except handoff_store.HandoffStoreError:
+                result = handoff_store.publish_record(project, hid, name, content, origin)
     except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
     return {"ref": result["ref"], "project_id": result["project_id"], "handoff_id": result["handoff_id"], "name": result["name"], "storage": "central", "idempotent": result.get("idempotent", False)}
 
@@ -835,7 +843,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["workspace", "path"],
+            "required": ["workspace"],
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace, for example handoffs/2026-08-12-feature.md."},
@@ -849,6 +857,7 @@ TOOLS = [
                 {"required": ["content"], "not": {"required": ["state"]}},
                 {"required": ["state"], "not": {"required": ["content"]}},
             ],
+            "allOf": [{"oneOf": [{"required": ["path"], "not": {"required": ["name"]}}, {"required": ["name"], "not": {"required": ["path"]}}]}],
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
     },
@@ -874,13 +883,14 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["workspace", "path"],
+            "required": ["workspace"],
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "path": {"type": "string", "description": "File path relative to workspace."},
                 "ref": {"type": "string", "description": "Canonical central handoff reference."},
                 "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
             },
+            "allOf": [{"oneOf": [{"required": ["path"], "not": {"required": ["ref"]}}, {"required": ["ref"], "not": {"required": ["path"]}}]}],
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     },

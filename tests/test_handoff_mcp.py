@@ -115,7 +115,8 @@ def test_handoff_create_schema_accepts_exact_state_v1_contract():
     tool = next(tool for tool in handoff_mcp.TOOLS if tool["name"] == "handoff_create")
     schema = tool["inputSchema"]
 
-    assert schema["required"] == ["workspace", "path"]
+    assert schema["required"] == ["workspace"]
+    assert {tuple(sorted(x["required"])) for x in schema["allOf"][0]["oneOf"]} == {("name",), ("path",)}
     assert schema["additionalProperties"] is False
     assert "content" not in schema["required"]
     state = schema["properties"]["state"]

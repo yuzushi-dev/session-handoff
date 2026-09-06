@@ -182,12 +182,13 @@ def create_record(workspace: str, name: str, document: str, origin: dict[str, An
     return publish_record(project_id, handoff_id, name, document, origin or {"project_id": project_id, "handoff_id": handoff_id, "kind": "create"})
 
 
-def publish_record(project_id: str, handoff_id: str, name: str, document: str, origin: dict[str, Any]) -> dict[str, Any]:
+def publish_record(project_id: str, handoff_id: str, name: str, document: str, origin: dict[str, Any], preserved_manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     if not _UUID.fullmatch(project_id) or not _UUID.fullmatch(handoff_id): raise HandoffStoreError("invalid UUID")
     validate_name(name); raw = document.encode("utf-8")
     if len(raw) > MAX_DOCUMENT_BYTES: raise HandoffStoreError("central document exceeds size limit")
     created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    manifest = {"schema_version":1,"handoff_id":handoff_id,"name":name,"created_at":created,"sha256":hashlib.sha256(raw).hexdigest(),"origin":origin}
+    manifest = preserved_manifest if preserved_manifest is not None else {"schema_version":1,"handoff_id":handoff_id,"name":name,"created_at":created,"sha256":hashlib.sha256(raw).hexdigest(),"origin":origin}
+    if manifest.get("handoff_id") != handoff_id or manifest.get("sha256") != hashlib.sha256(raw).hexdigest(): raise HandoffStoreError("invalid preserved manifest")
     project = data_root() / "projects" / project_id; _metadata(project_id); target = project / "handoffs" / handoff_id
     with _lock():
         if target.exists(): raise HandoffStoreError("central handoff already exists")
@@ -234,8 +235,14 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
 
 def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
     record = read_record(ref, workspace)
-    destination = Path(directory).expanduser()
-    if not destination.is_absolute() or not destination.parent.exists(): raise HandoffStoreError("export directory must be an absolute workspace-local path")
+    root = Path(workspace).expanduser().resolve()
+    supplied = Path(directory).expanduser()
+    if supplied.is_absolute(): raise HandoffStoreError("export directory must be workspace-relative")
+    destination = root / supplied
+    try: destination.relative_to(root)
+    except ValueError as exc: raise HandoffStoreError("export directory must remain inside workspace") from exc
+    if any(part == ".." for part in supplied.parts) or destination.is_symlink(): raise HandoffStoreError("export directory is unsafe")
+    if not destination.parent.exists() or destination.parent.is_symlink(): raise HandoffStoreError("export directory parent is unsafe")
     if destination.exists():
         if not destination.is_dir() or any(p.name not in {"document.md", "manifest.json"} for p in destination.iterdir()): raise HandoffStoreError("export destination conflicts")
         if (destination / "document.md").exists() and _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode(): raise HandoffStoreError("export destination conflicts")
@@ -267,6 +274,6 @@ def import_bundle(workspace: str, source: str, document: str | None = None, mani
         existing = read_record(make_ref(project_id, handoff_id), workspace)
         if existing["content"] == document and existing["manifest"] == manifest: return {"ref": existing["ref"], "idempotent": True}
         raise HandoffStoreError("central handoff identity conflict")
-    result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}))
+    result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}), manifest)
     result["idempotent"] = False
     return result
