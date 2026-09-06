@@ -178,9 +178,21 @@ def _lock() -> Iterator[None]:
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
         os.close(fd); raise HandoffStoreError("unsafe bindings lock")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX); yield
+    try: fcntl.flock(fd, fcntl.LOCK_EX); yield
     finally: fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
+
+
+def _remove_staging(path: Path) -> None:
+    parent, name = _parent_fd(path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            for child in ("document.md", "manifest.json"):
+                try: os.unlink(child, dir_fd=fd)
+                except FileNotFoundError: pass
+        finally: os.close(fd)
+        os.rmdir(name, dir_fd=parent)
+    finally: os.close(parent)
 
 
 def _save_bindings(bindings: dict[str, str]) -> None:
@@ -221,6 +233,7 @@ def register_project(workspace: str) -> str:
     with _lock():
         bindings = _bindings(); existing = bindings.get(anchor)
         if existing: _metadata(existing); return existing
+        _mkdir(data_root()); _mkdir(data_root() / "projects")
         project_id = str(uuid.uuid4()); project = data_root() / "projects" / project_id; _mkdir(project)
         _mkdir(project / "handoffs")
         _write(project / "project.json", json.dumps({"schema_version":1,"project_id":project_id,"label":Path(workspace).resolve().name}, separators=(",", ":")).encode())
@@ -257,9 +270,8 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
             _write(staging / "document.md", raw); _write(staging / "manifest.json", json.dumps(manifest, separators=(",", ":")).encode())
             parent, target_name = _parent_fd(target); os.rename(staging.name, target_name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
         finally:
-            if staging.exists():
-                for p in staging.iterdir(): p.unlink(missing_ok=True)
-                staging.rmdir()
+            try: _remove_staging(staging)
+            except FileNotFoundError: pass
     return {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id, "name": name, "document": document, "manifest": manifest}
 
 
@@ -282,19 +294,23 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
         return {"items": [], "count": 0, "total_count": 0, "offset": offset, "has_more": False, "next_offset": None}
     projects = [bound] if bound and scope != "all" else []
     truncated = False
+    scanned_project_entries = 0
     if not projects and scope == "all" and (data_root() / "projects").is_dir():
         projects = []
         with os.scandir(data_root() / "projects") as entries:
             for entry in entries:
-                if len(projects) >= min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
+                scanned_project_entries += 1
+                if scanned_project_entries > min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
                 if entry.is_dir(follow_symlinks=False) and _UUID.fullmatch(entry.name): projects.append(entry.name)
     items: list[dict[str, Any]] = []
     for project in sorted(projects):
         handoffs = data_root() / "projects" / project / "handoffs"
         if not handoffs.is_dir(): continue
+        scanned_records = 0
         with os.scandir(handoffs) as entries:
           for entry in entries:
-            if len(items) >= MAX_RECORDS_SCAN: truncated = True; break
+            scanned_records += 1
+            if scanned_records > MAX_RECORDS_SCAN: truncated = True; break
             if not _UUID.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False): continue
             entry_path = Path(entry.path)
             try:
@@ -327,9 +343,8 @@ def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
         _write(staging / "manifest.json", json.dumps(record["manifest"], separators=(",", ":")).encode())
         parent, name = _parent_fd(destination); os.rename(staging.name, name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
     finally:
-        if staging.exists():
-            for p in staging.iterdir(): p.unlink(missing_ok=True)
-            staging.rmdir()
+        try: _remove_staging(staging)
+        except FileNotFoundError: pass
     return {"directory": str(destination), "ref": ref, "idempotent": False}
 
 
