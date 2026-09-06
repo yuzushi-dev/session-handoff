@@ -99,6 +99,9 @@ def test_server_initializes_and_lists_handoff_tools():
         "handoff_validate",
         "handoff_list",
         "handoff_search",
+        "handoff_project",
+        "handoff_import",
+        "handoff_export",
     }
 
 
