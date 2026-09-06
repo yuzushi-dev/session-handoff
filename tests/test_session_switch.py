@@ -1073,3 +1073,8 @@ def test_suite_run_with_isolated_home_still_queues_events(tmp_path, monkeypatch)
     counters = telemetry._load_counters(tmp_path)
     recorded = [entry["event"] for day in counters["days"].values() for entry in day]
     assert any(event.get("operation") == "handoff" for event in recorded)
+def test_write_switch_request_carries_central_ref(tmp_path):
+    control = tmp_path / "control.json"; token = "secret-token"; workspace = tmp_path / "workspace"; workspace.mkdir()
+    write_switch_request(str(control), token, str(workspace), handoff_ref="handoff://00000000-0000-4000-8000-000000000000/00000000-0000-4000-8000-000000000001")
+    payload = json.loads(control.read_text())
+    assert payload["ref"].startswith("handoff://") and "path" not in payload and payload["token"] == token
