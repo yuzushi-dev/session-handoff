@@ -266,8 +266,8 @@ def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
     if any(part == ".." for part in supplied.parts) or destination.is_symlink(): raise HandoffStoreError("export directory is unsafe")
     if not destination.parent.exists() or destination.parent.is_symlink(): raise HandoffStoreError("export directory parent is unsafe")
     if destination.exists():
-        if not destination.is_dir() or any(p.name not in {"document.md", "manifest.json"} for p in destination.iterdir()): raise HandoffStoreError("export destination conflicts")
-        if (destination / "document.md").exists() and _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode(): raise HandoffStoreError("export destination conflicts")
+        if not destination.is_dir() or {p.name for p in destination.iterdir()} != {"document.md", "manifest.json"}: raise HandoffStoreError("export destination conflicts")
+        if _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode() or _read(destination / "manifest.json", MAX_MANIFEST_BYTES) != json.dumps(record["manifest"], separators=(",", ":")).encode(): raise HandoffStoreError("export destination conflicts")
         return {"directory": str(destination), "ref": ref, "idempotent": True}
     staging = destination.parent / ("." + destination.name + ".staging." + secrets.token_hex(8)); _mkdir(staging)
     try:

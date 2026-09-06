@@ -243,8 +243,10 @@ def write_migration_request(
 def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
     try:
         from .handoff_mcp import HandoffError, _safe_path, _workspace_root
+        from . import handoff_store
     except ImportError:
         from handoff_mcp import HandoffError, _safe_path, _workspace_root
+        import handoff_store  # type: ignore[no-redef]
 
     if not control.exists():
         return None
@@ -266,14 +268,23 @@ def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
 
         if mode == "handoff":
             path = payload.get("path")
-            if not isinstance(path, str):
+            ref = payload.get("ref")
+            if (path is None) == (ref is None):
                 raise HandoffError("session switch request is incomplete")
-            root, handoff = _safe_path(workspace, path, must_exist=True)
+            root = _workspace_root(workspace)
             request: dict[str, Any] = {
                 "mode": "handoff",
                 "workspace": str(root),
-                "path": handoff.relative_to(root).as_posix(),
             }
+            if ref is not None:
+                if not isinstance(ref, str): raise HandoffError("session switch request is incomplete")
+                try: handoff_store.read_record(ref, str(root))
+                except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+                request["ref"] = ref
+            else:
+                if not isinstance(path, str): raise HandoffError("session switch request is incomplete")
+                _, handoff = _safe_path(workspace, path, must_exist=True)
+                request["path"] = handoff.relative_to(root).as_posix()
             if "telemetry" in payload:
                 request["telemetry"] = _safe_numeric_summary(payload["telemetry"])
             return request

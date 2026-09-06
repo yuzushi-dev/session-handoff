@@ -19,9 +19,11 @@ from server.session_switch import (
     handoff_prompt,
     write_migration_request,
     write_switch_request,
+    _read_switch_request,
 )
 import server.session_switch as session_switch
 import server.telemetry as telemetry
+from server import handoff_store
 
 
 def test_handoff_prompt_is_a_manual_reference():
@@ -1073,8 +1075,11 @@ def test_suite_run_with_isolated_home_still_queues_events(tmp_path, monkeypatch)
     counters = telemetry._load_counters(tmp_path)
     recorded = [entry["event"] for day in counters["days"].values() for entry in day]
     assert any(event.get("operation") == "handoff" for event in recorded)
-def test_write_switch_request_carries_central_ref(tmp_path):
+def test_write_switch_request_carries_central_ref(tmp_path, monkeypatch):
     control = tmp_path / "control.json"; token = "secret-token"; workspace = tmp_path / "workspace"; workspace.mkdir()
-    write_switch_request(str(control), token, str(workspace), handoff_ref="handoff://00000000-0000-4000-8000-000000000000/00000000-0000-4000-8000-000000000001")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    ref = handoff_store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")["ref"]
+    write_switch_request(str(control), token, str(workspace), handoff_ref=ref)
     payload = json.loads(control.read_text())
     assert payload["ref"].startswith("handoff://") and "path" not in payload and payload["token"] == token
+    assert _read_switch_request(control, token)["ref"] == payload["ref"]
