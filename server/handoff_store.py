@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import re
 import secrets
 import subprocess
@@ -59,11 +60,14 @@ def validate_name(name: str) -> str:
 
 
 def _mkdir(path: Path) -> None:
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        pass
+    current = Path(path.anchor or "/")
+    for part in path.parts[1:] if path.is_absolute() else path.parts:
+        current /= part
+        if current.exists():
+            st = current.lstat()
+            if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode): raise HandoffStoreError("unsafe central directory")
+        else:
+            current.mkdir(mode=0o700)
 
 
 def _read(path: Path, limit: int) -> bytes:
@@ -74,7 +78,12 @@ def _read(path: Path, limit: int) -> bytes:
         st = os.fstat(fd)
         if not __import__("stat").S_ISREG(st.st_mode):
             raise HandoffStoreError("central record must be a regular file")
-        data = os.read(fd, limit + 1)
+        chunks = []; remaining = limit + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk: break
+            chunks.append(chunk); remaining -= len(chunk)
+        data = b"".join(chunks)
     finally:
         try: os.close(fd)
         except (UnboundLocalError, OSError): pass
@@ -95,10 +104,18 @@ def _write(path: Path, payload: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(temporary, flags, 0o600)
     try:
-        os.write(fd, payload); os.fsync(fd)
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
     finally: os.close(fd)
     os.replace(temporary, path)
     os.chmod(path, 0o600)
+    try:
+        parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        os.fsync(parent_fd); os.close(parent_fd)
+    except OSError:
+        pass
 
 
 def _bindings() -> dict[str, str]:
@@ -216,7 +233,12 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     bound = lookup_project(workspace)
     if not bound and scope != "all":
         return {"items": [], "count": 0, "total_count": 0, "offset": offset, "has_more": False, "next_offset": None}
-    projects = [bound] if bound and scope != "all" else sorted(p.name for p in (data_root() / "projects").iterdir() if p.is_dir()) if (data_root() / "projects").is_dir() else []
+    projects = [bound] if bound and scope != "all" else []
+    if not projects and scope == "all" and (data_root() / "projects").is_dir():
+        projects = []
+        for entry in sorted((data_root() / "projects").iterdir(), key=lambda p: p.name):
+            if len(projects) >= 256: break
+            if entry.is_dir() and _UUID.fullmatch(entry.name): projects.append(entry.name)
     items: list[dict[str, Any]] = []
     for project in sorted(projects):
         handoffs = data_root() / "projects" / project / "handoffs"

@@ -52,7 +52,7 @@ If an updater replaces the managed Codex launcher during a supervised run, the s
 2. Capture exact technical state: absolute or repository-relative file paths, symbols, commands, outputs, test names and results, errors, decisions, and unfinished work. Do not replace specifics with vague prose.
 3. Never copy secrets into the handoff. Do not read or include `.env` values, credentials, tokens, private keys, cookies, or authorization headers. Use placeholders such as `<configured externally>` when needed. The MCP server redacts common credential forms as a second safety layer, but the model must still avoid sending secrets to the tool.
 4. Choose a new path such as `handoffs/YYYY-MM-DD-<short-slug>.md`. Do not overwrite an existing file unless the user explicitly asks for that exact replacement.
-5. Call `handoff_create` with the absolute workspace directory, the workspace-relative path, the complete document, and `auto_switch: true`. If the MCP server is unavailable, write the same document with the normal file tool and report that automatic switching was unavailable.
+5. Call `handoff_create` with the absolute workspace directory, `name` (not `path`), the complete document, and `auto_switch: true`. The result is a private immutable `handoff://<project-uuid>/<handoff-uuid>` reference. If MCP is unavailable, report central creation unavailable and offer an explicit legacy `path` fallback.
 6. If the result has `auto_switch_requested: true`, do not continue the old task or ask for confirmation: the launcher is replacing this client with a fresh session and leaving the handoff reference as an unsent draft. If it is false, report the created path and the manual resume command. Do not claim a switch occurred merely because a handoff was written.
 
 Use exactly this document structure:
@@ -128,5 +128,6 @@ The bundled MCP server exposes:
 - `handoff_validate`: checks canonical sections without changing the file.
 - `handoff_list`: lists Markdown handoffs under `handoffs/` with `limit` and `offset` pagination.
 - `handoff_search`: searches redacted Markdown handoffs under `handoffs/` with bounded scanning and pagination.
+- Central workflows use `storage: "central"`, project scope by default, and explicit `scope: "all"` for cross-project discovery. `handoff_import`/`handoff_export` are copy-only portable bundle operations; `handoff_project` performs explicit association/rebind. Checkpoints remain recovery artifacts, separate from semantic handoffs.
 
 Pass an absolute `workspace` path and a workspace-relative `path` to every file-oriented tool. The server rejects traversal outside the workspace. Creation is the only file mutation; `overwrite=true` is an explicit replacement request and should be used sparingly.

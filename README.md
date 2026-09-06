@@ -114,3 +114,6 @@ This restores the saved client launchers and removes the managed bundle and regi
 ## Telemetry
 
 Telemetry is off by default. An interactive npm install asks once. Marketplace installs show a non-blocking reminder at session start. See [docs/telemetry.md](docs/telemetry.md) for the data inventory and controls.
+## Central handoffs
+
+Semantic handoffs can be created privately with `handoff_create(name="next.md", workspace=...)`. They are immutable records addressed by `handoff://<project-uuid>/<handoff-uuid>`, stored under XDG data; local bindings live under XDG state. Use `handoff_read(ref=...)`, `handoff_list(storage="central")`, and `handoff_search(storage="central")`. `handoff_import` and `handoff_export` copy portable `document.md`/`manifest.json` bundles without moving sources. Workspace moves require explicit `handoff_project(..., replace=true)`. Native checkpoints remain separate recovery evidence.
