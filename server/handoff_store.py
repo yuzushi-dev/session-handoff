@@ -87,7 +87,7 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     origin = manifest.get("origin")
     if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
     if "source_path" in origin and (not isinstance(origin["source_path"], str) or not origin["source_path"] or len(origin["source_path"].encode()) > 512 or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
-    if re.search(r"(?i)\b(?:key|token|secret|password)\s*[:=]\s*[^\s]+", document): raise HandoffStoreError("portable document contains secrets")
+    if re.search(r"(?i)\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD)\b\s*[:=]\s*(?!\[REDACTED\])[^\s]+", document): raise HandoffStoreError("portable document contains secrets")
 
 
 def _mkdir(path: Path) -> None:
@@ -98,7 +98,10 @@ def _mkdir(path: Path) -> None:
             st = current.lstat()
             if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode): raise HandoffStoreError("unsafe central directory")
         else:
-            current.mkdir(mode=0o700)
+            try: current.mkdir(mode=0o700)
+            except FileExistsError: pass
+    st = current.stat()
+    if st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central directory permissions")
 
 
 def _read(path: Path, limit: int) -> bytes:

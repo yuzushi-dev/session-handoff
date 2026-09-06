@@ -139,6 +139,16 @@ def test_bundle_manifest_is_strictly_validated_before_registration(
     assert not (tmp_path / "state").exists()
 
 
+def test_redacted_marker_is_accepted_but_raw_secret_rejected(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir(); bundle = workspace / "bundle"; bundle.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    hid = str(uuid.uuid4()); doc = "## Goal\nAPI_KEY=[REDACTED]\n"; manifest = {"schema_version":1,"handoff_id":hid,"name":"x.md","created_at":"2026-01-01T00:00:00Z","sha256":__import__("hashlib").sha256(doc.encode()).hexdigest(),"origin":{"project_id":str(uuid.uuid4()),"handoff_id":hid,"kind":"create"}}
+    (bundle / "document.md").write_text(doc); (bundle / "manifest.json").write_text(json.dumps(manifest))
+    assert store.import_bundle(str(workspace), str(bundle))["handoff_id"] == hid
+    (bundle / "document.md").write_text(doc.replace("[REDACTED]", "rawsecret")); manifest["sha256"] = __import__("hashlib").sha256((bundle / "document.md").read_bytes()).hexdigest(); (bundle / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(store.HandoffStoreError, match="secret"): store.import_bundle(str(workspace), str(bundle))
+
+
 def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     missing = tmp_path / "data/session-handoff/missing.json"
