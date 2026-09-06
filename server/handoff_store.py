@@ -36,7 +36,8 @@ def _parent_fd(path: Path, create: bool = False) -> tuple[int, str]:
             try: child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             except FileNotFoundError:
                 if not create: raise
-                os.mkdir(part, 0o700, dir_fd=fd)
+                try: os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError: pass
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd); fd = child
         return fd, parts[-1]
@@ -97,6 +98,17 @@ def _mkdir(path: Path) -> None:
     try:
         try: os.mkdir(name, 0o700, dir_fd=parent)
         except FileExistsError: pass
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            st = os.fstat(fd)
+            if st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central directory permissions")
+        finally: os.close(fd)
+    finally: os.close(parent)
+
+
+def _check_private_dir(path: Path) -> None:
+    parent, name = _parent_fd(path)
+    try:
         fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         try:
             st = os.fstat(fd)
@@ -220,7 +232,9 @@ def lookup_project(workspace: str) -> str | None:
 
 
 def _metadata(project_id: str) -> dict[str, Any]:
+    _check_private_dir(data_root()); _check_private_dir(data_root() / "projects")
     path = data_root() / "projects" / project_id / "project.json"
+    _check_private_dir(path.parent)
     value = _json(path)
     if value.get("schema_version") != 1 or value.get("project_id") != project_id or not isinstance(value.get("label"), str):
         raise HandoffStoreError("corrupt project metadata")
@@ -293,6 +307,7 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     if not bound and scope != "all":
         return {"items": [], "count": 0, "total_count": 0, "offset": offset, "has_more": False, "next_offset": None}
     projects = [bound] if bound and scope != "all" else []
+    if (data_root() / "projects").exists(): _check_private_dir(data_root()); _check_private_dir(data_root() / "projects")
     truncated = False
     scanned_project_entries = 0
     if not projects and scope == "all" and (data_root() / "projects").is_dir():
@@ -303,10 +318,11 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
                 if scanned_project_entries > min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
                 if entry.is_dir(follow_symlinks=False) and _UUID.fullmatch(entry.name): projects.append(entry.name)
     items: list[dict[str, Any]] = []
+    scanned_records = 0
     for project in sorted(projects):
+        if scanned_records >= MAX_RECORDS_SCAN: truncated = True; break
         handoffs = data_root() / "projects" / project / "handoffs"
         if not handoffs.is_dir(): continue
-        scanned_records = 0
         with os.scandir(handoffs) as entries:
           for entry in entries:
             scanned_records += 1
@@ -320,6 +336,7 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
             except HandoffStoreError: continue
     page = items[offset:offset + limit]
     more = offset + len(page) < len(items)
+    if scanned_records >= MAX_RECORDS_SCAN and len(projects) > 1: truncated = True
     return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more or truncated, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated}
 
 

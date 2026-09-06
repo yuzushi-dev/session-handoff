@@ -162,6 +162,22 @@ def test_bounded_global_discovery_reports_truncation(tmp_path, monkeypatch):
     result = store.list_records(str(workspace)); assert result["scan_truncated"] is True and result["total_count"] is None and len(result["items"]) <= 1
 
 
+def test_record_scan_cap_is_global_across_projects(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir(); monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state")); monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
+    first = store.register_project(str(workspace)); store.publish_record(first, str(uuid.uuid4()), "x.md", "doc", {"project_id":first,"handoff_id":str(uuid.uuid4()),"kind":"create"})
+    second = str(uuid.uuid4()); store._mkdir(store.data_root() / "projects" / second); store._mkdir(store.data_root() / "projects" / second / "handoffs")
+    result = store.list_records(str(workspace), scope="all")
+    assert len(result["items"]) <= 1 and result["scan_truncated"] is True
+
+
+def test_read_paths_reject_world_writable_data_root(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir(); monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    record = store.create_record(str(workspace), "x.md", "doc")
+    store.data_root().chmod(0o777)
+    with pytest.raises(store.HandoffStoreError, match="permissions"): store.read_record(record["ref"], str(workspace))
+    with pytest.raises(store.HandoffStoreError, match="permissions"): store.list_records(str(workspace))
+
+
 def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     missing = tmp_path / "data/session-handoff/missing.json"
@@ -177,9 +193,12 @@ def test_global_list_reports_truncated_totals(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(store, "MAX_PROJECTS", 1, raising=False)
     projects = tmp_path / "data/session-handoff/projects"
+    projects.mkdir(parents=True)
+    projects.parent.chmod(0o700); projects.chmod(0o700)
     for _ in range(2):
         project = projects / str(uuid.uuid4())
         (project / "handoffs").mkdir(parents=True)
+        project.chmod(0o700); (project / "handoffs").chmod(0o700)
 
     result = store.list_records(str(workspace), scope="all")
 
