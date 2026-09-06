@@ -4,7 +4,7 @@ Offline verification (2026-09-06):
 
 ```text
 rtk pytest -q
-724 passed, 2 skipped in 54.82s
+724 passed, 2 skipped in 61.68s (0:01:01)
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py tests/test_session_switch.py
 40 focused tests passed
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py -k 'concurrent or stdio'
@@ -26,4 +26,6 @@ clean
 The MCP stdio protocol was exercised in isolated temporary HOME/XDG roots: central create returned a two-UUID reference, followed by separate read/list/search requests (3 responses captured). `handoff_project` was also exercised.
 Legacy import→export→idempotent reimport stdio test: `1 passed`; source bytes, manifest/hash and ref preservation verified. Central switch request test: `1 passed`; payload contains `ref` and no legacy `path`.
 
-Pending acceptance: Linux Claude, Linux Codex, macOS Claude, macOS Codex real-client discovery, supervised fresh-session switching, worktree/clone matrix, and real local setup refresh/uninstall. These require client/device access and remain unclaimed.
+The consumer revalidates the central reference against the current workspace binding and record at consume time; forged, cross-project, missing-record, and exact-one path/ref payloads are rejected. Export requires exactly the two regular bundle files and compares both bytes on idempotent retry.
+
+Pending acceptance: Linux Claude, Linux Codex, macOS Claude, macOS Codex real-client discovery, supervised fresh-session switching, worktree/clone matrix. These require client/device access and remain unclaimed.
