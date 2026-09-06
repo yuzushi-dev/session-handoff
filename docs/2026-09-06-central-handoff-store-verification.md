@@ -15,6 +15,6 @@ rtk git diff --check
 clean
 ```
 
-The MCP stdio protocol was exercised in isolated temporary HOME/XDG roots for `initialize` and `tools/list` (output captured; no user home or credentials touched). End-to-end create/read/list/search/import/export/project/switch stdio remains pending implementation of a deterministic fixture runner.
+The MCP stdio protocol was exercised in isolated temporary HOME/XDG roots for `initialize`, `tools/list`, central `handoff_create`, and `handoff_project`; captured create output returned `storage: "central"`, a two-UUID `handoff://` reference, and `registered: true`. Read/list/search/import/export/switch round-trip remains pending a deterministic fixture runner.
 
 Pending acceptance: Linux Claude, Linux Codex, macOS Claude, macOS Codex real-client discovery, supervised fresh-session switching, worktree/clone matrix, and real local setup refresh/uninstall. These require client/device access and remain unclaimed.
