@@ -149,6 +149,19 @@ def test_redacted_marker_is_accepted_but_raw_secret_rejected(tmp_path, monkeypat
     with pytest.raises(store.HandoffStoreError, match="secret"): store.import_bundle(str(workspace), str(bundle))
 
 
+def test_application_root_world_writable_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    store.data_root().mkdir(parents=True, mode=0o777)
+    with pytest.raises(store.HandoffStoreError, match="permissions"): store._mkdir(store.data_root())
+
+
+def test_bounded_global_discovery_reports_truncation(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir(); monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state")); monkeypatch.setattr(store, "MAX_RECORDS_SCAN", 1)
+    project = store.register_project(str(workspace))
+    for _ in range(3): store.publish_record(project, str(uuid.uuid4()), "x.md", "doc", {"project_id": project, "handoff_id": str(uuid.uuid4()), "kind": "create"})
+    result = store.list_records(str(workspace)); assert result["scan_truncated"] is True and result["total_count"] is None and len(result["items"]) <= 1
+
+
 def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     missing = tmp_path / "data/session-handoff/missing.json"

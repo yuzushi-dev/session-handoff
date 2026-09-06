@@ -18,6 +18,8 @@ from typing import Any, Iterator
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_PROJECTS = 256
+MAX_PROJECT_ENTRIES = 256
+MAX_RECORDS_SCAN = 256
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -91,17 +93,16 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
 
 
 def _mkdir(path: Path) -> None:
-    current = Path(path.anchor or "/")
-    for part in path.parts[1:] if path.is_absolute() else path.parts:
-        current /= part
-        if current.exists():
-            st = current.lstat()
-            if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode): raise HandoffStoreError("unsafe central directory")
-        else:
-            try: current.mkdir(mode=0o700)
-            except FileExistsError: pass
-    st = current.stat()
-    if st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central directory permissions")
+    parent, name = _parent_fd(path, create=True)
+    try:
+        try: os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError: pass
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            st = os.fstat(fd)
+            if st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central directory permissions")
+        finally: os.close(fd)
+    finally: os.close(parent)
 
 
 def _read(path: Path, limit: int) -> bytes:
@@ -174,6 +175,9 @@ def _lock() -> Iterator[None]:
     parent, name = _parent_fd(lock, create=True)
     fd = os.open(name, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent)
     os.close(parent)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+        os.close(fd); raise HandoffStoreError("unsafe bindings lock")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX); yield
     finally: fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
@@ -277,25 +281,29 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     if not bound and scope != "all":
         return {"items": [], "count": 0, "total_count": 0, "offset": offset, "has_more": False, "next_offset": None}
     projects = [bound] if bound and scope != "all" else []
+    truncated = False
     if not projects and scope == "all" and (data_root() / "projects").is_dir():
         projects = []
-        for entry in sorted((data_root() / "projects").iterdir(), key=lambda p: p.name):
-            if len(projects) >= MAX_PROJECTS: break
-            if entry.is_dir() and _UUID.fullmatch(entry.name): projects.append(entry.name)
+        with os.scandir(data_root() / "projects") as entries:
+            for entry in entries:
+                if len(projects) >= min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
+                if entry.is_dir(follow_symlinks=False) and _UUID.fullmatch(entry.name): projects.append(entry.name)
     items: list[dict[str, Any]] = []
     for project in sorted(projects):
         handoffs = data_root() / "projects" / project / "handoffs"
         if not handoffs.is_dir(): continue
-        for entry in sorted(handoffs.iterdir(), key=lambda p: p.name):
-            if not _UUID.fullmatch(entry.name) or not entry.is_dir(): continue
+        with os.scandir(handoffs) as entries:
+          for entry in entries:
+            if len(items) >= MAX_RECORDS_SCAN: truncated = True; break
+            if not _UUID.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False): continue
+            entry_path = Path(entry.path)
             try:
-                manifest = _json(entry / "manifest.json")
+                manifest = _json(entry_path / "manifest.json")
                 if manifest.get("handoff_id") != entry.name: continue
                 items.append({"ref": make_ref(project, entry.name), "project_id": project, "handoff_id": entry.name, "name": manifest.get("name"), "created_at": manifest.get("created_at")})
             except HandoffStoreError: continue
     page = items[offset:offset + limit]
     more = offset + len(page) < len(items)
-    truncated = len(projects) >= MAX_PROJECTS
     return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more or truncated, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated}
 
 
