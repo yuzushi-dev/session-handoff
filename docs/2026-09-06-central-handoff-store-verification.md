@@ -11,6 +11,10 @@ rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py -k 'concurre
 2 passed
 rtk pytest -q tests/test_package.py -k central_store
 1 passed
+rtk proxy claude plugin validate --strict .
+Validation passed
+rtk npm pack --dry-run --json
+entryCount=28; server/handoff_store.py included
 rtk ruff check server/handoff_store.py server/handoff_mcp.py server/session_switch.py
 clean
 rtk proxy python3 -m compileall -q server
@@ -19,6 +23,6 @@ rtk git diff --check
 clean
 ```
 
-The MCP stdio protocol was exercised in isolated temporary HOME/XDG roots for `initialize`, `tools/list`, central `handoff_create`, and `handoff_project`; captured create output returned `storage: "central"`, a two-UUID `handoff://` reference, and `registered: true`. Read/list/search/import/export/switch round-trip remains pending a deterministic fixture runner.
+The MCP stdio protocol was exercised in isolated temporary HOME/XDG roots: central create returned a two-UUID reference, followed by separate read/list/search requests (3 responses captured). `handoff_project` was also exercised. Legacy import/export/idempotent bundle and switch-ref request remain pending.
 
 Pending acceptance: Linux Claude, Linux Codex, macOS Claude, macOS Codex real-client discovery, supervised fresh-session switching, worktree/clone matrix, and real local setup refresh/uninstall. These require client/device access and remain unclaimed.
