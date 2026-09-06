@@ -178,8 +178,9 @@ def write_switch_request(
     control_path: str,
     token: str,
     workspace: str,
-    handoff_path: str,
+    handoff_path: str | None = None,
     *,
+    handoff_ref: str | None = None,
     telemetry_summary: dict[str, Any] | None = None,
 ) -> None:
     """Publish an authenticated request for a fresh-session handoff."""
@@ -190,12 +191,13 @@ def write_switch_request(
         from handoff_mcp import _safe_path
 
     control, token = _control_credentials(control_path, token)
-    root, path = _safe_path(workspace, handoff_path, must_exist=True)
-    payload = {
-        "token": token,
-        "workspace": str(root),
-        "path": path.relative_to(root).as_posix(),
-    }
+    if (handoff_path is None) == (handoff_ref is None): raise ValueError("exactly one of handoff_path or handoff_ref is required")
+    payload = {"token": token, "workspace": str(Path(workspace).expanduser().resolve())}
+    if handoff_ref is not None:
+        payload["ref"] = handoff_ref
+    else:
+        root, path = _safe_path(workspace, handoff_path or "", must_exist=True)
+        payload["path"] = path.relative_to(root).as_posix()
     safe_summary = _safe_numeric_summary(telemetry_summary)
     if safe_summary:
         payload["telemetry"] = safe_summary
@@ -300,7 +302,9 @@ def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
         control.unlink(missing_ok=True)
 
 
-def handoff_prompt(workspace: str, path: str) -> str:
+def handoff_prompt(workspace: str, path: str | None = None, ref: str | None = None) -> str:
+    if ref is not None:
+        return f"usa handoff_read con workspace={workspace!r} ref={ref!r}, poi riparti da qui"
     return f"reference [{path}] riparti da qui"
 
 
@@ -830,7 +834,7 @@ class SessionSupervisor:
                                 [current_executable, *fresh_args],
                                 env,
                                 request["workspace"],
-                                handoff_prompt(request["workspace"], request["path"]),
+                                handoff_prompt(request["workspace"], request.get("path"), request.get("ref")),
                             )
                         except (OSError, subprocess.SubprocessError):
                             record_terminal_outcome({
@@ -848,7 +852,7 @@ class SessionSupervisor:
                                 current_executable,
                                 [
                                     *fresh_args,
-                                    handoff_prompt(request["workspace"], request["path"]),
+                                    handoff_prompt(request["workspace"], request.get("path"), request.get("ref")),
                                 ],
                                 env,
                                 cwd=request["workspace"],

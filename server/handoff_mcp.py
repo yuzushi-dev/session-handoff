@@ -465,8 +465,12 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             raise HandoffError(str(exc)) from exc
         result = {"ref": central["ref"], "project_id": central["project_id"], "handoff_id": central["handoff_id"], "name": central["name"], "storage": "central", "valid": True, "redacted_count": redacted_count, "bytes": len(redacted.encode("utf-8"))}
         if auto_switch:
-            result["auto_switch_requested"] = False
-            result["auto_switch_error"] = "central reference switching is unavailable"
+            try:
+                control_path, token = _control_credentials()
+                write_switch_request(control_path, token, workspace, handoff_ref=central["ref"], telemetry_summary={"handoff_bytes": result["bytes"], "redacted_count": redacted_count})
+                result["auto_switch_requested"] = True
+            except (ValueError, OSError) as exc:
+                result["auto_switch_requested"] = False; result["auto_switch_error"] = str(exc)
         else:
             _record_outcome({"operation":"handoff","source_client":"codex","target_client":"codex","result":"success","failure_stage":"none","handoff_bytes":result["bytes"],"redacted_count":redacted_count,"dropped_events":0,"normalized_fields":0})
         return result
@@ -686,6 +690,18 @@ def _markdown_files(directory: Path) -> Iterator[Path]:
 
 
 def _search(arguments: dict[str, Any]) -> dict[str, Any]:
+    if arguments.get("storage") == "central":
+        query = _require_string(arguments, "query"); query, _ = redact_secrets(query); needle = query.casefold()
+        scope = arguments.get("scope", "project"); limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
+        listing = handoff_store.list_records(_require_string(arguments, "workspace"), scope, MAX_SEARCH_FILES, 0)
+        matches = []
+        for item in listing["items"][:MAX_SEARCH_FILES]:
+            try: record = handoff_store.read_record(item["ref"], _require_string(arguments, "workspace"), "all" if scope == "all" else "project")
+            except (handoff_store.HandoffStoreError, OSError): continue
+            lines = [{"line": n, "snippet": _truncate_utf8(line.strip(), MAX_SEARCH_SNIPPET_BYTES)} for n,line in enumerate(record["content"].splitlines(), 1) if needle in line.casefold()][:MAX_SEARCH_MATCHES_PER_FILE]
+            if lines: matches.append({"ref": item["ref"], "project_id": item["project_id"], "name": item["name"], "matches": lines})
+        page = matches[offset:offset + limit]; more = offset + len(page) < len(matches)
+        return {"query": query, "items": page, "count": len(page), "total_count": len(matches), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None, "skipped_count": 0, "scanned_files": len(listing["items"]), "scanned_bytes": 0, "scan_truncated": listing.get("has_more", False), "output_truncated": False}
     root = _workspace_root(_require_string(arguments, "workspace"))
     query = _require_string(arguments, "query")
     if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES:
@@ -776,6 +792,40 @@ def _search(arguments: dict[str, Any]) -> dict[str, Any]:
         response["next_offset"] = offset + len(page) if response["has_more"] else None
         response["output_truncated"] = True
     return response
+
+
+def _project(arguments: dict[str, Any]) -> dict[str, Any]:
+    workspace = _require_string(arguments, "workspace")
+    project_id = arguments.get("project_id")
+    if project_id is None:
+        return {"project_id": handoff_store.lookup_project(workspace), "registered": handoff_store.lookup_project(workspace) is not None}
+    replace = arguments.get("replace", False)
+    if not isinstance(replace, bool): raise HandoffError("replace must be a boolean")
+    try: previous = handoff_store.associate_project(workspace, _require_string(arguments, "project_id"), replace)
+    except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+    return {"project_id": project_id, "previous_project_id": previous, "replaced": previous not in (None, project_id)}
+
+
+def _import(arguments: dict[str, Any]) -> dict[str, Any]:
+    workspace = _require_string(arguments, "workspace"); source = _require_string(arguments, "path")
+    root, path = _safe_path(workspace, source, must_exist=True, allow_directory=True)
+    try:
+        if path.is_dir(): result = handoff_store.import_bundle(workspace, str(path))
+        else:
+            content, redacted = _read_file(root, path)
+            missing = validate_handoff(content)
+            if missing: raise HandoffError("missing canonical sections: " + ", ".join(missing))
+            name = arguments.get("name", path.name); handoff_store.validate_name(name)
+            project = handoff_store.register_project(workspace)
+            hid = str(__import__("uuid").uuid5(__import__("uuid").UUID(project), "legacy:" + _relative(root, path) + ":" + __import__("hashlib").sha256(content.encode()).hexdigest()))
+            result = handoff_store.publish_record(project, hid, name, content, {"project_id": project, "handoff_id": hid, "kind": "legacy", "source_path": _relative(root, path)})
+    except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+    return {"ref": result["ref"], "project_id": result["project_id"], "handoff_id": result["handoff_id"], "name": result["name"], "storage": "central", "idempotent": result.get("idempotent", False)}
+
+
+def _export(arguments: dict[str, Any]) -> dict[str, Any]:
+    try: return handoff_store.export_record(_require_string(arguments, "ref"), _require_string(arguments, "workspace"), _require_string(arguments, "directory"))
+    except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
 
 
 TOOLS = [
@@ -878,11 +928,28 @@ TOOLS = [
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
                 "query": {"type": "string", "minLength": 1, "description": "Literal, case-insensitive text to find."},
+                "storage": {"type": "string", "enum": ["workspace", "central"], "default": "workspace"},
+                "scope": {"type": "string", "enum": ["project", "all"], "default": "project"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT, "default": 20},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "handoff_project", "description": "Inspect or explicitly associate a workspace with a central handoff project.",
+        "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace"], "properties":{"workspace":{"type":"string"},"project_id":{"type":"string"},"replace":{"type":"boolean","default":False}}},
+        "annotations": {"readOnlyHint":False,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
+    },
+    {
+        "name": "handoff_import", "description": "Copy a legacy handoff or portable bundle into central storage.",
+        "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace","path"], "properties":{"workspace":{"type":"string"},"path":{"type":"string"},"name":{"type":"string"}}},
+        "annotations": {"readOnlyHint":False,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
+    },
+    {
+        "name": "handoff_export", "description": "Export a central handoff as a portable bundle.",
+        "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace","ref","directory"], "properties":{"workspace":{"type":"string"},"ref":{"type":"string"},"directory":{"type":"string"}}},
+        "annotations": {"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
     },
 ]
 
@@ -929,6 +996,9 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
             "handoff_validate": _validate,
             "handoff_list": _list,
             "handoff_search": _search,
+            "handoff_project": _project,
+            "handoff_import": _import,
+            "handoff_export": _export,
         }
         return _success(handlers[name](arguments))
     except (HandoffError, OSError) as exc:

@@ -230,3 +230,43 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
     page = items[offset:offset + limit]
     more = offset + len(page) < len(items)
     return {"items": page, "count": len(page), "total_count": len(items), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None}
+
+
+def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
+    record = read_record(ref, workspace)
+    destination = Path(directory).expanduser()
+    if not destination.is_absolute() or not destination.parent.exists(): raise HandoffStoreError("export directory must be an absolute workspace-local path")
+    if destination.exists():
+        if not destination.is_dir() or any(p.name not in {"document.md", "manifest.json"} for p in destination.iterdir()): raise HandoffStoreError("export destination conflicts")
+        if (destination / "document.md").exists() and _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode(): raise HandoffStoreError("export destination conflicts")
+        return {"directory": str(destination), "ref": ref, "idempotent": True}
+    staging = destination.parent / ("." + destination.name + ".staging." + secrets.token_hex(8)); _mkdir(staging)
+    try:
+        _write(staging / "document.md", record["content"].encode())
+        _write(staging / "manifest.json", json.dumps(record["manifest"], separators=(",", ":")).encode())
+        os.replace(staging, destination)
+    finally:
+        if staging.exists():
+            for p in staging.iterdir(): p.unlink(missing_ok=True)
+            staging.rmdir()
+    return {"directory": str(destination), "ref": ref, "idempotent": False}
+
+
+def import_bundle(workspace: str, source: str, document: str | None = None, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    if manifest is None:
+        manifest = _json(Path(source) / "manifest.json")
+        document = _read(Path(source) / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+    if not isinstance(document, str) or not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise HandoffStoreError("invalid handoff bundle")
+    handoff_id = manifest.get("handoff_id"); name = manifest.get("name"); project_id = register_project(workspace)
+    if not isinstance(handoff_id, str) or not _UUID.fullmatch(handoff_id): raise HandoffStoreError("invalid handoff bundle identity")
+    validate_name(name)
+    if manifest.get("sha256") != hashlib.sha256(document.encode()).hexdigest(): raise HandoffStoreError("handoff document hash mismatch")
+    target = data_root() / "projects" / project_id / "handoffs" / handoff_id
+    if target.exists():
+        existing = read_record(make_ref(project_id, handoff_id), workspace)
+        if existing["content"] == document and existing["manifest"] == manifest: return {"ref": existing["ref"], "idempotent": True}
+        raise HandoffStoreError("central handoff identity conflict")
+    result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}))
+    result["idempotent"] = False
+    return result
