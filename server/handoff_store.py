@@ -81,10 +81,13 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     if not isinstance(manifest.get("handoff_id"), str) or not _UUID.fullmatch(manifest["handoff_id"]): raise HandoffStoreError("invalid manifest handoff_id")
     validate_name(manifest.get("name"))
     if not isinstance(manifest.get("created_at"), str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", manifest["created_at"]): raise HandoffStoreError("invalid manifest created_at")
+    try: datetime.strptime(manifest["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc: raise HandoffStoreError("invalid manifest created_at") from exc
     if not isinstance(manifest.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["sha256"]) or manifest["sha256"] != hashlib.sha256(document.encode()).hexdigest(): raise HandoffStoreError("invalid manifest sha256")
     origin = manifest.get("origin")
     if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
-    if "source_path" in origin and (not isinstance(origin["source_path"], str) or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
+    if "source_path" in origin and (not isinstance(origin["source_path"], str) or not origin["source_path"] or len(origin["source_path"].encode()) > 512 or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
+    if re.search(r"(?i)\b(?:key|token|secret|password)\s*[:=]\s*[^\s]+", document): raise HandoffStoreError("portable document contains secrets")
 
 
 def _mkdir(path: Path) -> None:
@@ -100,6 +103,7 @@ def _mkdir(path: Path) -> None:
 
 def _read(path: Path, limit: int) -> bytes:
     parent, name = _parent_fd(path)
+    fd = None
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
         st = os.fstat(fd)
@@ -112,8 +116,9 @@ def _read(path: Path, limit: int) -> bytes:
             chunks.append(chunk); remaining -= len(chunk)
         data = b"".join(chunks)
     finally:
-        try: os.close(fd)
-        except OSError: pass
+        if fd is not None:
+            try: os.close(fd)
+            except OSError: pass
         os.close(parent)
     if len(data) > limit:
         raise HandoffStoreError("central record exceeds size limit")
@@ -163,7 +168,9 @@ def _bindings() -> dict[str, str]:
 def _lock() -> Iterator[None]:
     root = state_root(); _mkdir(root)
     lock = root / "bindings.lock"
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    parent, name = _parent_fd(lock, create=True)
+    fd = os.open(name, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent)
+    os.close(parent)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX); yield
     finally: fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
