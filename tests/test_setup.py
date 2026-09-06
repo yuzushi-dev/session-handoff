@@ -1,4 +1,5 @@
 import json
+import stat
 import subprocess
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def test_setup_installs_skill_mcp_registration_and_launcher(tmp_path):
     assert (home / ".codex/skills/session-handoff/SKILL.md").is_file()
     assert (home / ".claude/skills/session-handoff/SKILL.md").is_file()
     assert (home / ".local/share/session-handoff/plugin/server/handoff_mcp.py").is_file()
+    assert stat.S_IMODE((home / ".local/share/session-handoff").stat().st_mode) == 0o700
     assert not (home / ".local/share/session-handoff/plugin/.git").exists()
     assert (bin_dir / "codex.session-handoff-original").is_file()
     assert (bin_dir / "claude.session-handoff-original").is_file()

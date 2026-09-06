@@ -7,6 +7,7 @@ import hashlib
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -227,6 +228,10 @@ def _mcp_command(client: str, executable: Path, action: str) -> list[str]:
 
 def _stage_bundle(package_root: Path, bundle: Path) -> Path:
     bundle.parent.mkdir(parents=True, exist_ok=True)
+    app_root = bundle.parent.lstat()
+    if not stat.S_ISDIR(app_root.st_mode) or stat.S_ISLNK(app_root.st_mode) or app_root.st_uid != os.geteuid():
+        raise SetupError(f"unsafe session-handoff data directory: {bundle.parent}")
+    bundle.parent.chmod(0o700)
     staging = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.staging-", dir=bundle.parent))
     try:
         for name in BUNDLE_ENTRIES:

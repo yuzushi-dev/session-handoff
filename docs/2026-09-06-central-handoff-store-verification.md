@@ -4,7 +4,7 @@ Offline verification (2026-09-06):
 
 ```text
 rtk pytest -q
-742 passed, 2 skipped
+743 passed, 2 skipped
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py tests/test_session_switch.py
 95 focused tests passed
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py -k 'concurrent or stdio'
@@ -30,4 +30,10 @@ The consumer revalidates the central reference against the current workspace bin
 
 The store rejects secret-bearing documents and metadata, unsafe ownership/modes, corrupt manifests, symlinked records, and non-UTF-8 bundles. Project/record discovery is capped and reports `scan_truncated`; the capped subset is deterministic but does not yet expose a continuation cursor beyond the scan window.
 
-Pending acceptance: a continuation contract beyond the bounded discovery window; Linux Claude, Linux Codex, macOS Claude, macOS Codex real-client discovery; supervised fresh-session switching; worktree/clone matrix. These remain unclaimed.
+## Real-client acceptance (Linux, 2026-09-06)
+
+- Claude Code `2.1.263`, effective model `claude-sonnet-5`: MCP discovery (9 tools), central create/read/list/search/export/import, idempotent re-import, second-invocation resume, legacy create/read, and supervised fresh-session switch all passed. The supervised run terminated the source, opened a new session with the exact ref as an unsent draft, then submitted it and read the expected handoff.
+- Codex CLI `0.153.4`, model `gpt-5.6-luna`, reasoning `medium`: MCP discovery, central create/read/validate/list/search/export/import, second-invocation resume, legacy create/read/import, worktree-shared identity, and separate-clone identity passed. The supervised run terminated the source and opened a fresh TUI with the exact ref as an unsent draft. The draft was submitted, but the controlled PTY ended before a readable post-submit tool result was captured; that last evidence remains partial.
+- Real-client testing exposed and fixed two compatibility bugs: Claude sends the standard MCP `_meta` tool-call parameter, and managed setup previously left the shared application data root at `0775` while the store requires `0700`. Setup now validates ownership/type and makes only its own application root private. The managed bundle and both launchers are installed locally; original launchers remain backed up as `*.session-handoff-original`.
+
+Pending acceptance: a continuation contract beyond the bounded discovery window; readable post-submit evidence for the supervised Codex run; macOS Claude and macOS Codex. Linux worktree/clone identity is complete. No push, publish, or deploy was performed.

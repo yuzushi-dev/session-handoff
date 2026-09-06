@@ -194,6 +194,13 @@ def test_call_tool_rejects_unknown_top_level_parameter():
     assert result["structuredContent"]["message"] == "unknown tool call parameter: unexpected"
 
 
+def test_call_tool_accepts_standard_mcp_meta(tmp_path):
+    path = tmp_path / "handoff.md"
+    path.write_text("## Goal\nmeta\n")
+    result = handoff_mcp._call_tool({"name": "handoff_read", "arguments": {"workspace": str(tmp_path), "path": "handoff.md"}, "_meta": {"progressToken": "real-client"}})
+    assert result.get("isError") is not True
+
+
 def test_call_tool_rejects_unknown_tool_argument():
     result = handoff_mcp._call_tool(
         {

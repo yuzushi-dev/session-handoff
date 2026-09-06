@@ -941,7 +941,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
     arguments = params.get("arguments", {})
     if not isinstance(name, str) or name not in {tool["name"] for tool in TOOLS}:
         return _error(f"unknown tool: {name}")
-    unknown = next((key for key in params if key not in {"name", "arguments"}), None)
+    unknown = next((key for key in params if key not in {"name", "arguments", "_meta"}), None)
     if unknown is not None:
         return _error(f"unknown tool call parameter: {unknown}")
     if not isinstance(arguments, dict):
