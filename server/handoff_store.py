@@ -84,6 +84,7 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     if not isinstance(manifest.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["sha256"]) or manifest["sha256"] != hashlib.sha256(document.encode()).hexdigest(): raise HandoffStoreError("invalid manifest sha256")
     origin = manifest.get("origin")
     if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
+    if "source_path" in origin and (not isinstance(origin["source_path"], str) or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
 
 
 def _mkdir(path: Path) -> None:
@@ -251,12 +252,13 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
 def read_record(ref: str, workspace: str, scope: str = "project") -> dict[str, Any]:
     project_id, handoff_id = parse_ref(ref); bound = lookup_project(workspace)
     if scope != "all" and bound != project_id: raise HandoffStoreError("handoff reference is outside workspace project")
+    _metadata(project_id)
     record = data_root() / "projects" / project_id / "handoffs" / handoff_id
     if not record.is_dir(): raise HandoffStoreError("central handoff not found")
     manifest = _json(record / "manifest.json")
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
     document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
-    if hashlib.sha256(document.encode()).hexdigest() != manifest.get("sha256"): raise HandoffStoreError("handoff document hash mismatch")
+    _validate_manifest(manifest, document)
     return {"ref": ref, "project_id": project_id, "handoff_id": handoff_id, "name": manifest.get("name"), "content": document, "manifest": manifest}
 
 
@@ -329,6 +331,12 @@ def import_bundle(workspace: str, source: str, document: str | None = None, mani
         if existing["content"] == document and existing["manifest"] == manifest:
             return {"ref": existing["ref"], "project_id": project_id, "handoff_id": handoff_id, "name": name, "idempotent": True}
         raise HandoffStoreError("central handoff identity conflict")
-    result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}), manifest)
+    try:
+        result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}), manifest)
+    except HandoffStoreError as exc:
+        if "already exists" not in str(exc): raise
+        existing = read_record(make_ref(project_id, handoff_id), workspace)
+        if existing["content"] != document or existing["manifest"] != manifest: raise HandoffStoreError("central handoff identity conflict")
+        return {"ref": existing["ref"], "project_id": project_id, "handoff_id": handoff_id, "name": name, "idempotent": True}
     result["idempotent"] = False
     return result

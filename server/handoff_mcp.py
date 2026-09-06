@@ -690,10 +690,17 @@ def _markdown_files(directory: Path) -> Iterator[Path]:
 
 
 def _search(arguments: dict[str, Any]) -> dict[str, Any]:
+    storage = arguments.get("storage", "workspace")
+    if storage not in {"workspace", "central"}: raise HandoffError("storage must be workspace or central")
+    scope = arguments.get("scope", "project")
+    if scope not in {"project", "all"}: raise HandoffError("scope must be project or all")
+    limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT: raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0: raise HandoffError("offset must be a non-negative integer")
     if arguments.get("storage") == "central":
         query = _require_string(arguments, "query"); query, _ = redact_secrets(query); needle = query.casefold()
         if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES: raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
-        scope = arguments.get("scope", "project"); limit = arguments.get("limit", 20); offset = arguments.get("offset", 0)
+        scope = arguments.get("scope", "project")
         listing = handoff_store.list_records(_require_string(arguments, "workspace"), scope, MAX_SEARCH_FILES, 0)
         matches = []
         scanned_bytes = 0; skipped_count = 0; scan_truncated = listing.get("has_more", False)
@@ -819,7 +826,11 @@ def _import(arguments: dict[str, Any]) -> dict[str, Any]:
     root, path = _safe_path(workspace, source, must_exist=False, allow_directory=True)
     if not path.exists(): raise HandoffError(f"handoff file not found: {_relative(root, path)}")
     try:
-        if path.is_dir(): result = handoff_store.import_bundle(workspace, str(path))
+        if path.is_dir():
+            portable_document = handoff_store._read(path / "document.md", handoff_store.MAX_DOCUMENT_BYTES).decode("utf-8")
+            redacted_document, _ = redact_secrets(portable_document)
+            if redacted_document != portable_document: raise HandoffError("portable bundle document contains secrets")
+            result = handoff_store.import_bundle(workspace, str(path))
         else:
             content, redacted = _read_file(root, path)
             missing = validate_handoff(content)
