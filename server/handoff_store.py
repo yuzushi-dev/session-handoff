@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+try:
+    from .redaction import redact_secrets
+except ImportError:
+    from redaction import redact_secrets  # type: ignore[no-redef]
+
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_PROJECTS = 256
@@ -22,7 +27,6 @@ MAX_PROJECT_ENTRIES = 256
 MAX_RECORDS_SCAN = 256
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-_RAW_SECRET = re.compile(r"(?i)\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD)\b\s*[:=]\s*(?!\[REDACTED\])[^\s]+")
 
 
 class HandoffStoreError(ValueError):
@@ -77,6 +81,7 @@ def make_ref(project_id: str, handoff_id: str) -> str:
 def validate_name(name: str) -> str:
     if not isinstance(name, str) or not _NAME.fullmatch(name) or name.startswith("."):
         raise HandoffStoreError("name must contain only ASCII letters, digits, _, -, . and be at most 128 bytes")
+    if redact_secrets(name)[0] != name: raise HandoffStoreError("name contains secrets")
     return name
 
 
@@ -84,6 +89,7 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     if set(manifest) != {"schema_version", "handoff_id", "name", "created_at", "sha256", "origin"} or manifest.get("schema_version") != 1: raise HandoffStoreError("invalid manifest schema")
     if not isinstance(manifest.get("handoff_id"), str) or not _UUID.fullmatch(manifest["handoff_id"]): raise HandoffStoreError("invalid manifest handoff_id")
     validate_name(manifest.get("name"))
+    if redact_secrets(manifest["name"])[0] != manifest["name"]: raise HandoffStoreError("portable manifest contains secrets")
     if not isinstance(manifest.get("created_at"), str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", manifest["created_at"]): raise HandoffStoreError("invalid manifest created_at")
     try: datetime.strptime(manifest["created_at"], "%Y-%m-%dT%H:%M:%SZ")
     except ValueError as exc: raise HandoffStoreError("invalid manifest created_at") from exc
@@ -91,7 +97,9 @@ def _validate_manifest(manifest: dict[str, Any], document: str) -> None:
     origin = manifest.get("origin")
     if not isinstance(origin, dict) or set(origin) - {"project_id", "handoff_id", "kind", "source_path"} or not _UUID.fullmatch(str(origin.get("project_id"))) or not _UUID.fullmatch(str(origin.get("handoff_id"))) or origin.get("kind") not in {"create", "legacy"}: raise HandoffStoreError("invalid manifest origin")
     if "source_path" in origin and (not isinstance(origin["source_path"], str) or not origin["source_path"] or len(origin["source_path"].encode()) > 512 or Path(origin["source_path"]).is_absolute() or ".." in Path(origin["source_path"]).parts): raise HandoffStoreError("invalid manifest source_path")
-    if _RAW_SECRET.search(document) or re.search(r"(?i)\bBearer\s+(?!\[REDACTED\])\S+|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|\b(?:sk-|gh[pousr]_)[A-Za-z0-9_-]{10,}", document): raise HandoffStoreError("portable document contains secrets")
+    if redact_secrets(document)[0] != document: raise HandoffStoreError("portable document contains secrets")
+    origin_json = json.dumps(origin, ensure_ascii=False, sort_keys=True)
+    if redact_secrets(origin_json)[0] != origin_json: raise HandoffStoreError("portable manifest contains secrets")
     if manifest["origin"].get("handoff_id") != manifest["handoff_id"]: raise HandoffStoreError("invalid manifest origin")
 
 
@@ -181,6 +189,7 @@ def _write(path: Path, payload: bytes) -> None:
 def _bindings() -> dict[str, str]:
     path = state_root() / "bindings.json"
     if not path.exists(): return {}
+    _check_private_dir(state_root()); _check_private_file(path)
     value = _json(path)
     if value.get("schema_version") != 1 or not isinstance(value.get("bindings"), dict):
         raise HandoffStoreError("unsupported or corrupt bindings schema")
@@ -249,6 +258,7 @@ def _metadata(project_id: str) -> dict[str, Any]:
     value = _json(path)
     if value.get("schema_version") != 1 or value.get("project_id") != project_id or not isinstance(value.get("label"), str):
         raise HandoffStoreError("corrupt project metadata")
+    if redact_secrets(value["label"])[0] != value["label"]: raise HandoffStoreError("project metadata contains secrets")
     return value
 
 
@@ -261,7 +271,8 @@ def register_project(workspace: str) -> str:
         _mkdir(data_root()); _mkdir(data_root() / "projects")
         project_id = str(uuid.uuid4()); project = data_root() / "projects" / project_id; _mkdir(project)
         _mkdir(project / "handoffs")
-        _write(project / "project.json", json.dumps({"schema_version":1,"project_id":project_id,"label":Path(workspace).resolve().name}, separators=(",", ":")).encode())
+        label = redact_secrets(Path(workspace).resolve().name)[0][:128] or "project"
+        _write(project / "project.json", json.dumps({"schema_version":1,"project_id":project_id,"label":label}, separators=(",", ":")).encode())
         bindings[anchor] = project_id; _save_bindings(bindings)
         return project_id
 
@@ -329,7 +340,7 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
                 scanned_project_entries += 1
                 if scanned_project_entries > min(MAX_PROJECTS, MAX_PROJECT_ENTRIES): truncated = True; break
                 if entry.is_dir(follow_symlinks=False) and _UUID.fullmatch(entry.name): projects.append(entry.name)
-    items: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []; skipped_count = 0
     scanned_records = 0
     for project in sorted(projects):
         try: _metadata(project)
@@ -337,6 +348,8 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
         if scanned_records >= MAX_RECORDS_SCAN: truncated = True; break
         handoffs = data_root() / "projects" / project / "handoffs"
         if not handoffs.is_dir(): continue
+        try: _check_private_dir(handoffs)
+        except (HandoffStoreError, OSError): skipped_count += 1; continue
         with os.scandir(handoffs) as entries:
           for entry in entries:
             scanned_records += 1
@@ -344,15 +357,19 @@ def list_records(workspace: str, scope: str = "project", limit: int = 20, offset
             if not _UUID.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False): continue
             entry_path = Path(entry.path)
             try:
+                _check_private_dir(entry_path)
+                _check_private_file(entry_path / "manifest.json")
+                _check_private_file(entry_path / "document.md")
                 manifest = _json(entry_path / "manifest.json")
                 if manifest.get("handoff_id") != entry.name: continue
                 _validate_manifest(manifest, _read(entry_path / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8"))
                 items.append({"ref": make_ref(project, entry.name), "project_id": project, "handoff_id": entry.name, "name": manifest.get("name"), "created_at": manifest.get("created_at")})
-            except HandoffStoreError: continue
+            except (HandoffStoreError, OSError, UnicodeDecodeError): skipped_count += 1; continue
+    items.sort(key=lambda item: (item["project_id"], item["handoff_id"]))
     page = items[offset:offset + limit]
     more = offset + len(page) < len(items)
     if scanned_records >= MAX_RECORDS_SCAN and len(projects) > 1: truncated = True
-    return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more or truncated, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated}
+    return {"items": page, "count": len(page), "total_count": None if truncated else len(items), "offset": offset, "has_more": more, "next_offset": offset + len(page) if more else None, "scan_truncated": truncated, "skipped_count": skipped_count}
 
 
 def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:

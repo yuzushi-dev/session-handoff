@@ -149,6 +149,28 @@ def test_redacted_marker_is_accepted_but_raw_secret_rejected(tmp_path, monkeypat
     with pytest.raises(store.HandoffStoreError, match="secret"): store.import_bundle(str(workspace), str(bundle))
 
 
+@pytest.mark.parametrize(
+    ("document", "source_path"),
+    [("## Goal\nBearer abcdefghijklmnop\n", "handoffs/x.md"), ("## Goal\nok\n", "API_TOKEN=supersecretvalue")],
+)
+def test_bundle_rejects_secrets_in_document_or_origin(tmp_path, monkeypatch, document, source_path):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    handoff_id = str(uuid.uuid4())
+    manifest = {"schema_version":1,"handoff_id":handoff_id,"name":"x.md","created_at":"2026-01-01T00:00:00Z","sha256":__import__("hashlib").sha256(document.encode()).hexdigest(),"origin":{"project_id":str(uuid.uuid4()),"handoff_id":handoff_id,"kind":"legacy","source_path":source_path}}
+    with pytest.raises(store.HandoffStoreError, match="secret"): store.import_bundle(str(workspace), "unused", document, manifest)
+
+
+def test_durable_names_and_project_labels_do_not_persist_secrets(tmp_path, monkeypatch):
+    workspace = tmp_path / "API_TOKEN=workspaceSecret"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    project_id = store.register_project(str(workspace))
+    metadata = json.loads((store.data_root() / "projects" / project_id / "project.json").read_text())
+    assert "workspaceSecret" not in metadata["label"]
+    with pytest.raises(store.HandoffStoreError, match="secret"):
+        store.create_record(str(workspace), "sk-ABCDEFGHIJKL", "doc")
+
+
 def test_application_root_world_writable_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     store.data_root().mkdir(parents=True, mode=0o777)
@@ -176,6 +198,31 @@ def test_read_paths_reject_world_writable_data_root(tmp_path, monkeypatch):
     store.data_root().chmod(0o777)
     with pytest.raises(store.HandoffStoreError, match="permissions"): store.read_record(record["ref"], str(workspace))
     with pytest.raises(store.HandoffStoreError, match="permissions"): store.list_records(str(workspace))
+
+
+def test_read_rejects_public_record_and_bindings(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    record = store.create_record(str(workspace), "x.md", "doc")
+    record_dir = store.data_root() / "projects" / record["project_id"] / "handoffs" / record["handoff_id"]
+    record_dir.chmod(0o777)
+    with pytest.raises(store.HandoffStoreError, match="permissions"): store.read_record(record["ref"], str(workspace))
+    record_dir.chmod(0o700)
+    (store.state_root() / "bindings.json").chmod(0o666)
+    with pytest.raises(store.HandoffStoreError, match="permissions"): store.lookup_project(str(workspace))
+
+
+def test_list_is_sorted_and_skips_corrupt_records(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    records = [store.create_record(str(workspace), f"{index}.md", "doc") for index in range(3)]
+    corrupt = store.data_root() / "projects" / records[1]["project_id"] / "handoffs" / records[1]["handoff_id"] / "manifest.json"
+    manifest = json.loads(corrupt.read_text()); manifest["schema_version"] = 999; corrupt.write_text(json.dumps(manifest)); corrupt.chmod(0o600)
+    result = store.list_records(str(workspace))
+    refs = [item["ref"] for item in result["items"]]
+    assert refs == sorted(refs)
+    assert records[1]["ref"] not in refs
+    assert result["skipped_count"] == 1
 
 
 def test_missing_record_does_not_leak_unbound_local_error(tmp_path, monkeypatch):

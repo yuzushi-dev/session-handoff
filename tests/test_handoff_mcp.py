@@ -206,6 +206,23 @@ def test_call_tool_rejects_unknown_tool_argument():
     assert result["structuredContent"]["message"] == "unknown tool argument: unexpected"
 
 
+def test_central_create_store_errors_remain_correlated_tool_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    result = handoff_mcp._call_tool({"name": "handoff_create", "arguments": {"workspace": str(tmp_path), "name": "../bad", "content": "doc"}})
+    assert result["isError"] is True
+    assert "name must contain" in result["structuredContent"]["message"]
+
+
+def test_invalid_utf8_bundle_remains_a_correlated_tool_error(tmp_path):
+    bundle = tmp_path / "bundle"; bundle.mkdir()
+    (bundle / "document.md").write_bytes(b"\xff")
+    (bundle / "manifest.json").write_text("{}")
+    result = handoff_mcp._call_tool({"name": "handoff_import", "arguments": {"workspace": str(tmp_path), "path": "bundle"}})
+    assert result["isError"] is True
+    assert "decode" in result["structuredContent"]["message"]
+
+
 @pytest.mark.parametrize("tool_name", ["handoff_read", "handoff_validate"])
 def test_read_tools_reject_oversized_handoff(tmp_path, tool_name):
     path = tmp_path / "oversized.md"

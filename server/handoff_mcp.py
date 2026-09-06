@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import secrets
 import sys
 from pathlib import Path
@@ -22,6 +21,7 @@ try:
         redact_state,
         render_state,
     )
+    from .redaction import redact_secrets as _shared_redact_secrets
     from .session_switch import (
         CONTROL_PATH_ENV,
         CONTROL_TOKEN_ENV,
@@ -38,6 +38,7 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
         redact_state,
         render_state,
     )
+    from redaction import redact_secrets as _shared_redact_secrets
     from session_switch import (
         CONTROL_PATH_ENV,
         CONTROL_TOKEN_ENV,
@@ -68,29 +69,6 @@ REQUIRED_SECTIONS = (
     "## Next Steps",
 )
 
-_SECRET_KEY_PATTERN = r"\b[A-Za-z][A-Za-z0-9_-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTHORIZATION)\b"
-_ASSIGNMENT = re.compile(
-    rf"(?P<key>{_SECRET_KEY_PATTERN})"
-    r"(?P<spacing>\s*)(?P<separator>[:=])(?P<after>\s*)"
-    r"(?P<quote>['\"]?)(?P<value>[^\s'\"`;,\)\]]+)(?P=quote)",
-    re.IGNORECASE,
-)
-_MALFORMED_REDACTED = re.compile(
-    rf"(?P<prefix>{_SECRET_KEY_PATTERN}\s*[:=]\s*(?P<quote>['\"]?)\[REDACTED\](?P=quote))"
-    r"(?P<attached>[^\s'\"`;)\],]+)",
-    re.IGNORECASE,
-)
-_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_KNOWN_TOKEN = re.compile(
-    r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|"
-    r"github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
-)
-_PRIVATE_KEY = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
-    re.DOTALL,
-)
-
-
 class HandoffError(ValueError):
     """An actionable input or workspace error returned by an MCP tool."""
 
@@ -102,54 +80,8 @@ def _record_outcome(summary: dict[str, Any]) -> None:
         pass
 
 
-def _replace_assignment(match: re.Match[str]) -> str:
-    value = match.group("value")
-    if value == "[REDACTED" and match.end() < len(match.string) and match.string[match.end()] == "]":
-        return match.group(0)
-    return (
-        f"{match.group('key')}{match.group('spacing')}{match.group('separator')}"
-        f"{match.group('after')}{match.group('quote')}[REDACTED]"
-        f"{match.group('quote')}"
-    )
-
-
-def redact_secrets(text: str) -> tuple[str, int]:
-    """Redact common credential forms before handoff text is persisted/displayed."""
-    count = 0
-
-    def replace_private(match: re.Match[str]) -> str:
-        nonlocal count
-        count += 1
-        return "[PRIVATE KEY REDACTED]"
-
-    def replace_bearer(match: re.Match[str]) -> str:
-        nonlocal count
-        count += 1
-        return "Bearer [REDACTED]"
-
-    def replace_token(match: re.Match[str]) -> str:
-        nonlocal count
-        count += 1
-        return "[REDACTED]"
-
-    def replace_assignment(match: re.Match[str]) -> str:
-        nonlocal count
-        replacement = _replace_assignment(match)
-        if replacement != match.group(0):
-            count += 1
-        return replacement
-
-    def replace_malformed_marker(match: re.Match[str]) -> str:
-        nonlocal count
-        count += 1
-        return match.group("prefix")
-
-    redacted = _PRIVATE_KEY.sub(replace_private, text)
-    redacted = _BEARER.sub(replace_bearer, redacted)
-    redacted = _KNOWN_TOKEN.sub(replace_token, redacted)
-    redacted = _MALFORMED_REDACTED.sub(replace_malformed_marker, redacted)
-    redacted = _ASSIGNMENT.sub(replace_assignment, redacted)
-    return redacted, count
+# Keep the public name for compatibility while sharing the persistence boundary.
+redact_secrets = _shared_redact_secrets
 
 
 def validate_handoff(text: str) -> list[str]:
@@ -703,7 +635,7 @@ def _search(arguments: dict[str, Any]) -> dict[str, Any]:
         scope = arguments.get("scope", "project")
         listing = handoff_store.list_records(_require_string(arguments, "workspace"), scope, MAX_SEARCH_FILES, 0)
         matches = []
-        scanned_bytes = 0; skipped_count = 0; scan_truncated = listing.get("has_more", False)
+        scanned_bytes = 0; skipped_count = listing.get("skipped_count", 0); scan_truncated = listing.get("scan_truncated", False) or listing.get("has_more", False)
         for item in listing["items"][:MAX_SEARCH_FILES]:
             try: record = handoff_store.read_record(item["ref"], _require_string(arguments, "workspace"), "all" if scope == "all" else "project")
             except (handoff_store.HandoffStoreError, OSError): skipped_count += 1; continue
@@ -1032,7 +964,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
             "handoff_export": _export,
         }
         return _success(handlers[name](arguments))
-    except (HandoffError, handoff_store.HandoffStoreError, OSError) as exc:
+    except (HandoffError, handoff_store.HandoffStoreError, OSError, UnicodeError) as exc:
         return _error(str(exc))
 
 
