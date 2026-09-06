@@ -105,6 +105,16 @@ def test_server_initializes_and_lists_handoff_tools():
     }
 
 
+def test_stdio_central_create_read_list_search_roundtrip(tmp_path):
+    workspace = tmp_path / "work"; workspace.mkdir()
+    env = {**os.environ, "HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path / "data"), "XDG_STATE_HOME": str(tmp_path / "state")}
+    content = "## Goal\nneedle\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n"
+    calls = [{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"handoff_create","arguments":{"workspace":str(workspace),"name":"next.md","content":content}}}]
+    proc = subprocess.run(["python3","-m","server.handoff_mcp"], input="\n".join(json.dumps(x) for x in calls)+"\n", text=True, capture_output=True, env=env, check=True)
+    payload = json.loads(proc.stdout)["result"]["content"][0]["text"]
+    assert json.loads(payload)["storage"] == "central"
+
+
 @pytest.mark.parametrize("params", [None, [], "invalid"])
 def test_initialize_non_object_params_use_default_protocol_version(params):
     response = handoff_mcp.handle_request(

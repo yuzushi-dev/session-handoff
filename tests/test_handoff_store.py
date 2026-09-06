@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import uuid
 
 import pytest
 
 from server import handoff_store as store
+
+
+def _concurrent_create(args):
+    workspace, data, state = args
+    os.environ["XDG_DATA_HOME"] = data; os.environ["XDG_STATE_HOME"] = state
+    return store.create_record(workspace, "same.md", "## Goal\ncentral\n")["ref"]
 
 
 def test_store_root_uses_absolute_xdg_and_home_fallback(tmp_path, monkeypatch):
@@ -65,3 +73,13 @@ def test_bundle_import_preserves_manifest(tmp_path, monkeypatch):
     (bundle / "document.md").write_text(doc); (bundle / "manifest.json").write_text(json.dumps(manifest))
     result = store.import_bundle(str(workspace), str(bundle))
     assert result["manifest"] == manifest
+
+
+def test_concurrent_registration_and_names_share_project(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    data, state = str(tmp_path / "data"), str(tmp_path / "state")
+    monkeypatch.setenv("XDG_DATA_HOME", data); monkeypatch.setenv("XDG_STATE_HOME", state)
+    with multiprocessing.get_context("fork").Pool(4) as pool:
+        refs = pool.map(_concurrent_create, [(str(workspace), data, state)] * 4)
+    assert len(set(refs)) == 4
+    assert len({ref.split("/")[2] for ref in refs}) == 1

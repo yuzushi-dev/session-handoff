@@ -137,6 +137,11 @@ def test_npx_installer_exposes_setup_command():
     assert "setup" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
     assert "doctor" in (ROOT / "bin/session-handoff").read_text(encoding="utf-8")
     assert (ROOT / "server/setup.py").is_file()
+
+
+def test_central_store_module_is_packaged():
+    assert (ROOT / "server/handoff_store.py").is_file()
+    assert "handoff_store" in (ROOT / "server/handoff_mcp.py").read_text(encoding="utf-8")
     assert (ROOT / "server/command_matrix.py").is_file()
 
 

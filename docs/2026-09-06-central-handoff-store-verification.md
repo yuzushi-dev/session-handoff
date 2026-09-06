@@ -7,6 +7,10 @@ rtk pytest -q
 716 passed, 2 skipped in 44.65s
 rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py tests/test_session_switch.py
 40 focused tests passed
+rtk pytest -q tests/test_handoff_store.py tests/test_handoff_mcp.py -k 'concurrent or stdio'
+2 passed
+rtk pytest -q tests/test_package.py -k central_store
+1 passed
 rtk ruff check server/handoff_store.py server/handoff_mcp.py server/session_switch.py
 clean
 rtk proxy python3 -m compileall -q server
