@@ -816,7 +816,8 @@ def _project(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _import(arguments: dict[str, Any]) -> dict[str, Any]:
     workspace = _require_string(arguments, "workspace"); source = _require_string(arguments, "path")
-    root, path = _safe_path(workspace, source, must_exist=True, allow_directory=True)
+    root, path = _safe_path(workspace, source, must_exist=False, allow_directory=True)
+    if not path.exists(): raise HandoffError(f"handoff file not found: {_relative(root, path)}")
     try:
         if path.is_dir(): result = handoff_store.import_bundle(workspace, str(path))
         else:

@@ -294,7 +294,8 @@ def import_bundle(workspace: str, source: str, document: str | None = None, mani
     target = data_root() / "projects" / project_id / "handoffs" / handoff_id
     if target.exists():
         existing = read_record(make_ref(project_id, handoff_id), workspace)
-        if existing["content"] == document and existing["manifest"] == manifest: return {"ref": existing["ref"], "idempotent": True}
+        if existing["content"] == document and existing["manifest"] == manifest:
+            return {"ref": existing["ref"], "project_id": project_id, "handoff_id": handoff_id, "name": name, "idempotent": True}
         raise HandoffStoreError("central handoff identity conflict")
     result = publish_record(project_id, handoff_id, name, document, manifest.get("origin", {}), manifest)
     result["idempotent"] = False

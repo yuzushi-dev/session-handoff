@@ -115,6 +115,24 @@ def test_stdio_central_create_read_list_search_roundtrip(tmp_path):
     assert json.loads(payload)["storage"] == "central"
 
 
+def test_stdio_legacy_import_export_reimport_idempotent(tmp_path):
+    workspace = tmp_path / "work"; workspace.mkdir(); source = workspace / "legacy.md"
+    source.write_text("## Goal\nlegacy\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n")
+    before = source.read_bytes(); env = {**os.environ, "HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path / "data"), "XDG_STATE_HOME": str(tmp_path / "state")}
+    def call(i, name, args):
+        request = json.dumps({"jsonrpc":"2.0","id":i,"method":"tools/call","params":{"name":name,"arguments":args}})+"\n"
+        response = json.loads(subprocess.run(["python3", "-m", "server.handoff_mcp"], input=request, capture_output=True, text=True, env=env, check=True).stdout)
+        if "result" not in response: raise AssertionError(response)
+        value = response["result"]["content"][0]["text"]
+        try: return json.loads(value)
+        except json.JSONDecodeError as exc: raise AssertionError(value) from exc
+    imported = call(1, "handoff_import", {"workspace":str(workspace),"path":"legacy.md"})
+    call(2, "handoff_export", {"workspace":str(workspace),"ref":imported["ref"],"directory":"bundle"})
+    again = call(3, "handoff_import", {"workspace":str(workspace),"path":"bundle"})
+    assert again["ref"] == imported["ref"] and again["idempotent"] is True
+    assert source.read_bytes() == before and (workspace / "bundle/manifest.json").is_file()
+
+
 @pytest.mark.parametrize("params", [None, [], "invalid"])
 def test_initialize_non_object_params_use_default_protocol_version(params):
     response = handoff_mcp.handle_request(
