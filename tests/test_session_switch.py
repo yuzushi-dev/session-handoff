@@ -26,10 +26,19 @@ import server.telemetry as telemetry
 from server import handoff_store
 
 
-def test_handoff_prompt_is_a_manual_reference():
-    assert handoff_prompt("/workspace", "handoffs/feature.md") == (
-        "reference [handoffs/feature.md] riparti da qui"
-    )
+@pytest.mark.parametrize(
+    ("path", "ref", "resume_instruction"),
+    [
+        ("handoffs/feature.md", None, "reference [handoffs/feature.md]"),
+        (None, "handoff://project/id", "usa handoff_read con workspace='/workspace' ref='handoff://project/id'"),
+    ],
+)
+def test_handoff_prompt_is_unambiguously_a_resume_request(path, ref, resume_instruction):
+    prompt = handoff_prompt("/workspace", path, ref)
+
+    assert prompt.startswith("Ripresa, non creazione:")
+    assert resume_instruction in prompt
+    assert "non creare un nuovo handoff" in prompt
 
 
 def test_draft_relaunch_removes_non_interactive_client_modes():
@@ -124,7 +133,7 @@ def test_supervisor_prefills_relaunch_without_submitting_prompt(tmp_path):
     assert supervisor.run() == 0
     payload = json.loads(result.read_text(encoding="utf-8"))
     assert payload["argv"] == [str(result)]
-    assert payload["draft"] == "reference [handoffs/feature.md] riparti da qui"
+    assert payload["draft"] == handoff_prompt(str(tmp_path), "handoffs/feature.md")
 
 
 def test_write_switch_request_is_consumed_by_supervisor(tmp_path):
@@ -178,7 +187,7 @@ def test_write_switch_request_is_consumed_by_supervisor(tmp_path):
     assert supervisor.run() == 0
     assert calls[0][0] == ["claude", "--plugin-dir", "/plugin"]
     assert calls[1][0][:3] == ["claude", "--plugin-dir", "/plugin"]
-    assert calls[1][0][-1] == "reference [handoffs/feature.md] riparti da qui"
+    assert calls[1][0][-1] == handoff_prompt(str(tmp_path), "handoffs/feature.md")
 
 
 def test_write_switch_request_rejects_invalid_handoff(tmp_path):
@@ -896,7 +905,7 @@ def test_supervisor_strips_resume_selectors_for_the_fresh_session(tmp_path):
         "claude",
         "--plugin-dir",
         "/plugin",
-        "reference [handoff.md] riparti da qui",
+        handoff_prompt(str(tmp_path), "handoff.md"),
     ]
 
 
@@ -949,7 +958,7 @@ def test_supervisor_replaces_codex_exec_prompt_on_relaunch(tmp_path):
 
     assert supervisor.run() == 0
     assert "original prompt" not in calls[1]
-    assert calls[1][-1] == "reference [handoff.md] riparti da qui"
+    assert calls[1][-1] == handoff_prompt(str(tmp_path), "handoff.md")
 
 
 def test_supervisor_replaces_claude_print_prompt_on_relaunch(tmp_path):
@@ -1001,7 +1010,7 @@ def test_supervisor_replaces_claude_print_prompt_on_relaunch(tmp_path):
 
     assert supervisor.run() == 0
     assert "original prompt" not in calls[1]
-    assert calls[1][-1] == "reference [handoff.md] riparti da qui"
+    assert calls[1][-1] == handoff_prompt(str(tmp_path), "handoff.md")
 
 
 class _FakeStream(io.StringIO):

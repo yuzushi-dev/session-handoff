@@ -325,8 +325,10 @@ def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
 
 def handoff_prompt(workspace: str, path: str | None = None, ref: str | None = None) -> str:
     if ref is not None:
-        return f"usa handoff_read con workspace={workspace!r} ref={ref!r}, poi riparti da qui"
-    return f"reference [{path}] riparti da qui"
+        instruction = f"usa handoff_read con workspace={workspace!r} ref={ref!r}"
+    else:
+        instruction = f"reference [{path}]"
+    return f"Ripresa, non creazione: {instruction}, poi riparti da qui; non creare un nuovo handoff"
 
 
 def _fresh_session_args(

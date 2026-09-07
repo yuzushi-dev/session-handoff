@@ -38,7 +38,7 @@ the live repository, and use create mode when semantic context must survive.
 
 The one-time `npx session-handoff setup` command installs a persistent plugin bundle, user-scoped MCP registration, and managed Codex/Claude launchers. The launcher supervises the active client.
 
-For create mode, the launcher starts a fresh session after `handoff_create` succeeds and leaves `reference [<handoff-path>] riparti da qui` pre-filled but unsent in the chat.
+For create mode, the launcher starts a fresh session after `handoff_create` succeeds and leaves an explicit resume-only instruction pre-filled but unsent in the chat. It tells the agent to read the exact path or central reference and not create another handoff.
 
 For migrate mode, the launcher terminates the source client before conversion, creates the target with a generated session ID, then starts the target client with its native resume command. If migration fails after the source client is stopped, the launcher resumes the original source session. The source native session is not modified by conversion.
 
