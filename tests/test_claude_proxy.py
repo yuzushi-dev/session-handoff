@@ -4,7 +4,14 @@ from urllib.request import urlopen
 
 import pytest
 
+import benchmark.claude_proxy as claude_proxy
 from benchmark.claude_proxy import isolated_proxy
+
+
+SKIP_PROXY_INTEGRATION = pytest.mark.skipif(
+    not claude_proxy.PROXY_BINARY.exists(),
+    reason="exact pinned claude-code-proxy 0.1.22 binary is unavailable",
+)
 
 
 def test_proxy_requires_explicit_authorization_before_creating_state(tmp_path):
@@ -23,6 +30,7 @@ def test_proxy_rejects_symlink_credentials(tmp_path):
             pytest.fail("symlink credentials accepted")
 
 
+@SKIP_PROXY_INTEGRATION
 def test_isolated_proxy_health_with_synthetic_credentials(tmp_path):
     auth = tmp_path / "auth.json"
     content = json.dumps(
@@ -42,6 +50,7 @@ def test_isolated_proxy_health_with_synthetic_credentials(tmp_path):
     assert Path(tmp_path / "state").is_dir()
 
 
+@SKIP_PROXY_INTEGRATION
 def test_proxy_does_not_accept_readiness_from_unowned_listener(tmp_path, monkeypatch):
     import benchmark.claude_proxy as module
 
@@ -67,6 +76,7 @@ def test_proxy_rejects_changed_binary_before_execution(tmp_path, monkeypatch):
             pytest.fail("substituted proxy accepted")
 
 
+@SKIP_PROXY_INTEGRATION
 def test_proxy_state_is_ephemeral_and_auth_mount_read_only(tmp_path, monkeypatch):
     import benchmark.claude_proxy as module
 

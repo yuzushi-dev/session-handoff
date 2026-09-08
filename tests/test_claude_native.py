@@ -8,13 +8,40 @@ from pathlib import Path
 
 import pytest
 
+import benchmark.claude_native as claude_native
 from benchmark.claude_native import ClaudeNativeAdapter, ClaudeNativeError
 from benchmark.information_preservation import build_structured_conversation
 
 
-CLAUDE = Path("/home/cristina/.local/bin/claude.session-handoff-original")
+CLAUDE = claude_native.PINNED_BINARY
 _SOCAT_PATH = os.environ.get("SESSION_HANDOFF_BENCHMARK_SOCAT") or shutil.which("socat")
 SOCAT = Path(_SOCAT_PATH) if _SOCAT_PATH else None
+SKIP_NATIVE_INTEGRATION = pytest.mark.skipif(
+    not CLAUDE.exists(),
+    reason="exact pinned Claude 2.1.263 binary is unavailable",
+)
+
+
+@pytest.fixture
+def pinned_claude_stub(tmp_path, monkeypatch):
+    binary = tmp_path / "claude-pinned-stub"
+    binary.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "--version" ]; then\n'
+        '  printf "%s\\n" "2.1.263 (Claude Code)"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o700)
+    monkeypatch.setattr(claude_native, "PINNED_BINARY", binary)
+    real_which = claude_native.shutil.which
+    if real_which("bwrap") is None:
+        monkeypatch.setattr(
+            claude_native.shutil,
+            "which",
+            lambda command: "/bin/true" if command == "bwrap" else real_which(command),
+        )
+    return binary
 
 
 def _sse(blocks, *, stop_reason="end_turn", input_tokens=17):
@@ -194,7 +221,7 @@ def _message_requests(server):
     ]
 
 
-def test_rejects_unpinned_binary_and_nonlocal_endpoint(tmp_path):
+def test_rejects_unpinned_binary_and_nonlocal_endpoint(tmp_path, pinned_claude_stub):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     with pytest.raises(ClaudeNativeError, match="pinned Claude binary"):
@@ -203,32 +230,33 @@ def test_rejects_unpinned_binary_and_nonlocal_endpoint(tmp_path):
         )
     with pytest.raises(ClaudeNativeError, match="loopback"):
         ClaudeNativeAdapter(
-            CLAUDE,
+            pinned_claude_stub,
             workspace,
             tmp_path / "native",
             "https://api.anthropic.com",
         )
 
 
-def test_rejects_native_state_inside_workspace(tmp_path):
+def test_rejects_native_state_inside_workspace(tmp_path, pinned_claude_stub):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     with pytest.raises(ClaudeNativeError, match="outside the workspace"):
         ClaudeNativeAdapter(
-            CLAUDE,
+            pinned_claude_stub,
             workspace,
             workspace / "native",
             "http://127.0.0.1:9",
         )
     with pytest.raises(ClaudeNativeError, match="beneath HOME or /tmp"):
         ClaudeNativeAdapter(
-            CLAUDE,
+            pinned_claude_stub,
             workspace,
             "/var/lib/session-handoff-native-test",
             "http://127.0.0.1:9",
         )
 
 
+@SKIP_NATIVE_INTEGRATION
 def test_structured_seed_is_resumed_into_real_cli_request(tmp_path):
     def reply(_body, _ordinal):
         return [{"type": "text", "text": "RESUMED_OK"}], "end_turn"
@@ -268,6 +296,7 @@ def test_structured_seed_is_resumed_into_real_cli_request(tmp_path):
     assert any(block.get("text") == "CONTINUE_NOW" for block in messages[-1]["content"])
 
 
+@SKIP_NATIVE_INTEGRATION
 def test_fork_probe_does_not_contaminate_original_session(tmp_path):
     def reply(body, _ordinal):
         prompt = json.dumps(body["messages"][-1])
@@ -290,6 +319,7 @@ def test_fork_probe_does_not_contaminate_original_session(tmp_path):
     assert "ORIGINAL_CONTINUATION" in json.dumps(second)
 
 
+@SKIP_NATIVE_INTEGRATION
 def test_real_compact_emits_boundary_and_replaces_precompact_history(tmp_path):
     def reply(body, _ordinal):
         if "POSTCOMPACT_PROBE" in json.dumps(body["messages"][-1]):
@@ -318,6 +348,7 @@ def test_real_compact_emits_boundary_and_replaces_precompact_history(tmp_path):
     assert len(requests) == 2  # summary, then probe; /context is provider-free
 
 
+@SKIP_NATIVE_INTEGRATION
 def test_short_noop_compact_is_not_reported_as_actual(tmp_path):
     def reply(_body, _ordinal):
         return [{"type": "text", "text": "UNEXPECTED_API_CALL"}], "end_turn"
@@ -340,7 +371,9 @@ def test_short_noop_compact_is_not_reported_as_actual(tmp_path):
     assert result["actual_compaction"] is False
 
 
-def test_write_mode_fails_closed_when_socat_is_unavailable(tmp_path):
+def test_write_mode_fails_closed_when_socat_is_unavailable(
+    tmp_path, pinned_claude_stub
+):
     if shutil.which("socat") is not None:
         pytest.skip("host has the write-mode sandbox prerequisite")
 
@@ -352,7 +385,7 @@ def test_write_mode_fails_closed_when_socat_is_unavailable(tmp_path):
     with (
         _fake_anthropic(reply) as (_server, base_url),
         ClaudeNativeAdapter(
-            CLAUDE,
+            pinned_claude_stub,
             workspace,
             tmp_path / "native",
             base_url,
@@ -368,6 +401,7 @@ def test_write_mode_fails_closed_when_socat_is_unavailable(tmp_path):
     SOCAT is None or not SOCAT.is_file(),
     reason="temporary socat sandbox prerequisite missing",
 )
+@SKIP_NATIVE_INTEGRATION
 def test_native_state_is_hidden_from_read_and_bash_but_workspace_is_writable(tmp_path):
     calls = [
         {

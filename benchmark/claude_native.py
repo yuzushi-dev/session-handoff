@@ -9,7 +9,7 @@ import shutil
 import signal
 import subprocess
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -114,7 +114,7 @@ class ClaudeNativeAdapter:
         transcript = self.state_root / "projects" / project / f"{session_id}.jsonl"
         transcript.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         parent: str | None = None
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         records = []
         estimated_context_bytes = 0
         for index, item in enumerate(messages):
