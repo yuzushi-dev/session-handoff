@@ -24,7 +24,6 @@ BUNDLE_ENTRIES = (
     ".mcp.json",
     "mcp.json",
     "package.json",
-    "plugin.json",
     "README.md",
     "hooks",
     "docs/telemetry.md",
@@ -369,7 +368,13 @@ def install_setup(
 
         for client in new_clients:
             executable = launchers[client]
-            command = _mcp_command(client, executable, "add") + ["--", "python3", str(server)]
+            command = _mcp_command(client, executable, "add") + [
+                "--env",
+                f"SESSION_HANDOFF_CLIENT={client}",
+                "--",
+                "python3",
+                str(server),
+            ]
             runner(command)
             registered.append((client, executable))
 

@@ -2,11 +2,13 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 import server.handoff_mcp as handoff_mcp
+from server import session_switch, telemetry
 
 
 SERVER = Path(__file__).parents[1] / "server" / "handoff_mcp.py"
@@ -102,6 +104,7 @@ def test_server_initializes_and_lists_handoff_tools():
         "handoff_project",
         "handoff_import",
         "handoff_export",
+        "handoff_setup",
     }
 
     export = next(
@@ -111,7 +114,121 @@ def test_server_initializes_and_lists_handoff_tools():
     assert export["annotations"]["readOnlyHint"] is False
 
 
-def test_stdio_central_create_read_list_search_roundtrip(tmp_path):
+def test_setup_commands_come_from_server_installation_without_workspace(tmp_path, monkeypatch):
+    import shlex
+
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    response = handoff_mcp._call_tool({"name": "handoff_setup", "arguments": {}})
+    assert not response.get("isError"), response
+    result = json.loads(response["content"][0]["text"])
+    cli = str(SERVER.parent.parent / "bin/session-handoff")
+    for client in ("claude", "codex"):
+        assert shlex.split(result["setup_commands"][client]) == [
+            "python3", cli, "setup", "--client", client,
+        ]
+    assert shlex.split(result["telemetry_commands"]["enable"]) == [
+        "python3", cli, "telemetry", "enable",
+    ]
+    assert not list(tmp_path.iterdir())
+    again = handoff_mcp._call_tool({"name": "handoff_setup"})
+    assert again == response
+    assert handoff_mcp._call_tool({"name": "handoff_setup", "arguments": {
+        "plugin_root": "/untrusted",
+    }})["isError"] is True
+
+
+def test_handoff_create_schema_explains_central_and_legacy_modes():
+    tool = next(tool for tool in handoff_mcp.TOOLS if tool["name"] == "handoff_create")
+    properties = tool["inputSchema"]["properties"]
+
+    assert "immutable central record outside the workspace" in tool["description"]
+    assert "explicit legacy workspace file" in tool["description"]
+    assert "overwrite=true" in tool["description"]
+    assert "managed launcher" in tool["description"]
+    assert "immutable central record outside the workspace" in properties["name"]["description"]
+    assert "legacy workspace file" in properties["path"]["description"]
+    assert "legacy" in properties["overwrite"]["description"]
+    assert "managed launcher" in properties["auto_switch"]["description"]
+
+
+@pytest.mark.parametrize("bound", [True, False])
+def test_cross_project_read_error_explains_scope_or_rebind(tmp_path, monkeypatch, bound):
+    workspace = tmp_path / "workspace"; foreign_workspace = tmp_path / "foreign"
+    workspace.mkdir(); foreign_workspace.mkdir()
+    if not bound:
+        workspace = tmp_path / "unbound"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    handoff_mcp.handoff_store.create_record(str(workspace if bound else foreign_workspace), "local.md", "local")
+    foreign = handoff_mcp.handoff_store.create_record(str(foreign_workspace), "foreign.md", "foreign-secret")
+
+    with pytest.raises(handoff_mcp.HandoffError) as error:
+        handoff_mcp._read({"workspace": str(workspace), "ref": foreign["ref"]})
+
+    message = str(error.value)
+    assert "scope='all'" in message
+    assert "handoff_project" in message
+    assert str(workspace) not in message
+    assert "foreign-secret" not in message
+
+
+def test_project_status_lists_existing_project_ids_and_labels(tmp_path, monkeypatch):
+    workspace = tmp_path / "work"; other = tmp_path / "other"
+    workspace.mkdir(); other.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    first = handoff_mcp.handoff_store.create_record(str(workspace), "one.md", "one")
+    second = handoff_mcp.handoff_store.create_record(str(other), "two.md", "two")
+
+    result = handoff_mcp._project({"workspace": str(workspace)})
+
+    assert result["project_id"] == first["project_id"]
+    assert {item["project_id"] for item in result["projects"]} == {first["project_id"], second["project_id"]}
+    assert all(isinstance(item["label"], str) for item in result["projects"])
+
+
+def test_project_status_paginates_existing_projects(tmp_path, monkeypatch):
+    with tempfile.TemporaryDirectory(dir="/var/tmp") as root:
+        workspace = Path(root) / "work"; other = Path(root) / "other"
+        workspace.mkdir(); other.mkdir()
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        first = handoff_mcp.handoff_store.create_record(str(workspace), "one.md", "one")
+        second = handoff_mcp.handoff_store.create_record(str(other), "two.md", "two")
+
+        page = handoff_mcp._project({"workspace": str(workspace), "limit": 1})
+
+        assert page["count"] == 1
+        assert page["has_more"] is True
+        assert isinstance(page["next_cursor"], str)
+        assert page["projects"][0]["project_id"] in {first["project_id"], second["project_id"]}
+
+        continuation = handoff_mcp._project(
+            {"workspace": str(workspace), "limit": 1, "cursor": page["next_cursor"]}
+        )
+
+        assert continuation["count"] == 1
+        assert continuation["has_more"] is False
+        assert continuation["next_cursor"] is None
+        assert continuation["projects"][0]["project_id"] != page["projects"][0]["project_id"]
+
+
+def test_list_rejects_unknown_storage(tmp_path):
+    with pytest.raises(handoff_mcp.HandoffError, match="storage"):
+        handoff_mcp._list({"workspace": str(tmp_path), "storage": "archive"})
+
+
+def test_central_search_rejects_raw_query_over_byte_limit(tmp_path, monkeypatch):
+    workspace = tmp_path / "work"; workspace.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    query = "PASSWORD=" + "secret" * 200
+
+    with pytest.raises(handoff_mcp.HandoffError, match="query exceeds"):
+        handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": query})
+
+
+def test_stdio_central_create_returns_ref(tmp_path):
     workspace = tmp_path / "work"; workspace.mkdir()
     env = {**os.environ, "HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path / "data"), "XDG_STATE_HOME": str(tmp_path / "state")}
     content = "## Goal\nneedle\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n"
@@ -137,6 +254,70 @@ def test_stdio_legacy_import_export_reimport_idempotent(tmp_path):
     again = call(3, "handoff_import", {"workspace":str(workspace),"path":"bundle"})
     assert again["ref"] == imported["ref"] and again["idempotent"] is True
     assert source.read_bytes() == before and (workspace / "bundle/manifest.json").is_file()
+
+
+def test_legacy_import_uses_source_mtime_and_rejects_name_conflicts(tmp_path, monkeypatch):
+    workspace = tmp_path / "work"; workspace.mkdir()
+    source = workspace / "legacy.md"
+    content = "## Goal\nlegacy\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n"
+    source.write_text(content, encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    first_mtime = 1_700_000_000
+    os.utime(source, (first_mtime, first_mtime))
+
+    imported = handoff_mcp._import({"workspace": str(workspace), "path": "legacy.md", "name": "first.md"})
+    expected_created = "2023-11-14T22:13:20Z"
+    record = handoff_mcp.handoff_store.read_record(imported["ref"], str(workspace))
+    assert record["manifest"]["created_at"] == expected_created
+
+    later_mtime = first_mtime + 86_400
+    os.utime(source, (later_mtime, later_mtime))
+    again = handoff_mcp._import({"workspace": str(workspace), "path": "legacy.md", "name": "first.md"})
+    assert again["ref"] == imported["ref"] and again["idempotent"] is True
+    assert handoff_mcp.handoff_store.read_record(imported["ref"], str(workspace))["manifest"]["created_at"] == expected_created
+
+    with pytest.raises(handoff_mcp.HandoffError, match="conflict"):
+        handoff_mcp._import({"workspace": str(workspace), "path": "legacy.md", "name": "renamed.md"})
+
+    changed = content.replace("legacy", "changed")
+    source.write_text(changed, encoding="utf-8")
+    changed_import = handoff_mcp._import({"workspace": str(workspace), "path": "legacy.md", "name": "first.md"})
+    assert changed_import["ref"] != imported["ref"]
+    assert handoff_mcp.handoff_store.read_record(imported["ref"], str(workspace))["content"] == content
+
+
+def test_legacy_import_redacts_secret_source_path_metadata(tmp_path, monkeypatch):
+    workspace = tmp_path / "work"; workspace.mkdir()
+    source_dir = workspace / "handoffs"; source_dir.mkdir()
+    source = source_dir / "API_TOKEN=secret.md"
+    source.write_text("## Goal\nlegacy\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    imported = handoff_mcp._import({"workspace": str(workspace), "path": "handoffs/API_TOKEN=secret.md", "name": "source.md"})
+    origin = handoff_mcp.handoff_store.read_record(imported["ref"], str(workspace))["manifest"]["origin"]
+
+    assert "secret" not in json.dumps(origin)
+    assert source.is_file()
+
+
+def test_legacy_import_race_returns_idempotent_existing_record(tmp_path, monkeypatch):
+    workspace = tmp_path / "work"; workspace.mkdir()
+    source = workspace / "legacy.md"
+    source.write_text("## Goal\nlegacy\n## Constraints & Preferences\nnone\n## Progress\ndone\n## Key Decisions\nnone\n## Critical Context\nnone\n## Next Steps\nnext\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    real_publish = handoff_mcp.handoff_store.publish_record
+
+    def publish_then_report_race(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise handoff_mcp.handoff_store.HandoffStoreError("central handoff already exists")
+
+    monkeypatch.setattr(handoff_mcp.handoff_store, "publish_record", publish_then_report_race)
+    result = handoff_mcp._import({"workspace": str(workspace), "path": "legacy.md"})
+
+    assert result["idempotent"] is True
 
 
 @pytest.mark.parametrize("params", [None, [], "invalid"])
@@ -228,6 +409,15 @@ def test_invalid_utf8_bundle_remains_a_correlated_tool_error(tmp_path):
     result = handoff_mcp._call_tool({"name": "handoff_import", "arguments": {"workspace": str(tmp_path), "path": "bundle"}})
     assert result["isError"] is True
     assert "decode" in result["structuredContent"]["message"]
+
+
+def test_import_rejects_non_regular_bundle_entries(tmp_path):
+    bundle = tmp_path / "bundle"; bundle.mkdir()
+    os.mkfifo(bundle / "document.md")
+    (bundle / "manifest.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(handoff_mcp.HandoffError, match="bundle"):
+        handoff_mcp._import({"workspace": str(tmp_path), "path": "bundle"})
 
 
 @pytest.mark.parametrize("tool_name", ["handoff_read", "handoff_validate"])
@@ -562,6 +752,33 @@ def test_central_search_cursor_reaches_match_beyond_file_budget(monkeypatch, tmp
     assert second["has_more"] is False
 
 
+def test_failed_rebind_preserves_previous_project_and_catalog_recovery(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"; other = tmp_path / "other"
+    workspace.mkdir(); other.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    project_a = handoff_mcp.handoff_store.register_project(str(workspace))
+    project_b = handoff_mcp.handoff_store.register_project(str(other))
+    real_catalog = handoff_mcp.handoff_store._catalog
+
+    def fail_catalog():
+        raise handoff_mcp.handoff_store.HandoffStoreError("injected catalog failure")
+
+    monkeypatch.setattr(handoff_mcp.handoff_store, "_catalog", fail_catalog)
+    record = handoff_mcp.handoff_store.create_record(str(workspace), "a.md", "needle")
+    assert handoff_mcp.handoff_store._dirty_catalog_project() == project_a
+
+    with pytest.raises(handoff_mcp.handoff_store.HandoffStoreError, match="catalog"):
+        handoff_mcp.handoff_store.associate_project(str(workspace), project_b, replace=True)
+
+    monkeypatch.setattr(handoff_mcp.handoff_store, "_catalog", real_catalog)
+    assert handoff_mcp.handoff_store.lookup_project(str(workspace)) == project_a
+    assert handoff_mcp.handoff_store._dirty_catalog_project() == project_a
+    assert handoff_mcp._read({"workspace": str(workspace), "ref": record["ref"]})["content"] == "needle"
+    assert handoff_mcp._list({"workspace": str(workspace), "storage": "central"})["items"][0]["ref"] == record["ref"]
+    assert handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})["items"][0]["ref"] == record["ref"]
+
+
 def test_central_search_cursor_is_bound_to_query(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"; workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -611,10 +828,10 @@ def test_central_search_charges_corrupt_documents_to_byte_budget(tmp_path, monke
     real_read = handoff_mcp.handoff_store._read
     document_reads = 0
 
-    def counted_read(path, limit):
+    def counted_read(path, limit, expected_identity=None):
         nonlocal document_reads
         if path.name == "document.md": document_reads += 1
-        return real_read(path, limit)
+        return real_read(path, limit) if expected_identity is None else real_read(path, limit, expected_identity)
 
     monkeypatch.setattr(handoff_mcp.handoff_store, "_read", counted_read)
     result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
@@ -634,10 +851,10 @@ def test_central_search_checks_byte_budget_before_reading_next_record(tmp_path, 
     real_read = handoff_mcp.handoff_store._read
     document_reads = 0
 
-    def counted_read(path, limit):
+    def counted_read(path, limit, expected_identity=None):
         nonlocal document_reads
         if path.name == "document.md": document_reads += 1
-        return real_read(path, limit)
+        return real_read(path, limit) if expected_identity is None else real_read(path, limit, expected_identity)
 
     monkeypatch.setattr(handoff_mcp.handoff_store, "_read", counted_read)
     result = handoff_mcp._search({"workspace": str(workspace), "storage": "central", "query": "needle"})
@@ -767,6 +984,7 @@ Continue the feature.
 
 def test_create_validation_failure_records_only_safe_summary(monkeypatch, tmp_path):
     summaries = []
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "codex")
     monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
 
     with pytest.raises(handoff_mcp.HandoffError, match="missing canonical sections"):
@@ -795,6 +1013,7 @@ def test_create_validation_failure_records_only_safe_summary(monkeypatch, tmp_pa
 def test_create_validation_failures_report_distinct_stages(monkeypatch, tmp_path):
     """Each validation cause reports its own stage, so the dashboard can tell them apart."""
     complete = "".join(f"{section}\nx\n\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "codex")
 
     def stage_for(arguments):
         summaries = []
@@ -953,6 +1172,196 @@ Continue the feature.
     assert result["valid"] is True
     assert result["auto_switch_requested"] is False
     assert "unavailable" in result["auto_switch_error"]
+
+
+@pytest.mark.parametrize("client_name,client", [
+    ("claude-code", "claude"),
+    ("claude-ai", "claude"),
+    ("codex-mcp-client", "codex"),
+])
+def test_manual_create_uses_known_client_from_mcp_initialize(
+    monkeypatch, tmp_path, client_name, client,
+):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    summaries = []
+    monkeypatch.delenv("SESSION_HANDOFF_CLIENT", raising=False)
+    monkeypatch.setattr(handoff_mcp, "_mcp_client", None, raising=False)
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+    request = initialized()
+    request["params"]["clientInfo"]["name"] = client_name
+
+    handoff_mcp.handle_request(request)
+    handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/claude.md",
+        "content": content,
+    })
+
+    assert summaries[0]["source_client"] == client
+    assert summaries[0]["target_client"] == client
+
+
+def test_manual_create_skips_unknown_client_attribution(monkeypatch, tmp_path):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    summaries = []
+    monkeypatch.delenv("SESSION_HANDOFF_CLIENT", raising=False)
+    monkeypatch.setattr(handoff_mcp, "_mcp_client", None, raising=False)
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+    request = initialized()
+
+    handoff_mcp.handle_request(request)
+    handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/unknown.md",
+        "content": content,
+    })
+
+    assert summaries == []
+
+
+def test_invalid_initialize_resets_previous_client_attribution(monkeypatch, tmp_path):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    summaries = []
+    monkeypatch.delenv("SESSION_HANDOFF_CLIENT", raising=False)
+    monkeypatch.setattr(handoff_mcp, "_mcp_client", None, raising=False)
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+    known = initialized()
+    known["params"]["clientInfo"]["name"] = "claude-code"
+    unknown = initialized(2)
+    unknown["params"]["clientInfo"]["name"] = "pytest"
+
+    handoff_mcp.handle_request(known)
+    handoff_mcp.handle_request(unknown)
+    handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/reset.md",
+        "content": content,
+    })
+
+    assert summaries == []
+
+
+def test_explicit_client_environment_overrides_mcp_initialize(
+    monkeypatch, tmp_path,
+):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    summaries = []
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "codex")
+    monkeypatch.setattr(handoff_mcp, "_mcp_client", None, raising=False)
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+    request = initialized()
+    request["params"]["clientInfo"]["name"] = "claude-code"
+
+    handoff_mcp.handle_request(request)
+    handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/env.md",
+        "content": content,
+    })
+
+    assert summaries[0]["source_client"] == "codex"
+
+
+def test_supervised_create_does_not_emit_mcp_terminal_outcome(
+    monkeypatch, tmp_path,
+):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    summaries = []
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "claude")
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL", str(control_dir / "switch.json"))
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL_TOKEN", "token")
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+
+    result = handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/supervised.md",
+        "content": content,
+        "auto_switch": True,
+    })
+
+    assert result["auto_switch_requested"] is True
+    assert summaries == []
+
+
+def test_manual_claude_create_reaches_closed_telemetry_counter(
+    monkeypatch, tmp_path,
+):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    home = tmp_path / "telemetry-home"
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(home))
+    monkeypatch.delenv("SESSION_HANDOFF_CLIENT", raising=False)
+    monkeypatch.setattr(handoff_mcp, "_mcp_client", None, raising=False)
+    monkeypatch.setattr(session_switch.telemetry, "spawn_detached_flush", lambda *_args: None)
+    telemetry.write_config(home, telemetry.enabled_config("2026-09-08T00:00:00Z"))
+    request = initialized()
+    request["params"]["clientInfo"]["name"] = "claude-code"
+
+    handoff_mcp.handle_request(request)
+    result = handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "path": "handoffs/claude.md",
+        "content": content,
+    })
+
+    counters = telemetry._load_counters(home)
+    operation = next(
+        entry["event"]
+        for entries in counters["days"].values()
+        for entry in entries
+        if entry["event"]["event"] == "operation_summary"
+    )
+    assert result["valid"] is True
+    assert operation["operation"] == "handoff"
+    assert operation["source_client"] == operation["target_client"] == "claude"
+    assert operation["result"] == "success"
+    assert operation["failure_stage"] == "none"
+
+
+def test_central_create_records_manual_fallback_without_supervisor(monkeypatch, tmp_path):
+    content = "".join(f"{section}\n" for section in handoff_mcp.REQUIRED_SECTIONS)
+    summaries = []
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "codex")
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL", raising=False)
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL_TOKEN", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+
+    result = handoff_mcp._create({
+        "workspace": str(tmp_path),
+        "name": "central.md",
+        "content": content,
+        "auto_switch": True,
+    })
+
+    assert result["auto_switch_requested"] is False
+    assert summaries[0]["result"] == "fallback"
+    assert summaries[0]["failure_stage"] == "control"
+
+
+def test_unsupervised_migration_records_control_failure(monkeypatch, tmp_path):
+    summaries = []
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL", raising=False)
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL_TOKEN", raising=False)
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+
+    result = handoff_mcp._migrate({
+        "workspace": str(tmp_path),
+        "source_client": "claude",
+        "target_client": "codex",
+        "source_session_id": "source-id",
+    })
+
+    assert result["auto_switch_requested"] is False
+    assert summaries == [{
+        "operation": "migrate",
+        "source_client": "claude",
+        "target_client": "codex",
+        "result": "failure",
+        "failure_stage": "control",
+    }]
 
 
 def test_create_rejects_path_escape_and_missing_sections(tmp_path):

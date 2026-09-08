@@ -27,18 +27,36 @@ from server import handoff_store
 
 
 @pytest.mark.parametrize(
-    ("path", "ref", "resume_instruction"),
+    ("path", "ref", "expected"),
     [
-        ("handoffs/feature.md", None, "reference [handoffs/feature.md]"),
-        (None, "handoff://project/id", "usa handoff_read con workspace='/workspace' ref='handoff://project/id'"),
+        (
+            "handoffs/feature.md",
+            None,
+            'Resume task: call handoff_read(workspace="/workspace", path="handoffs/feature.md") and proceed with the next steps. Do not create a new handoff.',
+        ),
+        (
+            None,
+            "handoff://project/id",
+            'Resume task: call handoff_read(workspace="/workspace", ref="handoff://project/id") and proceed with the next steps. Do not create a new handoff.',
+        ),
     ],
 )
-def test_handoff_prompt_is_unambiguously_a_resume_request(path, ref, resume_instruction):
+def test_handoff_prompt_has_exact_resume_copy(path, ref, expected):
     prompt = handoff_prompt("/workspace", path, ref)
 
-    assert prompt.startswith("Ripresa, non creazione:")
-    assert resume_instruction in prompt
-    assert "non creare un nuovo handoff" in prompt
+    assert prompt == expected
+    assert "\n" not in prompt
+
+
+def test_handoff_prompt_escapes_values_without_newlines():
+    prompt = handoff_prompt('workspace\\root\n"quoted"', 'legacy\n"name"')
+
+    assert prompt == (
+        'Resume task: call handoff_read(workspace="workspace\\\\root\\n\\"quoted\\"", '
+        'path="legacy\\n\\"name\\"") and proceed with the next steps. '
+        'Do not create a new handoff.'
+    )
+    assert "\n" not in prompt
 
 
 def test_draft_relaunch_removes_non_interactive_client_modes():
@@ -735,17 +753,19 @@ marker = pathlib.Path(sys.argv[2])
 runs = pathlib.Path(sys.argv[3])
 runs.open("a", encoding="utf-8").write("run\\n")
 if not marker.exists():
-    pathlib.Path(os.environ["SESSION_HANDOFF_CONTROL"]).write_text(
-        json.dumps({
-            "token": pathlib.Path(os.environ["SESSION_HANDOFF_CONTROL"]).with_name("token").read_text(encoding="utf-8"),
-            "workspace": str(root),
-            "path": "handoffs/feature.md",
-        }),
-        encoding="utf-8",
-    )
+    control = pathlib.Path(os.environ["SESSION_HANDOFF_CONTROL"])
+    temporary = control.with_name(control.name + ".tmp")
+    temporary.write_text(json.dumps({
+        "token": control.with_name("token").read_text(encoding="utf-8"),
+        "workspace": str(root),
+        "path": "handoffs/feature.md",
+    }), encoding="utf-8")
+    os.replace(temporary, control)
     marker.write_text("requested", encoding="utf-8")
-    while True:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
         time.sleep(0.01)
+    raise SystemExit(42)
 """,
         encoding="utf-8",
     )
@@ -1040,9 +1060,25 @@ def test_launcher_asks_codex_for_telemetry_consent_once(monkeypatch):
     calls, stream = _consent_probe(monkeypatch, tty=True, state="unasked")
     _telemetry_notice("codex", stream)
     notice = stream.getvalue()
-    assert "npx session-handoff telemetry yes" in notice
-    assert "npx session-handoff telemetry no" in notice
+    cli = str((Path(session_switch.__file__).resolve().parents[1] / "bin/session-handoff"))
+    assert shlex.join([sys.executable, cli, "telemetry", "yes"]) in notice
+    assert shlex.join([sys.executable, cli, "telemetry", "no"]) in notice
+    assert "npx" not in notice
     assert calls["claimed"] == 1
+
+
+def test_launcher_repair_error_uses_full_python_setup_command(tmp_path, capsys):
+    active = tmp_path / "bin/codex.session-handoff-active"
+    launcher = active.with_name("codex")
+    launcher.parent.mkdir()
+    active.write_text("codex", encoding="utf-8")
+    launcher.write_text("replaced", encoding="utf-8")
+
+    session_switch._repair_launcher(str(active), "codex", "managed launcher")
+
+    cli = str((Path(session_switch.__file__).resolve().parents[1] / "bin/session-handoff"))
+    expected = shlex.join([sys.executable, cli, "setup", "--client", "codex", "--yes"])
+    assert expected in capsys.readouterr().err
 
 
 def test_launcher_leaves_the_claude_consent_prompt_to_its_hook(monkeypatch):

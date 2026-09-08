@@ -1,0 +1,275 @@
+diff --git a/grafana-dashboard-session-handoff.json b/grafana-dashboard-session-handoff.json
+--- a/grafana-dashboard-session-handoff.json
++++ b/grafana-dashboard-session-handoff.json
+@@ -22,7 +22,7 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc, operation, result) (sum_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | aggregate=\"operation\" | keep day_utc, operation, result, count | unwrap count | __error__=\"\" [$__range])) >= 5",
++          "expr": "sum by (day_utc, operation, result) (sum_over_time({service_name=\"session-handoff\"} | origin=\"real\" | aggregate=\"operation\" | keep day_utc, operation, result, count | unwrap count | __error__=\"\" [$__range])) >= 5",
+           "queryType": "instant"
+         }
+       ],
+@@ -97,49 +97,49 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc, failure_stage) (sum_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | aggregate=\"operation\" | keep day_utc, failure_stage, count | unwrap count | __error__=\"\" [$__range])) >= 5",
+-          "queryType": "instant"
+-        }
+-      ],
+-      "transformations": [
+-        {
+-          "id": "labelsToFields",
+-          "options": {}
+-        },
+-        {
+-          "id": "organize",
+-          "options": {
+-            "excludeByName": {
+-              "Time": true
+-            }
+-          }
+-        }
+-      ],
+-      "fieldConfig": {
+-        "defaults": {
+-          "custom": {
+-            "drawStyle": "bars",
+-            "lineWidth": 1,
+-            "fillOpacity": 70,
+-            "barAlignment": 0,
+-            "stacking": {
+-              "mode": "normal",
+-              "group": "A"
+-            },
+-            "axisLabel": "",
+-            "axisPlacement": "auto",
+-            "scaleDistribution": {
+-              "type": "linear"
+-            },
+-            "showPoints": "never",
+-            "gradientMode": "opacity"
+-          },
+-          "unit": "short",
+-          "min": 0
+-        },
+-        "overrides": []
+-      },
+-      "description": "Solo failure_stage: non incrociato con durata, dimensione o percorso client.",
++          "expr": "sum by (day_utc, failure_stage) (sum_over_time({service_name=\"session-handoff\"} | origin=\"real\" | aggregate=\"operation\" | result=~\"failure|fallback\" | keep day_utc, failure_stage, count | unwrap count | __error__=\"\" [$__range])) >= 5",
++          "queryType": "instant"
++        }
++      ],
++      "transformations": [
++        {
++          "id": "labelsToFields",
++          "options": {}
++        },
++        {
++          "id": "organize",
++          "options": {
++            "excludeByName": {
++              "Time": true
++            }
++          }
++        }
++      ],
++      "fieldConfig": {
++        "defaults": {
++          "custom": {
++            "drawStyle": "bars",
++            "lineWidth": 1,
++            "fillOpacity": 70,
++            "barAlignment": 0,
++            "stacking": {
++              "mode": "normal",
++              "group": "A"
++            },
++            "axisLabel": "",
++            "axisPlacement": "auto",
++            "scaleDistribution": {
++              "type": "linear"
++            },
++            "showPoints": "never",
++            "gradientMode": "opacity"
++          },
++          "unit": "short",
++          "min": 0
++        },
++        "overrides": []
++      },
++      "description": "Solo result=failure/fallback e failure_stage: non incrociato con durata, dimensione o percorso client.",
+       "gridPos": {
+         "h": 9,
+         "w": 12,
+@@ -172,7 +172,7 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc, duration_bucket) (sum_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | aggregate=\"operation\" | keep day_utc, duration_bucket, count | unwrap count | __error__=\"\" [$__range])) >= 5",
++          "expr": "sum by (day_utc, duration_bucket) (sum_over_time({service_name=\"session-handoff\"} | origin=\"real\" | aggregate=\"operation\" | keep day_utc, duration_bucket, count | unwrap count | __error__=\"\" [$__range])) >= 5",
+           "queryType": "instant"
+         }
+       ],
+@@ -247,7 +247,7 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc, client_route) (sum_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | aggregate=\"operation\" | keep day_utc, client_route, count | unwrap count | __error__=\"\" [$__range])) >= 5",
++          "expr": "sum by (day_utc, client_route) (sum_over_time({service_name=\"session-handoff\"} | origin=\"real\" | aggregate=\"operation\" | keep day_utc, client_route, count | unwrap count | __error__=\"\" [$__range])) >= 5",
+           "queryType": "instant"
+         }
+       ],
+@@ -322,7 +322,7 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc, feedback_category, feedback_severity) (sum_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | aggregate=\"context_feedback\" | keep day_utc, feedback_category, feedback_severity, count | unwrap count | __error__=\"\" [$__range])) >= 5",
++          "expr": "sum by (day_utc, feedback_category, feedback_severity) (sum_over_time({service_name=\"session-handoff\"} | origin=\"real\" | aggregate=\"context_feedback\" | keep day_utc, feedback_category, feedback_severity, count | unwrap count | __error__=\"\" [$__range])) >= 5",
+           "queryType": "instant"
+         }
+       ],
+@@ -390,56 +390,56 @@
+     {
+       "id": 7,
+       "type": "barchart",
+-      "title": "Release adoption",
+-      "datasource": {
+-        "type": "loki",
+-        "uid": "loki-session-handoff"
+-      },
+-      "targets": [
+-        {
+-          "expr": "sum by (day_utc, plugin_version) (count_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | keep day_utc, plugin_version [$__range])) >= 5",
+-          "queryType": "instant"
+-        }
+-      ],
+-      "transformations": [
+-        {
+-          "id": "labelsToFields",
+-          "options": {}
+-        },
+-        {
+-          "id": "organize",
+-          "options": {
+-            "excludeByName": {
+-              "Time": true
+-            }
+-          }
+-        }
+-      ],
+-      "fieldConfig": {
+-        "defaults": {
+-          "custom": {
+-            "drawStyle": "bars",
+-            "lineWidth": 1,
+-            "fillOpacity": 70,
+-            "barAlignment": 0,
+-            "stacking": {
+-              "mode": "normal",
+-              "group": "A"
+-            },
+-            "axisLabel": "",
+-            "axisPlacement": "auto",
+-            "scaleDistribution": {
+-              "type": "linear"
+-            },
+-            "showPoints": "never",
+-            "gradientMode": "opacity"
+-          },
+-          "unit": "short",
+-          "min": 0
+-        },
+-        "overrides": []
+-      },
+-      "description": "L'unico segnale disponibile per sapere se una release e' stata adottata.",
++      "title": "Active environment-days by version",
++      "datasource": {
++        "type": "loki",
++        "uid": "loki-session-handoff"
++      },
++      "targets": [
++        {
++          "expr": "sum by (day_utc, plugin_version) (count_over_time({service_name=\"session-handoff\"} | origin=\"real\" | event=\"active_day\" | keep day_utc, plugin_version [$__range])) >= 5",
++          "queryType": "instant"
++        }
++      ],
++      "transformations": [
++        {
++          "id": "labelsToFields",
++          "options": {}
++        },
++        {
++          "id": "organize",
++          "options": {
++            "excludeByName": {
++              "Time": true
++            }
++          }
++        }
++      ],
++      "fieldConfig": {
++        "defaults": {
++          "custom": {
++            "drawStyle": "bars",
++            "lineWidth": 1,
++            "fillOpacity": 70,
++            "barAlignment": 0,
++            "stacking": {
++              "mode": "normal",
++              "group": "A"
++            },
++            "axisLabel": "",
++            "axisPlacement": "auto",
++            "scaleDistribution": {
++              "type": "linear"
++            },
++            "showPoints": "never",
++            "gradientMode": "opacity"
++          },
++          "unit": "short",
++          "min": 0
++        },
++        "overrides": []
++      },
++      "description": "Conta le giornate-ambiente attive per versione, con soglia aggregata 5. Non e' un conteggio di installazioni o utenti.",
+       "gridPos": {
+         "h": 9,
+         "w": 12,
+@@ -472,7 +472,7 @@
+       },
+       "targets": [
+         {
+-          "expr": "sum by (day_utc) (count_over_time({service_name=\"session-handoff\"} | origin!=\"canary\" | event=\"active_day\" | keep day_utc [$__range])) >= 5",
++          "expr": "sum by (day_utc) (count_over_time({service_name=\"session-handoff\"} | origin=\"real\" | event=\"active_day\" | keep day_utc [$__range])) >= 5",
+           "queryType": "instant"
+         }
+       ],
+diff --git a/tests/test_deploy.py b/tests/test_deploy.py
+--- a/tests/test_deploy.py
++++ b/tests/test_deploy.py
+@@ -150,6 +150,23 @@
+         assert all("sum" in query and "count" in query for query in queries)
+         assert all(f'service_name=\\"{service}\\"' in json.dumps(query) for query in queries)
+         assert all(f"loki-{service}" in json.dumps(panel.get("datasource")) for panel in dashboard["panels"] if panel.get("targets"))
++
++
++def test_session_handoff_dashboard_uses_real_rows_and_bounded_active_days():
++    dashboard = json.loads((ROOT / "grafana-dashboard-session-handoff.json").read_text())
++    queries = [target["expr"] for panel in dashboard["panels"] for target in panel.get("targets", []) if "expr" in target]
++    assert all('origin="real"' in query for query in queries)
++    assert all('origin!="canary"' not in query for query in queries)
++
++    failures = next(panel for panel in dashboard["panels"] if panel["id"] == 4)
++    assert '| result=~"failure|fallback" |' in failures["targets"][0]["expr"]
++    assert 'failure_stage="none"' not in failures["targets"][0]["expr"]
++
++    active_days = next(panel for panel in dashboard["panels"] if panel["id"] == 7)
++    assert active_days["title"] == "Active environment-days by version"
++    assert '| event="active_day" |' in active_days["targets"][0]["expr"]
++    assert ") >= 5" in active_days["targets"][0]["expr"]
++    assert "installation" not in active_days.get("description", "").lower()
+
+
+ def test_provisioned_dashboards_have_stable_uids():

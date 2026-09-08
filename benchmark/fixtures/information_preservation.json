@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source": "context_rot_cases.json",
+  "cases": [
+    "buried-constraint",
+    "superseded-decision",
+    "failed-attempt-trap",
+    "partial-state",
+    "late-correction",
+    "compound-rot"
+  ],
+  "bands": ["short", "long"],
+  "arms": ["main", "candidate", "nativecompact"],
+  "replicates": 3,
+  "continuations": 108,
+  "roles": ["user", "assistant", "tool"],
+  "gold_transport": false
+}

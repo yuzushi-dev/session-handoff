@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev"
@@ -25,5 +25,14 @@
     "capabilities": [],
     "defaultPrompt": "Create a handoff for this session."
   },
-  "mcpServers": "./.mcp.json"
+  "mcpServers": {
+    "session-handoff": {
+      "command": "python3",
+      "args": ["server/handoff_mcp.py"],
+      "cwd": ".",
+      "env": {
+        "SESSION_HANDOFF_CLIENT": "codex"
+      }
+    }
+  }
 }

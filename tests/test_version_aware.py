@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from benchmark.version_aware import (
+    Build,
     BuildSpecError,
+    _scenario,
     compare_observations,
     load_build,
     parse_build_spec,
@@ -55,6 +57,12 @@ def test_load_build_records_manifest_versions_and_rejects_mismatch(tmp_path):
     )
     with pytest.raises(BuildSpecError, match="manifest versions"):
         load_build("broken", tmp_path)
+
+
+def test_load_build_accepts_native_packaging(tmp_path):
+    write_manifest(tmp_path)
+    (tmp_path / "plugin.json").unlink()
+    assert load_build("native", tmp_path).identity["package_version"] == "0.7.0"
 
 
 def test_run_product_command_uses_build_root_and_drops_provider_environment(tmp_path, monkeypatch):
@@ -118,3 +126,61 @@ def test_tree_hash_ignores_untracked_files_in_git_tree(tmp_path):
     (tmp_path / "untracked.txt").write_text("noise", encoding="utf-8")
 
     assert _tree_sha256(tmp_path) == before
+
+
+def test_new_product_capability_absent_from_build_is_unsupported(tmp_path):
+    write_manifest(tmp_path)
+    (tmp_path / "server").mkdir()
+    build = load_build("legacy", tmp_path)
+
+    result = _scenario(build, "central_roundtrip")
+
+    assert result["valid"] is True
+    assert result["observation"] == {
+        "capability": "unsupported",
+        "reason": "missing_handoff_store",
+    }
+
+
+def test_broken_product_capability_invalidates_scenario(tmp_path):
+    write_manifest(tmp_path)
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "handoff_store.py").write_text(
+        "raise RuntimeError('broken product')\n", encoding="utf-8"
+    )
+    build = load_build("broken", tmp_path)
+
+    result = _scenario(build, "central_roundtrip")
+
+    assert result["valid"] is False
+    assert result["observation"]["capability"] == "supported"
+    assert result["observation"]["probe"]["returncode"] == 1
+
+
+@pytest.mark.parametrize("stdout", ["[]\n", "not-json\n"])
+def test_malformed_successful_product_probe_is_invalid(tmp_path, monkeypatch, stdout):
+    build = Build("broken", tmp_path, {"manifest_versions": {}})
+    monkeypatch.setattr(
+        "benchmark.version_aware.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+    )
+
+    result = _scenario(build, "central_roundtrip")
+
+    assert result["valid"] is False
+    assert result["observation"]["parse_error"] is True
+
+
+def test_timed_out_product_probe_is_invalid(tmp_path, monkeypatch):
+    build = Build("broken", tmp_path, {"manifest_versions": {}})
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 15, output="partial", stderr="stuck")
+
+    monkeypatch.setattr("benchmark.version_aware.subprocess.run", timeout)
+
+    result = _scenario(build, "central_roundtrip")
+
+    assert result["valid"] is False
+    assert result["observation"]["probe"]["timed_out"] is True

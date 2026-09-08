@@ -59,8 +59,10 @@ def test_setup_installs_skill_mcp_registration_and_launcher(tmp_path):
     assert (bin_dir / "claude.session-handoff-original").is_file()
     assert "run codex" in (bin_dir / "codex").read_text(encoding="utf-8")
     assert "run claude" in (bin_dir / "claude").read_text(encoding="utf-8")
-    assert any(call[1:5] == ["mcp", "add", "session-handoff", "--"] for call in calls if call[0].endswith("/codex"))
-    assert any(call[1:6] == ["mcp", "add", "--scope", "user", "session-handoff"] for call in calls if call[0].endswith("/claude"))
+    codex_add = next(call for call in calls if call[0].endswith("/codex") and call[1:4] == ["mcp", "add", "session-handoff"])
+    claude_add = next(call for call in calls if call[0].endswith("/claude") and call[1:6] == ["mcp", "add", "--scope", "user", "session-handoff"])
+    assert codex_add[4:6] == ["--env", "SESSION_HANDOFF_CLIENT=codex"]
+    assert claude_add[6:8] == ["--env", "SESSION_HANDOFF_CLIENT=claude"]
     state = json.loads((home / ".config/session-handoff/state.json").read_text(encoding="utf-8"))
     assert state["clients"] == ["codex", "claude"]
     assert result["installed"] is True
@@ -85,6 +87,7 @@ def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
 
     assert (staging / "server/kept.txt").is_file()
     assert (staging / "package.json").is_file()
+    assert not (staging / "plugin.json").exists()
     assert not (staging / "benchmark").exists()
     assert not (staging / ".sando").exists()
     assert not (staging / "notes").exists()

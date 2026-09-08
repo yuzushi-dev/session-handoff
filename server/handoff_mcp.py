@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -31,8 +32,10 @@ try:
         write_switch_request,
     )
     from .version import PACKAGE_VERSION
+    from .onboarding import installation_commands
     from . import handoff_store
 except ImportError:  # direct `python server/handoff_mcp.py` execution
+    from onboarding import installation_commands
     from handoff_state import (  # type: ignore[no-redef]
         HandoffStateError,
         MAX_CONTENT_BYTES,
@@ -53,6 +56,13 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
 SERVER_NAME = "session-handoff"
 SERVER_VERSION = PACKAGE_VERSION
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+CLIENT_ENV = "SESSION_HANDOFF_CLIENT"
+_MCP_CLIENT_NAMES = {
+    "claude-ai": "claude",
+    "claude-code": "claude",
+    "codex-mcp-client": "codex",
+}
+_mcp_client: str | None = None
 MAX_LIST_LIMIT = 100
 MAX_SEARCH_QUERY_BYTES = 512
 MAX_SEARCH_SNIPPET_BYTES = 512
@@ -79,6 +89,35 @@ def _record_outcome(summary: dict[str, Any]) -> None:
         record_terminal_outcome(summary)
     except Exception:
         pass
+
+
+def _caller_client() -> str | None:
+    configured = os.environ.get(CLIENT_ENV)
+    if configured is not None:
+        return configured if configured in {"claude", "codex"} else None
+    return _mcp_client
+
+
+def _record_handoff_outcome(
+    result: str,
+    failure_stage: str,
+    **summary: int,
+) -> None:
+    client = _caller_client()
+    if client is None:
+        return
+    _record_outcome({
+        "operation": "handoff",
+        "source_client": client,
+        "target_client": client,
+        "result": result,
+        "failure_stage": failure_stage,
+        "handoff_bytes": 0,
+        "redacted_count": 0,
+        "dropped_events": 0,
+        "normalized_fields": 0,
+        **summary,
+    })
 
 
 # Keep the public name for compatibility while sharing the persistence boundary.
@@ -353,21 +392,14 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             redacted_state, redacted_count = redact_state(arguments["state"])
             content = render_state(redacted_state)
         except HandoffStateError as exc:
-            _record_outcome({
-                "operation": "handoff", "source_client": "codex", "target_client": "codex",
-                "result": "failure", "failure_stage": "state_schema",
-                "handoff_bytes": 0, "redacted_count": 0, "dropped_events": 0,
-                "normalized_fields": 0,
-            })
+            _record_handoff_outcome("failure", "state_schema")
             raise HandoffError(f"invalid state: {exc}") from exc
 
     if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
-        _record_outcome({
-            "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "size_limit",
-            "handoff_bytes": len(content.encode("utf-8")),
-            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-        })
+        _record_handoff_outcome(
+            "failure", "size_limit", handoff_bytes=len(content.encode("utf-8")),
+            redacted_count=redacted_count,
+        )
         raise HandoffError(f"content exceeds {MAX_CONTENT_BYTES} bytes")
     try:
         overwrite = arguments.get("overwrite", False)
@@ -382,12 +414,10 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     redacted = content
     missing_sections = validate_handoff(redacted)
     if missing_sections:
-        _record_outcome({
-            "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "missing_sections",
-            "handoff_bytes": len(redacted.encode("utf-8")),
-            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-        })
+        _record_handoff_outcome(
+            "failure", "missing_sections", handoff_bytes=len(redacted.encode("utf-8")),
+            redacted_count=redacted_count,
+        )
         raise HandoffError("missing canonical sections: " + ", ".join(missing_sections))
     if path is None:
         if overwrite:
@@ -403,17 +433,23 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
                 write_switch_request(control_path, token, workspace, handoff_ref=central["ref"], telemetry_summary={"handoff_bytes": result["bytes"], "redacted_count": redacted_count})
                 result["auto_switch_requested"] = True
             except (ValueError, OSError) as exc:
-                result["auto_switch_requested"] = False; result["auto_switch_error"] = str(exc)
+                result["auto_switch_requested"] = False
+                result["auto_switch_error"] = str(exc)
+                _record_handoff_outcome(
+                    "fallback", "control", handoff_bytes=result["bytes"],
+                    redacted_count=redacted_count,
+                )
         else:
-            _record_outcome({"operation":"handoff","source_client":"codex","target_client":"codex","result":"success","failure_stage":"none","handoff_bytes":result["bytes"],"redacted_count":redacted_count,"dropped_events":0,"normalized_fields":0})
+            _record_handoff_outcome(
+                "success", "none", handoff_bytes=result["bytes"],
+                redacted_count=redacted_count,
+            )
         return result
     if path.exists() and not overwrite:
-        _record_outcome({
-            "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "path_exists",
-            "handoff_bytes": len(redacted.encode("utf-8")),
-            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-        })
+        _record_handoff_outcome(
+            "failure", "path_exists", handoff_bytes=len(redacted.encode("utf-8")),
+            redacted_count=redacted_count,
+        )
         raise HandoffError(
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
         )
@@ -422,12 +458,10 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     except FileExistsError:
         if overwrite:
             raise
-        _record_outcome({
-            "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "failure", "failure_stage": "path_exists",
-            "handoff_bytes": len(redacted.encode("utf-8")),
-            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-        })
+        _record_handoff_outcome(
+            "failure", "path_exists", handoff_bytes=len(redacted.encode("utf-8")),
+            redacted_count=redacted_count,
+        )
         raise HandoffError(
             f"handoff already exists: {_relative(root, path)}; choose a new path or explicitly set overwrite=true"
         )
@@ -456,17 +490,15 @@ def _create(arguments: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, OSError) as exc:
             result["auto_switch_requested"] = False
             result["auto_switch_error"] = str(exc)
-            _record_outcome({
-                "operation": "handoff", "source_client": "codex", "target_client": "codex",
-                "result": "failure", "failure_stage": "control", "handoff_bytes": result["bytes"],
-                "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-            })
+            _record_handoff_outcome(
+                "fallback", "control", handoff_bytes=result["bytes"],
+                redacted_count=redacted_count,
+            )
     else:
-        _record_outcome({
-            "operation": "handoff", "source_client": "codex", "target_client": "codex",
-            "result": "success", "failure_stage": "none", "handoff_bytes": result["bytes"],
-            "redacted_count": redacted_count, "dropped_events": 0, "normalized_fields": 0,
-        })
+        _record_handoff_outcome(
+            "success", "none", handoff_bytes=result["bytes"],
+            redacted_count=redacted_count,
+        )
     return result
 
 
@@ -499,6 +531,13 @@ def _migrate(arguments: dict[str, Any]) -> dict[str, Any]:
     except (ValueError, OSError) as exc:
         result["auto_switch_requested"] = False
         result["auto_switch_error"] = str(exc)
+        _record_outcome({
+            "operation": "migrate",
+            "source_client": source_client,
+            "target_client": target_client,
+            "result": "failure",
+            "failure_stage": "control",
+        })
     return result
 
 
@@ -552,6 +591,8 @@ def _validate(arguments: dict[str, Any]) -> dict[str, Any]:
 def _list(arguments: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(_require_string(arguments, "workspace"))
     storage = arguments.get("storage", "workspace")
+    if storage not in {"workspace", "central"}:
+        raise HandoffError("storage must be workspace or central")
     if storage == "central":
         if "directory" in arguments: raise HandoffError("directory is not supported for central storage")
         scope = arguments.get("scope", "project")
@@ -635,20 +676,25 @@ def _search(arguments: dict[str, Any]) -> dict[str, Any]:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT: raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0: raise HandoffError("offset must be a non-negative integer")
     if arguments.get("storage") == "central":
-        query = _require_string(arguments, "query"); query, _ = redact_secrets(query); needle = query.casefold()
-        if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES: raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
+        query = _require_string(arguments, "query")
+        if len(query.encode("utf-8")) > MAX_SEARCH_QUERY_BYTES:
+            raise HandoffError(f"query exceeds {MAX_SEARCH_QUERY_BYTES} bytes")
+        query, _ = redact_secrets(query); needle = query.casefold()
         if offset: raise HandoffError("offset is not supported for central search; use cursor")
         cursor = arguments.get("cursor")
         if cursor is not None and not isinstance(cursor, str): raise HandoffError("cursor must be a string")
         workspace = _require_string(arguments, "workspace"); scope = arguments.get("scope", "project")
         digest = hashlib.sha256(needle.encode("utf-8")).hexdigest()
-        try: listing = handoff_store.list_records(workspace, scope, MAX_SEARCH_FILES, cursor=cursor, cursor_operation="search", cursor_query=digest)
+        try:
+            bound_project = handoff_store.lookup_project(workspace) if scope == "project" else None
+            listing = handoff_store.list_records(workspace, scope, MAX_SEARCH_FILES, cursor=cursor, cursor_operation="search", cursor_query=digest, bound_project=bound_project)
         except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
-        matches = []; scanned_files = 0
+        matches = []; scanned_files = 0; metadata_cache: dict[str, dict[str, Any]] = {}
+        # The byte budget covers canonical document payloads; manifests use their own fixed bound.
         scanned_bytes = 0; skipped_count = listing.get("skipped_count", 0); next_cursor = listing.get("next_cursor"); has_more = listing.get("has_more", False); prior_cursor = cursor
         for index, item in enumerate(listing["items"]):
             item_cursor = item.pop("_cursor")
-            try: record = handoff_store.read_record(item["ref"], workspace, "all" if scope == "all" else "project", MAX_SEARCH_BYTES - scanned_bytes)
+            try: record = handoff_store.read_record(item["ref"], workspace, "all" if scope == "all" else "project", MAX_SEARCH_BYTES - scanned_bytes, bound_project=bound_project, metadata_cache=metadata_cache)
             except handoff_store.HandoffBudgetExceeded:
                 next_cursor = prior_cursor; has_more = True; break
             except handoff_store.HandoffRecordError as exc:
@@ -771,7 +817,19 @@ def _project(arguments: dict[str, Any]) -> dict[str, Any]:
     workspace = _require_string(arguments, "workspace")
     project_id = arguments.get("project_id")
     if project_id is None:
-        return {"project_id": handoff_store.lookup_project(workspace), "registered": handoff_store.lookup_project(workspace) is not None}
+        limit = arguments.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
+            raise HandoffError(f"limit must be an integer between 1 and {MAX_LIST_LIMIT}")
+        cursor = arguments.get("cursor")
+        if cursor is not None and not isinstance(cursor, str): raise HandoffError("cursor must be a string")
+        try:
+            bound = handoff_store.lookup_project(workspace)
+            projects = handoff_store.list_projects(limit, cursor)
+        except handoff_store.HandoffStoreError as exc:
+            raise HandoffError(str(exc)) from exc
+        return {"project_id": bound, "registered": bound is not None, **projects}
+    if "limit" in arguments or "cursor" in arguments:
+        raise HandoffError("limit and cursor are only valid for read-only project discovery")
     replace = arguments.get("replace", False)
     if not isinstance(replace, bool): raise HandoffError("replace must be a boolean")
     try: previous = handoff_store.associate_project(workspace, _require_string(arguments, "project_id"), replace)
@@ -785,6 +843,7 @@ def _import(arguments: dict[str, Any]) -> dict[str, Any]:
     if not path.exists(): raise HandoffError(f"handoff file not found: {_relative(root, path)}")
     try:
         if path.is_dir():
+            handoff_store._validate_bundle_directory(path)
             portable_document = handoff_store._read(path / "document.md", handoff_store.MAX_DOCUMENT_BYTES).decode("utf-8")
             redacted_document, _ = redact_secrets(portable_document)
             if redacted_document != portable_document: raise HandoffError("portable bundle document contains secrets")
@@ -796,15 +855,38 @@ def _import(arguments: dict[str, Any]) -> dict[str, Any]:
             name = arguments.get("name", path.name); handoff_store.validate_name(name)
             project = handoff_store.register_project(workspace)
             hid = str(__import__("uuid").uuid5(__import__("uuid").UUID(project), "legacy:" + _relative(root, path) + ":" + __import__("hashlib").sha256(content.encode()).hexdigest()))
-            origin = {"project_id": project, "handoff_id": hid, "kind": "legacy", "source_path": _relative(root, path)}
+            source_path_value = _relative(root, path)
+            source_path = redact_secrets(source_path_value)[0]
+            if source_path != source_path_value:
+                source_path = "[REDACTED]"
+            origin = {"project_id": project, "handoff_id": hid, "kind": "legacy", "source_path": source_path}
             ref = handoff_store.make_ref(project, hid)
             try:
                 existing = handoff_store.read_record(ref, workspace)
-                if existing["content"] != content: raise HandoffError("central handoff identity conflict")
+                if existing["content"] != content or existing["name"] != name:
+                    raise HandoffError("central handoff identity conflict")
                 result = existing
                 result["idempotent"] = True
             except handoff_store.HandoffStoreError:
-                result = handoff_store.publish_record(project, hid, name, content, origin)
+                created_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                manifest = {
+                    "schema_version": 1,
+                    "handoff_id": hid,
+                    "name": name,
+                    "created_at": created_at,
+                    "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                    "origin": origin,
+                }
+                try:
+                    result = handoff_store.publish_record(project, hid, name, content, origin, manifest)
+                except handoff_store.HandoffStoreError as exc:
+                    if "already exists" not in str(exc):
+                        raise
+                    existing = handoff_store.read_record(ref, workspace)
+                    if existing["content"] != content or existing["name"] != name:
+                        raise HandoffError("central handoff identity conflict") from exc
+                    result = existing
+                    result["idempotent"] = True
     except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
     return {"ref": result["ref"], "project_id": result["project_id"], "handoff_id": result["handoff_id"], "name": result["name"], "storage": "central", "idempotent": result.get("idempotent", False)}
 
@@ -814,22 +896,32 @@ def _export(arguments: dict[str, Any]) -> dict[str, Any]:
     except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
 
 
+def _setup_info(arguments: dict[str, Any]) -> dict[str, Any]:
+    return installation_commands(Path(__file__).resolve().parents[1])
+
+
 TOOLS = [
     {
+        "name": "handoff_setup",
+        "description": "Show optional launcher setup and telemetry commands using this plugin's actual installation path. Read-only: does not install, enable telemetry, or require a workspace or user-supplied path.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    },
+    {
         "name": "handoff_create",
-        "description": "Create a validated handoff document inside a workspace. Secrets are redacted before writing; existing files are never overwritten unless overwrite=true is explicit. Set auto_switch=true when running under the session-handoff launcher to replace the current client session automatically.",
+        "description": "Create a validated handoff. `name` creates an immutable central record outside the workspace; `path` writes an explicit legacy workspace file. `overwrite=true` applies only to the legacy path. `auto_switch=true` requires the managed launcher from session-handoff. Secrets are redacted before persistence.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "required": ["workspace"],
             "properties": {
                 "workspace": {"type": "string", "description": "Absolute workspace directory."},
-                "path": {"type": "string", "description": "File path relative to workspace, for example handoffs/2026-08-12-feature.md."},
-                "name": {"type": "string", "description": "Display name for an immutable central handoff."},
+                "path": {"type": "string", "description": "Explicit legacy workspace file path relative to workspace, for example handoffs/2026-08-12-feature.md."},
+                "name": {"type": "string", "description": "Name for an immutable central record outside the workspace."},
                 "content": {"type": "string", "description": "Complete handoff with all canonical sections."},
                 "state": _state_schema(),
-                "overwrite": {"type": "boolean", "default": False, "description": "Explicitly allow replacing an existing handoff."},
-                "auto_switch": {"type": "boolean", "default": False, "description": "Ask the session-handoff launcher to terminate this client and start a fresh session with the handoff."},
+                "overwrite": {"type": "boolean", "default": False, "description": "Explicitly allow replacing an existing legacy workspace file; unsupported for central `name` records."},
+                "auto_switch": {"type": "boolean", "default": False, "description": "Ask the managed launcher from session-handoff to terminate this client and start a fresh session with the handoff."},
             },
             "oneOf": [
                 {"required": ["content"], "not": {"required": ["state"]}},
@@ -929,7 +1021,7 @@ TOOLS = [
     },
     {
         "name": "handoff_project", "description": "Inspect or explicitly associate a workspace with a central handoff project.",
-        "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace"], "properties":{"workspace":{"type":"string"},"project_id":{"type":"string"},"replace":{"type":"boolean","default":False}}},
+        "inputSchema": {"type":"object", "additionalProperties":False, "required":["workspace"], "properties":{"workspace":{"type":"string"},"project_id":{"type":"string"},"replace":{"type":"boolean","default":False},"limit":{"type":"integer","minimum":1,"maximum":MAX_LIST_LIMIT,"default":20},"cursor":{"type":"string","description":"Opaque continuation cursor for read-only project discovery."}}},
         "annotations": {"readOnlyHint":False,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False},
     },
     {
@@ -981,6 +1073,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
         return _error(f"unknown tool argument: {unknown_argument}")
     try:
         handlers = {
+            "handoff_setup": _setup_info,
             "handoff_create": _create,
             "handoff_migrate": _migrate,
             "handoff_read": _read,
@@ -997,6 +1090,7 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
+    global _mcp_client
     method = request.get("method")
     request_id = request.get("id")
     if method == "notifications/initialized" or (isinstance(method, str) and method.startswith("notifications/")):
@@ -1005,6 +1099,17 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
         params = request.get("params", {})
         if not isinstance(params, dict):
             params = {}
+        configured = os.environ.get(CLIENT_ENV)
+        if configured is not None:
+            _mcp_client = configured if configured in {"claude", "codex"} else None
+        else:
+            client_info = params.get("clientInfo")
+            name = client_info.get("name") if isinstance(client_info, dict) else None
+            _mcp_client = (
+                _MCP_CLIENT_NAMES.get(name.casefold())
+                if isinstance(name, str)
+                else None
+            )
         requested = params.get("protocolVersion", DEFAULT_PROTOCOL_VERSION)
         protocol_version = requested if isinstance(requested, str) else DEFAULT_PROTOCOL_VERSION
         return {

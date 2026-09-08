@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
@@ -19,7 +19,6 @@
     ".codex-plugin/",
     ".mcp.json",
     "mcp.json",
-    "plugin.json",
     "README.md",
     "hooks/hooks.json",
     "hooks/session-start.py",

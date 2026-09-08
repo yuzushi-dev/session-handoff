@@ -6,7 +6,8 @@
         "${CLAUDE_PLUGIN_ROOT}/server/handoff_mcp.py"
       ],
       "env": {
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "SESSION_HANDOFF_CLIENT": "claude"
       }
     }
   }

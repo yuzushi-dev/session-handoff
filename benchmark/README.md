@@ -164,6 +164,15 @@ On Linux, the runner uses Bubblewrap to expose the fixture workspace and isolate
 
 A non-fixture transcript requires both `--source <path>` and `--allow-non-fixture-source`; its content will be copied into the result directory, so do not use that mode for secrets or commit its artifacts.
 
+For a Markdown product-path pilot, pass `--product-root /path/to/frozen-build`
+with `--storage-mode legacy` or `--storage-mode central`. The selected build's
+real stdio MCP creates and reads the generated handoff in a separate isolated
+product workspace/home. Only its read result reaches continuation. This does
+not launch a supervised switch or test agent discovery of MCP tools. Product
+identity and response/content hashes are saved with the run. Provider agent
+invocations have a default 300-second timeout (`--agent-timeout`); a timeout
+fails the run without retrying. This is a duration limit, not a monetary cap.
+
 `--resume` is accepted only at a recorded retry-free checkpoint, including a handoff setup failure before any provider call. It refuses completed, provider-failed, or ambiguous runs rather than risking a duplicate billed call.
 
 For Codex, pass `--reasoning-effort` explicitly when comparing runs. The runner
@@ -193,9 +202,20 @@ hash, then executes each build's own `bin/session-handoff` and hooks in a fresh
 temporary `HOME`. It passes no provider credentials, makes no network call,
 and reports `provider_calls: 0`. Scenarios cover manifest alignment, fresh and
 repeated `SessionStart`, `yes`/`no` consent responses, legacy consent config,
-and `DO_NOT_TRACK`. Timestamps and local paths are normalized; lock internals
+and `DO_NOT_TRACK`. The shared `product_probe.py` additionally checks legacy
+create/read/literal search, central immutable records, pagination and scope,
+CLI list/read/doctor nonmutation, and the exact central resume draft. Each
+probe imports the selected build's product code; missing central capabilities
+are reported as unsupported. The draft check does not launch or switch a
+real client. Timestamps and local paths are normalized; lock internals
 are excluded. Differences are evidence and are labelled `same`, `different`,
 or `unsupported`; they are not silently collapsed into a release score.
+
+For enforced network isolation on Linux, prefix the command with
+`bwrap --unshare-net --bind / / --dev /dev --`. Freeze both source trees first.
+The Git tree hash covers indexed paths: add nonignored untracked source files
+to the index of a disposable snapshot if they belong to the candidate, without
+changing the original worktree's index.
 
 This lane is valid for the 0.6.1/0.7.0 change because those releases differ in
 telemetry consent and hook behavior. It is not a context-rot or model-quality
@@ -206,6 +226,172 @@ Markdown path on the two release trees; it is documented in
 metrics are not pooled with the modern high-reasoning Markdown/state lane. A
 future release comparison that changes handoff/migration logic still needs a
 separate provider-backed matrix, with cost authorization before execution.
+
+### Offline efficiency benchmark
+
+`efficiency.py` measures the real frozen builds' public stdio MCP path. It is
+provider-free and does not need a package install. Without `--execute` it only
+prints a plan and refuses an existing output path:
+
+```bash
+python3 benchmark/efficiency.py \
+  --build main=/path/to/main \
+  --build candidate=/path/to/candidate \
+  --output /tmp/session-handoff-efficiency \
+  --sizes 10,1000,10000 \
+  --samples 10
+```
+
+Add `--execute` to run the explicitly selected offline plan. `--main-root` and
+`--candidate-root` are equivalent to the two labelled `--build` arguments.
+`--document-bytes 8192` creates valid synthetic Markdown; the value is
+configurable for targeted runs. Each `(build, storage, size)` fixture is
+prepared once. Intact read-only fixtures are reused; mutated fixtures are
+restored outside request timing (legacy removes only the added synthetic
+record; central restores its snapshot). Central N-record fixtures use the
+frozen build's `create_record` API in an isolated helper
+outside timing; measured operations still use the public stdio MCP contract.
+Create measures one new `recordN` in an N-record fixture; read measures one
+known record. Legacy and central create/read are separate guarantees, not a
+single superiority score.
+
+The default lanes are `shared_legacy`, `storage_comparison`,
+`candidate_search`, and `candidate_central_list`. Select expensive lanes with
+`--scenarios candidate_central_full_walk,candidate_catalog_states,startup`.
+List first pages use the protocol's limit 20; full walks validate every page,
+advancing offset/cursor, and exact membership. Startup initialize and the
+initialized ping are recorded separately from persistent-process requests.
+Search runs absent, common, and only-beyond-256 queries on the candidate and
+probes legacy search on the baseline so an absent capability is explicit.
+Every result records
+scanned files/bytes, `has_more`, skipped records, and truncation/coverage; a
+truncated search is never treated as a successful complete search. A missing
+tool is an explicit `unsupported` sample. Protocol, timeout, validation, and
+fixture failures are retained in `raw.jsonl`, stop the run, and make the CLI
+return nonzero.
+
+Execution writes `plan.json`, `raw.jsonl`, and `summary.json` below the fresh
+output directory. Aggregates contain only median, min/max range, p95, and
+successful sample count (plus failure/unsupported counts); there is no p99 or
+superiority threshold. Metrics use `perf_counter_ns`. On Linux, `/proc/PID/io`
+reports logical `rchar/wchar` and storage `read_bytes/write_bytes`; peak RSS is
+the whole MCP process while request RSS is a signed before/after delta kept per
+request. Compact reserialized response UTF-8 bytes and setup elapsed time are
+also recorded. CPU excludes all Git descendants; procfs I/O can include
+waited-for children. No global cache
+drop is performed, and process-fresh does not mean cold OS cache. Configure
+`--deadline`, `--timeout`, and `--disk-budget`; only runner-owned temporary
+fixtures are removed.
+
+See [the verified pilot report](../docs/2026-09-07-efficiency-benchmark.md) for
+measurements, coverage limits and the separate byte-budget/catalog checks.
+
+For network isolation on Linux, wrap execution externally:
+
+```bash
+bwrap --die-with-parent --unshare-net --bind / / --dev /dev --proc /proc -- \
+  python3 benchmark/efficiency.py --build main=/path/to/main \
+  --build candidate=/path/to/candidate --output /tmp/efficiency \
+  --sizes 10 --samples 1 --execute
+```
+
+### Information-preservation benchmark
+
+This lane compares `main`, `candidate`, and real native Codex compaction on
+the same structured user/assistant/tool history. The input is converted from
+`fixtures/context_rot_cases.json` without copying gold annotations or
+flattening the transcript. Main and candidate use their actual handoff
+contracts. The runner loads and hashes each build's
+`skills/session-handoff/SKILL.md` Create-mode instructions (including the
+canonical document structure); equal build instructions are reported as
+equivalent rather than treated as different conditions. The runner owns MCP
+create/read and never asks the model to auto-switch.
+
+The provider-free plan is 6 cases × 2 bands × 3 replicates × 3 arms = 108
+downstream continuations. Preparation, native compaction, and independent
+forked recoverability probes are additional operations and are counted
+separately. No provider execution is started by the implementation lane:
+
+```bash
+python3 -m benchmark.information_preservation --dry-run
+python3 -m benchmark.information_preservation \
+  --verify-native \
+  --codex-binary /home/cristina/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex
+python3 -m benchmark.information_preservation \
+  --verify-native-lifecycle \
+  --codex-binary /home/cristina/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex \
+  --timeout 10
+```
+
+The native adapter targets the installed Codex `0.153.4` app-server and
+verifies its generated schema before use. `--verify-native` reports only
+`native-schema-verified`; `--verify-native-lifecycle` additionally proves
+initialize/thread-start/history-inject and fork/read/items-list on persistent
+temporary threads, but does not compact or call a model.
+Use the pinned ELF above, not the `/home/cristina/.local/bin/codex` wrapper.
+Native compaction is successful only after a correlated `item/completed` event
+with `contextCompaction`; an empty `thread/compact/start` acknowledgement is
+insufficient.
+
+An explicitly authorized selected-cell run is:
+
+```bash
+python3 -m benchmark.information_preservation --execute \
+  --acknowledge-provider-cost --allow-runtime \
+  --codex-binary /path/to/pinned/codex-elf \
+  --main-root /path/to/main --candidate-root /path/to/candidate \
+  --case superseded-decision --band short --replicate 1 \
+  --output /tmp/information-preservation-run
+```
+
+Candidate storage defaults to `central` (override with
+`--candidate-storage legacy`); main defaults to the legacy workspace contract.
+The default Luna setting is `--reasoning-effort xhigh` and can be overridden.
+For a future provider-backed run, opt in separately with
+`--allow-network --credential-source /path/to/auth.json`; those flags are not
+used by the provider-free checks above.
+
+For each arm this starts an independent app-server thread, injects the same
+structured history, performs the real handoff/task turns, runs the respective
+MCP create/read contract for main/candidate, and runs hidden acceptance in the
+isolated fixture workspace. Fork probes happen before the task turn; their raw
+answers are retained for blinded/manual scoring and never injected into the
+task continuation. Completion, visible verification, hidden acceptance, and
+opaque recoverability are separate fields. Costs remain `unknown` unless the
+server returns usage. The CLI remains `harness-ready` until actual compaction
+and all selected arms complete; no provider call is made by dry-run/schema
+verification/lifecycle checks.
+`task_success` is true only when the continuation completed and both visible
+verification and hidden acceptance passed; hidden acceptance alone is not a
+success. Native `thread/start` leaves environment selection at the installed
+app-server default rather than disabling local environment access.
+
+Run summaries distinguish `rows_written`, `attempted_continuations`, and
+`completed_continuations`; a preparation failure is not counted as a downstream
+attempt (`executed_continuations`).
+To resume a stopped run without retrying an attempted cell, repeat the same
+selection and pass `--exclude-cell <cell-id>` (repeatable). The plan keeps its
+full selected count and reports `excluded_continuations` and
+`remaining_continuations`; unknown, duplicate, or all-selected exclusions are
+rejected before execution. There is no automatic retry.
+App-server turn notifications are correlated on both `threadId` and `turnId`;
+foreign or stale events are ignored rather than accepted, while target errors
+remain fatal. Failure artifacts keep only redacted event metadata and hashes,
+not model or tool payload text.
+
+Measured turns use Codex named permission profiles: read-only generation and
+probes deny reads of `/mnt/native`, while the final task profile permits only
+the isolated `/mnt/work` workspace. A supplied credential is mounted
+read-only at `/mnt/native/codex/auth.json`; it is never copied into artifacts.
+
+Each completed cell also writes `blinded/<id>/judge.json` with raw handoff,
+continuation, complete non-reasoning tool-item evidence, probe answers, and the
+workspace diff captured before cleanup, plus empty fact/trap/DoD statuses. The matching
+gold packet and arm mapping are mode-0600 files under `private/`; keep them out
+of the judge bundle. Exact-match probe flags are diagnostic proxies only;
+semantic retention remains `pending_manual_calibration` until a blinded judge
+fills the statuses and imports them through the existing `benchmark/score.py`
+workflow.
 
 ### Run artifacts
 

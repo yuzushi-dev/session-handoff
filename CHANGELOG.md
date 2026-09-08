@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3 — unreleased candidate
+
+- Store handoffs centrally with reference-first retrieval and legacy compatibility.
+- Use native Claude/Codex plugin manifests; archive the portable manifest outside
+  the package root so Codex loads hooks and starts MCP correctly.
+- Show launcher setup and separate telemetry consent notices during onboarding.
+- Attribute telemetry to the actual client, record fallback and failed migration
+  outcomes, and preserve client identity across managed launches and switches.
+- Reject benchmark runs when repository provenance cannot be verified.
+- Clarify that pilot raw evidence is local and unpublished, preserving reported
+  results and their limitations. Align the CI Codex smoke test to 0.153.4.
+
 ## 0.7.2 — 2026-09-03
 
 - Add fail-open automatic compaction checkpoints with redacted local Git state,

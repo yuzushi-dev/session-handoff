@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show the one-time telemetry opt-in reminder for marketplace installs."""
+"""Offer optional launcher setup and independent telemetry consent."""
 
 import json
 import sys
@@ -10,6 +10,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_ROOT))
 
 from server import checkpoint, telemetry  # noqa: E402
+from server.onboarding import launcher_notice  # noqa: E402
 
 
 def _hook_input() -> dict:
@@ -41,29 +42,34 @@ def main() -> int:
         context = None
 
     try:
+        notice = launcher_notice(PLUGIN_ROOT)
+    except Exception:
+        notice = None
+    try:
         if telemetry.do_not_track_enabled():
-            _output(context=context)
+            _output(context=context, system_message=notice)
             return 0
         config = telemetry.load_config()
         if telemetry.consent_state(config) == "enabled":
             telemetry.session_start_flush()
-            _output(context=context)
+            _output(context=context, system_message=notice)
             return 0
         if not telemetry.claim_consent_prompt():
-            _output(context=context)
+            _output(context=context, system_message=notice)
             return 0
 
         _output(
             context=context,
-            system_message=(
-                "session-handoff telemetry is off by default. Reply with exactly one of: "
+            system_message=((notice + "\n\n") if notice else "") + (
+                "session-handoff — Telemetry (optional)\n"
+                "Telemetry is off by default. Reply with exactly one of: "
                 "`session-handoff telemetry yes` to enable anonymous aggregate telemetry, or "
                 "`session-handoff telemetry no` to decline. "
                 f"Details: {telemetry.TELEMETRY_DETAILS_URL}"
             ),
         )
     except Exception:
-        _output(context=context)
+        _output(context=context, system_message=notice)
     return 0
 
 

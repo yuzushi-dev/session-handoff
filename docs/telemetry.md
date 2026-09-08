@@ -18,6 +18,17 @@ An operation aggregate contains only:
 - dropped-event and normalized-field count buckets;
 - aggregate count (`aggregate_count`, carried as the closed-schema `count` field).
 
+Manual handoff routes use only the fixed Claude Code and Codex MCP identities or
+the explicit `SESSION_HANDOFF_CLIENT` manifest value. An unknown identity is not
+attributed or recorded. A `fallback` handoff means the document was persisted
+but automatic switching was unavailable; it does not verify that a later session
+resumed. `handoff_read` has no terminal success event because reading a document
+cannot prove that a session used it successfully. Managed launchers set the
+closed client marker for every child, including relaunch and migration targets;
+they leave existing user MCP registrations untouched. Unmanaged connections
+use only the known initialize names and remain un-attributed when the name is
+unknown.
+
 Curated Grafana dashboards and any explicitly implemented export query apply an
 aggregate threshold of 5 after summing rows: cells with `aggregate_count < 5`
 are omitted from those results. Loki may retain the individual allowlisted rows
@@ -132,15 +143,17 @@ Telemetry stays off until an explicit answer. The local state is one of:
 
 `                 ↘ declined`
 
-Each client has one surface. On Claude the SessionStart hook asks in chat. That
-hook does not run on Codex, so the managed launcher asks there instead, on a
-terminal, after the client exits. Both atomically record `asked` before showing
-the notice. It is shown once; it never asks again after `asked`, `enabled`, or
-`declined`, including after an upgrade or consent-version change. A decline is
-final. Blank, interrupted, or unrecognized terminal input leaves telemetry off
-and records `asked`, not `declined`.
+The plugin's SessionStart hook asks in chat on Claude and Codex versions with
+plugin hook support. The managed Codex launcher provides a terminal fallback
+after the client exits if no notice was recorded. Both atomically record `asked`
+before showing the notice. It is shown once; it never asks again after `asked`, `enabled`, or
+`declined`, including after an upgrade or consent-version change. Setup and
+reinstall do not change a declined choice. An explicit `session-handoff telemetry enable` command may later opt in
+after a decline without showing the prompt again. Blank, interrupted, or
+unrecognized terminal input leaves telemetry off and records `asked`, not
+`declined`.
 
-In Claude's chat, only these complete strings are recognized, with exact
+In chat, only these complete strings are recognized, with exact
 spelling and case:
 
 ```text
@@ -153,17 +166,28 @@ partial matching occurs. The terminal prompt accepts `y`, `yes`, `n`, and
 `no`, case-insensitively; other input is ambiguous and leaves the state at
 `asked`.
 
-The controls are:
+After managed setup, the controls work without Node/npm:
 
 ```sh
-npx session-handoff telemetry status
-npx session-handoff telemetry enable
-npx session-handoff telemetry preview
-npx session-handoff telemetry flush
-npx session-handoff telemetry report --category constraint --severity recoverable
-npx session-handoff telemetry disable
-npx session-handoff telemetry disable --purge
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry status
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry yes
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry no
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry enable
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry preview
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry flush
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry report --category constraint --severity recoverable
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry disable
+python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" telemetry disable --purge
 ```
+
+Before setup, ask for session-handoff telemetry commands: the plugin's read-only
+`handoff_setup` tool supplies the full paths automatically.
+If `SESSION_HANDOFF_HOME` customizes the setup location, use that directory in
+place of `$HOME`. The npm alternative is `npx session-handoff telemetry …`.
+The CLI's exact `yes` records explicit consent, including after a prior decline;
+`no` disables telemetry without purging stored data. Neither needs an interactive
+terminal. An agent must not choose either on the user's behalf. Launcher setup
+and its `--yes` flag do not grant telemetry consent.
 
 `preview` sends nothing. `DO_NOT_TRACK` is a runtime override: any non-empty
 value other than exactly `0` suppresses collection, upload, and consent

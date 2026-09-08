@@ -639,7 +639,7 @@ def _read_config_locked(directory, directory_fd):
         return None
 
 
-def _transition_consent(home, target):
+def _transition_consent(home, target, *, allow_declined=False):
     if do_not_track_enabled():
         return False
     if target not in {"asked", "enabled", "declined"}:
@@ -656,7 +656,9 @@ def _transition_consent(home, target):
                 if target == "asked":
                     allowed = state == "unasked"
                 else:
-                    allowed = state in {"unasked", "asked"}
+                    allowed = state in {"unasked", "asked"} or (
+                        allow_declined and target == "enabled" and state == "declined"
+                    )
                 if not allowed:
                     return False
                 config = asked_config() if target == "asked" else (
@@ -684,6 +686,11 @@ def record_consent_response(home=None, *, enabled):
     if type(enabled) is not bool:
         raise ValueError("consent response must be boolean")
     return _transition_consent(home, "enabled" if enabled else "declined")
+
+
+def enable_consent(home=None):
+    """Enable telemetry after an explicit CLI request, including a prior decline."""
+    return _transition_consent(home, "enabled", allow_declined=True)
 
 
 def request_consent(home, *, interactive, input_fn=None):

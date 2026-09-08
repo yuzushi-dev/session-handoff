@@ -67,6 +67,28 @@ def test_supervisor_migrates_after_stopping_source_and_resumes_target(tmp_path):
     assert calls[1][0][0] == "codex"
     assert calls[1][0][-2:] == ["resume", "target-id"]
     assert calls[1][1]["cwd"] == str(tmp_path)
+    assert calls[0][1]["env"]["SESSION_HANDOFF_CLIENT"] == "claude"
+    assert calls[1][1]["env"]["SESSION_HANDOFF_CLIENT"] == "codex"
+    assert "mcp_servers.session-handoff.env.SESSION_HANDOFF_CLIENT=\"codex\"" in calls[1][0]
+
+
+def test_managed_child_pins_identity_when_registration_is_envless(tmp_path):
+    calls = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return FakeProcess(0)
+
+    supervisor = SessionSupervisor(
+        "claude",
+        [],
+        popen=fake_popen,
+        temp_dir=tmp_path / "control",
+        executable="claude",
+    )
+
+    assert supervisor.run() == 0
+    assert calls[0][1]["env"]["SESSION_HANDOFF_CLIENT"] == "claude"
 
 
 def test_supervisor_attempts_startup_flush(monkeypatch):

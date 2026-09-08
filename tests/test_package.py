@@ -15,7 +15,8 @@ def load_json(relative):
 
 
 def test_portable_and_native_manifests_agree():
-    portable = load_json("plugin.json")
+    assert not (ROOT / "plugin.json").exists(), "Root portable manifest disables native Codex hooks"
+    portable = load_json("docs/portable/plugin.json")
     codex = load_json(".codex-plugin/plugin.json")
     claude = load_json(".claude-plugin/plugin.json")
 
@@ -41,7 +42,7 @@ def test_all_package_version_sources_agree():
     package = load_json("package.json")
     sources = {
         "package.json": package["version"],
-        "plugin.json": load_json("plugin.json")["version"],
+        "docs/portable/plugin.json": load_json("docs/portable/plugin.json")["version"],
         ".codex-plugin/plugin.json": load_json(".codex-plugin/plugin.json")["version"],
         ".claude-plugin/plugin.json": load_json(".claude-plugin/plugin.json")["version"],
         "server/handoff_mcp.py": handoff_mcp.SERVER_VERSION,
@@ -67,15 +68,31 @@ def test_portable_mcp_config_uses_agent_plugins_paths():
     assert server["type"] == "stdio"
     assert server["command"] == "python3"
     assert "${PLUGIN_ROOT}" in server["args"][0]
+    assert "SESSION_HANDOFF_CLIENT" not in server["env"]
 
 
-def test_native_mcp_config_supports_claude_and_codex():
+def test_native_mcp_config_supports_claude():
     config = load_json(".mcp.json")
     server = config["mcpServers"]["session-handoff"]
 
     assert server["command"] == "python3"
     assert "${CLAUDE_PLUGIN_ROOT}" in server["args"][0]
     assert server["args"][0].endswith("server/handoff_mcp.py")
+    assert server["env"]["SESSION_HANDOFF_CLIENT"] == "claude"
+
+
+def test_codex_mcp_starts_from_plugin_directory():
+    server = load_json(".codex-plugin/plugin.json")["mcpServers"]["session-handoff"]
+    assert server["env"]["SESSION_HANDOFF_CLIENT"] == "codex"
+    result = subprocess.run(
+        [server["command"], *server["args"]],
+        cwd=ROOT / server["cwd"],
+        input='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n',
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert "handoff_setup" in {tool["name"] for tool in response["result"]["tools"]}
 
 
 def test_all_hooks_support_native_and_legacy_plugin_root_variables():
@@ -264,6 +281,8 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
         check=True,
     ).stdout.splitlines()
     assert "package/hooks/hooks.json" in contents
+    assert "package/plugin.json" not in contents
+    assert "package/.codex-plugin/plugin.json" in contents
     assert not any(path.startswith("package/hooks/__pycache__/") for path in contents)
     assert "package/docs/telemetry.md" in contents
     assert "package/server/migration_engine.py" in contents
