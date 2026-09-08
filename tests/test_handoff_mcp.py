@@ -334,7 +334,11 @@ def test_handoff_create_schema_accepts_exact_state_v1_contract():
     schema = tool["inputSchema"]
 
     assert schema["required"] == ["workspace"]
-    assert {tuple(sorted(x["required"])) for x in schema["allOf"][0]["oneOf"]} == {("name",), ("path",)}
+    assert not {"oneOf", "anyOf", "allOf"}.intersection(schema)
+    description = tool["description"]
+    assert "exactly one" in description
+    assert "path" in description and "name" in description
+    assert "content" in description and "state" in description
     assert schema["additionalProperties"] is False
     assert "content" not in schema["required"]
     state = schema["properties"]["state"]
@@ -360,6 +364,40 @@ def test_handoff_create_schema_accepts_exact_state_v1_contract():
     ]
     assert "maxLength" not in state["properties"]["goal"]
     assert "maxLength" not in state["properties"]["constraints_preferences"]["items"]
+
+
+@pytest.mark.parametrize("tool_name", ["handoff_read", "handoff_validate"])
+def test_read_tool_schemas_are_root_object_compatible_and_describe_exclusivity(tool_name):
+    tool = next(tool for tool in handoff_mcp.TOOLS if tool["name"] == tool_name)
+    schema = tool["inputSchema"]
+
+    assert schema["type"] == "object"
+    assert not {"oneOf", "anyOf", "allOf"}.intersection(schema)
+    description = tool["description"]
+    assert "exactly one" in description
+    assert "path" in description and "ref" in description
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"path": "handoffs/bad.md", "name": "bad.md", "content": "content"},
+        {"path": "handoffs/bad.md", "content": "content", "state": structured_state()},
+        {"path": "handoffs/bad.md"},
+    ],
+)
+def test_create_rejects_exclusive_fields_without_write_or_success_telemetry(
+    monkeypatch, tmp_path, arguments
+):
+    summaries = []
+    monkeypatch.setenv("SESSION_HANDOFF_CLIENT", "codex")
+    monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", summaries.append)
+
+    with pytest.raises(handoff_mcp.HandoffError, match="exactly one"):
+        handoff_mcp._create({"workspace": str(tmp_path), **arguments})
+
+    assert not list(tmp_path.iterdir())
+    assert summaries == []
 
 
 def test_call_tool_rejects_unknown_top_level_parameter():

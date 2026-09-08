@@ -14,6 +14,5 @@
     "context",
     "codex",
     "claude"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }

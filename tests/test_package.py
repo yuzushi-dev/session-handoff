@@ -23,7 +23,8 @@ def test_portable_and_native_manifests_agree():
     assert portable["$schema"].endswith("/schemas/1.0.0/plugin.schema.json")
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
     assert portable["version"] == codex["version"] == claude["version"] == load_json("package.json")["version"]
-    assert codex["hooks"] == claude["hooks"] == "./hooks/hooks.json"
+    assert codex["hooks"] == "./hooks/hooks.json"
+    assert "hooks" not in claude, "Claude automatically loads the standard hooks/hooks.json"
     assert set(portable) <= {
         "$schema",
         "name",
