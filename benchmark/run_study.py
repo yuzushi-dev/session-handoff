@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmark.native_seed import seed_native_session
+from benchmark.product_roundtrip import ProductRoundtripError, product_identity, roundtrip
 from benchmark.score import validate_study_manifest
 from server.handoff_state import redact_state, render_state, validate_state
 from server.handoff_mcp import redact_secrets, validate_handoff
@@ -271,15 +272,18 @@ def _git_revision() -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _repository_sha256() -> str | None:
-    result = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    )
+def _repository_sha256() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise StudyRunError("git ls-files failed while reading repository provenance") from exc
     if result.returncode != 0:
-        return None
+        raise StudyRunError("git ls-files failed while reading repository provenance")
     digest = hashlib.sha256()
     for relative in result.stdout.split(b"\0"):
         if not relative:
@@ -287,8 +291,10 @@ def _repository_sha256() -> str | None:
         path = ROOT / os.fsdecode(relative)
         try:
             content = path.read_bytes()
-        except OSError:
-            return None
+        except OSError as exc:
+            raise StudyRunError(
+                f"could not read tracked repository file for provenance: {path}"
+            ) from exc
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
@@ -333,14 +339,35 @@ def _credential_sha256(args: argparse.Namespace, client: str) -> str | None:
     return _file_sha256(str(_auth_source(client).expanduser().resolve()))
 
 
+def _product_provenance(args: argparse.Namespace) -> dict[str, Any] | None:
+    root = getattr(args, "product_root", None)
+    storage = getattr(args, "storage_mode", None)
+    if (root is None) != (storage is None):
+        raise StudyRunError("--product-root and --storage-mode must be used together")
+    if root is None:
+        return None
+    if args.condition != "handoff" or _handoff_format(args) != "markdown-v1":
+        raise StudyRunError("product roundtrip requires markdown-v1 handoff condition")
+    identity = product_identity(root)
+    identity["storage"] = storage
+    return identity
+
+
 def _validate_runtime_provenance(
     args: argparse.Namespace,
     state: dict[str, Any],
     credential_access: str,
     credential_source: Path | None,
 ) -> None:
-    provenance = state["provenance"]
-    if provenance.get("repository_sha256") != _repository_sha256():
+    provenance = state.get("provenance")
+    if not isinstance(provenance, dict):
+        raise StudyRunError("repository provenance is missing")
+    if provenance.get("product") != _product_provenance(args):
+        raise StudyRunError("product build changed after pair provenance was recorded")
+    recorded_repository_sha256 = provenance.get("repository_sha256")
+    if not isinstance(recorded_repository_sha256, str) or not recorded_repository_sha256:
+        raise StudyRunError("repository provenance digest is missing")
+    if recorded_repository_sha256 != _repository_sha256():
         raise StudyRunError("repository changed after pair provenance was recorded")
     if provenance.get("environment_fingerprints") != _environment_fingerprints(args):
         raise StudyRunError("provider environment changed after pair provenance was recorded")
@@ -421,6 +448,8 @@ def _validate_resume_provenance(
             else None
         ),
         "client_profile": CLIENT_PROFILE,
+        "product": _product_provenance(args),
+        "agent_timeout": getattr(args, "agent_timeout", 300),
     }
     client_executable = (
         args.claude_executable if args.client == "claude" else args.codex_executable
@@ -453,6 +482,8 @@ def _refresh_runtime_provenance(args: argparse.Namespace, state: dict[str, Any])
         environment_fingerprints=_environment_fingerprints(args),
         client_executable=client_executable,
         client_executable_sha256=_file_sha256(client_executable),
+        product=_product_provenance(args),
+        agent_timeout=getattr(args, "agent_timeout", 300),
     )
     provenance["pair_fingerprint"] = _pair_fingerprint(state)
 
@@ -483,6 +514,8 @@ def _pair_fingerprint(state: dict[str, Any]) -> str:
         "client_profile": provenance.get("client_profile"),
         "pass_env": sorted(provenance.get("pass_env", [])),
         "environment_fingerprints": provenance.get("environment_fingerprints"),
+        "product": provenance.get("product"),
+        "agent_timeout": provenance.get("agent_timeout"),
     }
     encoded = json.dumps(
         comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -815,25 +848,36 @@ def _invoke_agent(
     cwd: Path,
     env: dict[str, str],
     artifact_prefix: Path,
+    timeout: int = 300,
 ) -> dict[str, Any]:
     started = time.monotonic()
+    process: subprocess.Popen[str] | None = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=cwd,
             env=env,
-            input=prompt,
             text=True,
-            capture_output=True,
-            check=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
+        stdout, stderr = process.communicate(prompt, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            os.killpg(process.pid, 9)
+            stdout, stderr = process.communicate()
+            artifact_prefix.with_suffix(".stdout").write_text(stdout or "", encoding="utf-8")
+            artifact_prefix.with_suffix(".stderr").write_text(stderr or "", encoding="utf-8")
+        raise StudyRunError("agent command timed out; inspect the run artifacts") from exc
     except OSError as exc:
         raise StudyRunError("agent executable could not be started") from exc
-    artifact_prefix.with_suffix(".stdout").write_text(result.stdout or "", encoding="utf-8")
-    artifact_prefix.with_suffix(".stderr").write_text(result.stderr or "", encoding="utf-8")
-    if result.returncode != 0:
+    artifact_prefix.with_suffix(".stdout").write_text(stdout or "", encoding="utf-8")
+    artifact_prefix.with_suffix(".stderr").write_text(stderr or "", encoding="utf-8")
+    if process.returncode != 0:
         raise StudyRunError("agent command failed; inspect the run artifacts")
-    parsed = _parse_agent_output(client, result.stdout or "")
+    parsed = _parse_agent_output(client, stdout or "")
     parsed["wall_seconds"] = time.monotonic() - started
     return parsed
 
@@ -1304,11 +1348,33 @@ def _prepare_context(
         cwd=generation_workspace,
         env=generation_env,
         artifact_prefix=run_dir / "handoff-generation",
+        timeout=getattr(args, "agent_timeout", 300),
     )
     generation_trace = generated.pop("trace")
     if generation_trace:
         raise StudyRunError("handoff generator used a tool despite the isolated no-tool contract")
-    redacted, redactions = _render_generated_handoff(generated["text"], handoff_format)
+    if getattr(args, "product_root", None):
+        if state["provenance"]["product"] != _product_provenance(args):
+            raise StudyRunError("product build changed during handoff generation")
+        raw = generated["text"]
+        missing = validate_handoff(raw)
+        if missing:
+            raise StudyRunError("generated handoff is missing canonical sections")
+        product = roundtrip(
+            args.product_root,
+            args.storage_mode,
+            run_dir / "product-runtime",
+            run_dir / "product-workspace",
+            raw,
+        )
+        redacted = product.pop("content")
+        missing = validate_handoff(redacted)
+        if missing:
+            raise StudyRunError("product handoff read is missing canonical sections")
+        redactions = product["create"].get("redacted_count", 0)
+        _write_json(run_dir / "product-roundtrip.json", product)
+    else:
+        redacted, redactions = _render_generated_handoff(generated["text"], handoff_format)
     (run_dir / "handoff.md").write_text(redacted, encoding="utf-8")
     (run_dir / "supplied-context.md").write_text(redacted, encoding="utf-8")
     generated.pop("text")
@@ -1458,6 +1524,8 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 "client_executable": client_executable,
                 "client_executable_sha256": _file_sha256(client_executable),
                 "client_profile": CLIENT_PROFILE,
+                "product": _product_provenance(args),
+                "agent_timeout": getattr(args, "agent_timeout", 300),
                 **migration_provenance,
             },
         }
@@ -1544,6 +1612,7 @@ def execute(args: argparse.Namespace, run: dict[str, Any], study_root: Path, tra
                 cwd=workspace,
                 env=agent_env,
                 artifact_prefix=run_dir / "continuation",
+                timeout=getattr(args, "agent_timeout", 300),
             )
             trace = continuation.pop("trace")
             _write_json(run_dir / "trace.json", trace)
@@ -1675,6 +1744,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--sandbox-executable", default="bwrap")
     result.add_argument("--claude-executable")
     result.add_argument("--codex-executable")
+    result.add_argument("--product-root", type=Path)
+    result.add_argument("--storage-mode", choices=("legacy", "central"))
+    result.add_argument("--agent-timeout", type=int, default=300)
     return result
 
 
@@ -1683,6 +1755,9 @@ def main() -> int:
     try:
         args.claude_executable = _client_executable("claude", args.claude_executable)
         args.codex_executable = _client_executable("codex", args.codex_executable)
+        if args.agent_timeout <= 0:
+            raise StudyRunError("--agent-timeout must be positive")
+        _product_provenance(args)
         evaluation = args.evaluation.resolve()
         payload = json.loads(evaluation.read_text(encoding="utf-8"))
         validate_study_manifest(payload)
@@ -1729,7 +1804,7 @@ def main() -> int:
         )
         print(json.dumps(summary, sort_keys=True))
         return 0
-    except (OSError, ValueError, StudyRunError) as exc:
+    except (OSError, ValueError, ProductRoundtripError, StudyRunError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
 

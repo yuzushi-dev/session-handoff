@@ -1,5 +1,5 @@
 {
-  "description": "One-time anonymous telemetry opt-in reminder.",
+  "description": "Optional launcher setup, telemetry consent, and compaction recovery.",
   "hooks": {
     "SessionStart": [
       {
@@ -9,7 +9,7 @@
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/hooks/session-start.py\"",
             "timeout": 5,
-            "statusMessage": "Checking telemetry status"
+            "statusMessage": "Checking session-handoff setup"
           }
         ]
       }

@@ -17,7 +17,6 @@ from typing import Any, Mapping, Sequence
 
 MANIFESTS = (
     "package.json",
-    "plugin.json",
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",
 )
@@ -29,6 +28,12 @@ SCENARIOS = (
     "consent_no",
     "legacy_config",
     "do_not_track",
+    "legacy_create_read",
+    "literal_search",
+    "central_roundtrip",
+    "central_pagination_scope",
+    "cli_management",
+    "supervised_resume_draft",
 )
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?\Z")
 ISO_TIMESTAMP_RE = re.compile(
@@ -131,6 +136,13 @@ def load_build(label: str, root: Path) -> Build:
         if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
             raise BuildSpecError(f"invalid manifest version: {path}")
         versions[relative] = version
+    for relative in ("plugin.json", "docs/portable/plugin.json"):
+        path = root / relative
+        if path.is_file():
+            version = _read_json(path).get("version")
+            if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+                raise BuildSpecError(f"invalid manifest version: {path}")
+            versions[relative] = version
     if len(set(versions.values())) != 1:
         raise BuildSpecError(f"manifest versions disagree in {root}")
 
@@ -187,6 +199,7 @@ def _minimal_environment(home: Path, *, do_not_track: bool) -> dict[str, str]:
             "SESSION_HANDOFF_HOME": str(home),
             "DO_NOT_TRACK": "1" if do_not_track else "0",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONHASHSEED": "0",
             "PYTHONIOENCODING": "utf-8",
             "TZ": "UTC",
@@ -337,6 +350,49 @@ def _scenario(build: Build, scenario: str) -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="session-handoff-version-") as temporary:
         home = Path(temporary)
+        if scenario in SCENARIOS[7:]:
+            command = [
+                sys.executable,
+                str(Path(__file__).with_name("product_probe.py")),
+                str(build.root),
+                scenario,
+            ]
+            try:
+                probe = subprocess.run(
+                    command,
+                    cwd=build.root,
+                    env=_minimal_environment(home, do_not_track=True),
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                returncode, timed_out = probe.returncode, False
+                stdout, stderr = probe.stdout, probe.stderr
+            except subprocess.TimeoutExpired as exc:
+                returncode, timed_out = None, True
+                stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            result = _step(
+                {
+                    "supported": True,
+                    "returncode": returncode,
+                    "timed_out": timed_out,
+                    "stdout": _normalise_text(stdout, build.root, home),
+                    "stderr": _normalise_text(stderr, build.root, home),
+                }
+            )
+            observation = _json_stdout(result)
+            if not result["ok"]:
+                observation = {"capability": "supported", "probe": result}
+            elif (
+                not isinstance(observation, dict)
+                or observation.get("parse_error") is True
+                or observation.get("capability") not in {"supported", "unsupported"}
+            ):
+                observation = {"parse_error": True, "probe": result}
+                result["ok"] = False
+            return {"valid": result["ok"], "observation": observation}
         if scenario == "fresh_session_start":
             hook = _step(run_product_command(build, "hooks/session-start.py", home=home))
             observation = {

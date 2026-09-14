@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import base64
+import bisect
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -11,11 +14,13 @@ import secrets
 import sqlite3
 import stat
 import subprocess
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
+from urllib.parse import quote
 
 try:
     from .redaction import redact_secrets
@@ -23,8 +28,10 @@ except ImportError:
     from redaction import redact_secrets  # type: ignore[no-redef]
 
 MAX_MANIFEST_BYTES = 16 * 1024
+MAX_BINDINGS_BYTES = 16 * 1024
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_RECORDS_SCAN = 256
+MAX_PROJECTS_SCAN = 256
 CATALOG_SCHEMA_VERSION = 1
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -77,6 +84,135 @@ def state_root() -> Path:
 
 def catalog_path() -> Path:
     return state_root() / "catalog.sqlite3"
+
+
+def _health_parent(path: Path) -> tuple[Path, os.stat_result] | None:
+    parent = path.parent
+    while True:
+        try:
+            return parent, parent.lstat()
+        except FileNotFoundError:
+            if parent == parent.parent:
+                return None
+            parent = parent.parent
+        except OSError:
+            return None
+
+
+def _health_directory(path: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {"path": str(path), "writable": False}
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        parent = _health_parent(path)
+        if parent is not None:
+            parent_path, parent_info = parent
+            result["writable"] = (
+                stat.S_ISDIR(parent_info.st_mode)
+                and not stat.S_ISLNK(parent_info.st_mode)
+                and bool(parent_info.st_mode & stat.S_IWUSR)
+                and bool(parent_info.st_mode & stat.S_IXUSR)
+                and os.access(parent_path, os.W_OK | os.X_OK)
+            )
+        result["status"] = "absent"
+        return result
+    except OSError as exc:
+        result.update({"status": "unsafe", "reason": str(exc)})
+        return result
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+    ):
+        result.update({"status": "unsafe", "reason": "private directory check failed"})
+        return result
+    result["writable"] = bool(
+        info.st_mode & stat.S_IWUSR
+        and info.st_mode & stat.S_IXUSR
+        and os.access(path, os.W_OK | os.X_OK)
+    )
+    result["status"] = "healthy" if result["writable"] else "unwritable"
+    return result
+
+
+def _health_catalog(state: dict[str, Any]) -> dict[str, Any]:
+    path = catalog_path()
+    result: dict[str, Any] = {"path": str(path), "writable": bool(state["writable"])}
+    if state["status"] in {"unsafe", "unwritable"}:
+        result.update({"status": "unsafe", "reason": "state root is not safely usable"})
+        result["writable"] = False
+        return result
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        result["status"] = "absent"
+        return result
+    except OSError as exc:
+        result.update({"status": "unsafe", "reason": str(exc), "writable": False})
+        return result
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+    ):
+        result.update({"status": "unsafe", "reason": "private catalog check failed", "writable": False})
+        return result
+    if not info.st_mode & stat.S_IWUSR or not os.access(path, os.W_OK):
+        result.update({"status": "unwritable", "reason": "catalog is not writable", "writable": False})
+        return result
+    try:
+        database = sqlite3.connect(
+            f"file:{quote(str(path), safe='/')}?mode=ro",
+            uri=True,
+        )
+        try:
+            version = database.execute("PRAGMA user_version").fetchone()
+            generation = database.execute("SELECT generation FROM metadata").fetchone()
+            database.execute("SELECT sequence, project_id, handoff_id FROM records LIMIT 1").fetchone()
+            if (
+                version != (CATALOG_SCHEMA_VERSION,)
+                or not generation
+                or not isinstance(generation[0], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", generation[0])
+            ):
+                raise sqlite3.DatabaseError("unsupported catalog schema")
+        finally:
+            database.close()
+    except sqlite3.DatabaseError as exc:
+        result.update({"status": "corrupt", "reason": str(exc), "writable": False})
+        return result
+    except (OSError, ValueError) as exc:
+        result.update({"status": "unsafe", "reason": str(exc), "writable": False})
+        return result
+    result["status"] = "healthy"
+    return result
+
+
+def probe_health() -> dict[str, Any]:
+    """Inspect central storage without creating roots, bindings, or catalogs."""
+    data = _health_directory(data_root())
+    state = _health_directory(state_root())
+    catalog = _health_catalog(state)
+    statuses = {data["status"], state["status"], catalog["status"]}
+    if "corrupt" in statuses:
+        status = "corrupt"
+    elif "unsafe" in statuses:
+        status = "unsafe"
+    elif "unwritable" in statuses:
+        status = "unwritable"
+    elif "absent" in statuses:
+        status = "absent"
+    else:
+        status = "healthy"
+    return {
+        "status": status,
+        "writable": all(item["writable"] for item in (data, state, catalog)),
+        "data_root": data,
+        "state_root": state,
+        "catalog": catalog,
+    }
 
 
 def _catalog_dirty_path() -> Path:
@@ -149,15 +285,30 @@ def _check_private_dir(path: Path) -> None:
 def _check_private_file(path: Path) -> None:
     parent, name = _parent_fd(path)
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent); st = os.fstat(fd); os.close(fd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=parent); st = os.fstat(fd); os.close(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077: raise HandoffStoreError("unsafe central file permissions")
     finally: os.close(parent)
+
+
+def _private_file_identity(path: Path) -> tuple[int, int]:
+    parent, name = _parent_fd(path)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=parent)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+                raise HandoffStoreError("unsafe central file permissions")
+            return st.st_dev, st.st_ino
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
 
 
 def _private_file_size(path: Path) -> int:
     parent, name = _parent_fd(path)
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=parent)
         try:
             value = os.fstat(fd)
             if not stat.S_ISREG(value.st_mode) or value.st_uid != os.geteuid() or value.st_mode & 0o077: raise HandoffStoreError("unsafe central file permissions")
@@ -166,14 +317,26 @@ def _private_file_size(path: Path) -> int:
     finally: os.close(parent)
 
 
-def _read(path: Path, limit: int) -> bytes:
+def _read(path: Path, limit: int, expected_identity: tuple[int, int] | None = None) -> bytes:
     parent, name = _parent_fd(path)
     fd = None
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=parent)
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise HandoffStoreError("central record must be a regular file")
+        if expected_identity is not None and (st.st_dev, st.st_ino) != expected_identity:
+            raise HandoffStoreError("central record changed during open")
+        private = False
+        for root in (data_root(), state_root()):
+            try:
+                path.absolute().relative_to(root.absolute())
+                private = True
+                break
+            except ValueError:
+                pass
+        if private and (st.st_uid != os.geteuid() or st.st_mode & 0o077):
+            raise HandoffStoreError("unsafe central file permissions")
         chunks = []; remaining = limit + 1
         while remaining:
             chunk = os.read(fd, remaining)
@@ -190,8 +353,10 @@ def _read(path: Path, limit: int) -> bytes:
     return data
 
 
-def _json(path: Path, limit: int = MAX_MANIFEST_BYTES) -> dict[str, Any]:
-    try: value = json.loads(_read(path, limit).decode("utf-8"))
+def _json(path: Path, limit: int = MAX_MANIFEST_BYTES, expected_identity: tuple[int, int] | None = None) -> dict[str, Any]:
+    try:
+        raw = _read(path, limit) if expected_identity is None else _read(path, limit, expected_identity)
+        value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise HandoffStoreError("invalid central metadata") from exc
     if not isinstance(value, dict): raise HandoffStoreError("invalid central metadata")
     return value
@@ -221,7 +386,7 @@ def _bindings() -> dict[str, str]:
     path = state_root() / "bindings.json"
     if not path.exists(): return {}
     _check_private_dir(state_root()); _check_private_file(path)
-    value = _json(path)
+    value = _json(path, MAX_BINDINGS_BYTES)
     if value.get("schema_version") != 1 or not isinstance(value.get("bindings"), dict):
         raise HandoffStoreError("unsupported or corrupt bindings schema")
     result = value["bindings"]
@@ -264,10 +429,20 @@ def _create_catalog(path: Path) -> sqlite3.Connection:
 def _open_catalog() -> sqlite3.Connection:
     root = state_root(); _mkdir(root); path = catalog_path()
     if not path.exists() and not path.is_symlink(): return _rebuild_catalog()
-    try: _check_private_dir(root); _check_private_file(path)
+    try:
+        _check_private_dir(root); _check_private_file(path)
+        identity = _private_file_identity(path)
     except OSError as exc: raise HandoffStoreError("unsafe catalog file") from exc
     connection = sqlite3.connect(path)
     try:
+        current = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_uid != os.geteuid()
+            or current.st_mode & 0o077
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            raise HandoffStoreError("catalog changed during open")
         version = connection.execute("PRAGMA user_version").fetchone()
         generation = connection.execute("SELECT generation FROM metadata").fetchone()
         connection.execute("SELECT sequence, project_id, handoff_id FROM records LIMIT 1").fetchone()
@@ -341,9 +516,38 @@ def _remove_staging(path: Path) -> None:
     finally: os.close(parent)
 
 
+def _rename_noreplace(parent_fd: int, source: str, destination: str) -> None:
+    native = "renameat2" if sys.platform.startswith("linux") else "renameatx_np" if sys.platform == "darwin" else None
+    if native is None:
+        raise HandoffStoreError("atomic no-replace rename is unavailable")
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        function = getattr(libc, native)
+        function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        function.restype = ctypes.c_int
+    except (AttributeError, OSError) as exc:
+        raise HandoffStoreError("atomic no-replace rename is unavailable") from exc
+    try:
+        result = function(parent_fd, os.fsencode(source), parent_fd, os.fsencode(destination), 1 if native == "renameat2" else 4)
+    except OSError as exc:
+        if exc.errno in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+            raise HandoffStoreError("atomic no-replace rename is unavailable") from exc
+        raise
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(error, os.strerror(error), destination)
+    if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+        raise HandoffStoreError("atomic no-replace rename is unavailable")
+    raise OSError(error, os.strerror(error), destination)
+
+
 def _save_bindings(bindings: dict[str, str]) -> None:
     root = state_root(); _mkdir(root)
-    _write(root / "bindings.json", json.dumps({"schema_version": 1, "bindings": bindings}, separators=(",", ":")).encode())
+    payload = json.dumps({"schema_version": 1, "bindings": bindings}, separators=(",", ":")).encode()
+    if len(payload) > MAX_BINDINGS_BYTES: raise HandoffStoreError("bindings exceeds size limit")
+    _write(root / "bindings.json", payload)
 
 
 def anchor_for(workspace: str) -> str:
@@ -357,7 +561,22 @@ def anchor_for(workspace: str) -> str:
         value = proc.stdout.strip()
         if value and "\n" not in value and Path(value).is_absolute(): return "git:" + str(Path(value).resolve())
         raise HandoffStoreError("malformed git workspace anchor")
-    if proc.returncode == 128: return "directory:" + str(root)
+    if proc.returncode == 128:
+        candidate = root
+        while True:
+            marker = candidate / ".git"
+            if marker.exists() or marker.is_symlink():
+                raise HandoffStoreError("unable to determine git workspace anchor")
+            parent = candidate.parent
+            if parent == candidate:
+                return "directory:" + str(root)
+            try:
+                parent_mode = parent.stat().st_mode
+            except OSError as exc:
+                raise HandoffStoreError("unable to determine git workspace anchor") from exc
+            if parent_mode & stat.S_IWOTH:
+                return "directory:" + str(root)
+            candidate = parent
     raise HandoffStoreError("unable to determine git workspace anchor")
 
 
@@ -398,7 +617,24 @@ def associate_project(workspace: str, project_id: str, replace: bool = False) ->
     with _lock():
         bindings = _bindings(); previous = bindings.get(anchor)
         if previous and previous != project_id and not replace: raise HandoffStoreError("binding exists; replace=true required")
-        bindings[anchor] = project_id; _save_bindings(bindings); return previous
+        dirty_project = _dirty_catalog_project()
+        if dirty_project:
+            connection = _catalog()
+            try: _sync_catalog(connection, [dirty_project])
+            finally: connection.close()
+            _clear_catalog_dirty()
+        _mark_catalog_dirty(project_id)
+        connection = None
+        try:
+            connection = _catalog()
+            _sync_catalog(connection, [project_id])
+        finally:
+            if connection is not None:
+                connection.close()
+        _clear_catalog_dirty()
+        bindings[anchor] = project_id
+        _save_bindings(bindings)
+        return previous
 
 
 def create_record(workspace: str, name: str, document: str, origin: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -412,7 +648,7 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
     if len(raw) > MAX_DOCUMENT_BYTES: raise HandoffStoreError("central document exceeds size limit")
     created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     manifest = preserved_manifest if preserved_manifest is not None else {"schema_version":1,"handoff_id":handoff_id,"name":name,"created_at":created,"sha256":hashlib.sha256(raw).hexdigest(),"origin":origin}
-    if preserved_manifest is not None: _validate_manifest(manifest, document)
+    _validate_manifest(manifest, document)
     project = data_root() / "projects" / project_id; _metadata(project_id); target = project / "handoffs" / handoff_id
     with _lock():
         dirty_project = _dirty_catalog_project()
@@ -426,7 +662,15 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
         _mkdir(target.parent); staging = target.parent / ("." + handoff_id + "." + secrets.token_hex(8) + ".staging"); _mkdir(staging)
         try:
             _write(staging / "document.md", raw); _write(staging / "manifest.json", json.dumps(manifest, separators=(",", ":")).encode())
-            parent, target_name = _parent_fd(target); os.rename(staging.name, target_name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
+            parent, target_name = _parent_fd(target)
+            try:
+                try:
+                    _rename_noreplace(parent, staging.name, target_name)
+                except FileExistsError as exc:
+                    raise HandoffStoreError("central handoff already exists") from exc
+                os.fsync(parent)
+            finally:
+                os.close(parent)
             connection = None
             try:
                 connection = _catalog()
@@ -443,20 +687,37 @@ def publish_record(project_id: str, handoff_id: str, name: str, document: str, o
     return {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id, "name": name, "document": document, "manifest": manifest}
 
 
-def read_record(ref: str, workspace: str, scope: str = "project", max_document_bytes: int | None = None) -> dict[str, Any]:
-    project_id, handoff_id = parse_ref(ref); bound = lookup_project(workspace)
-    if scope != "all" and bound != project_id: raise HandoffStoreError("handoff reference is outside workspace project")
-    _metadata(project_id)
+def read_record(
+    ref: str,
+    workspace: str,
+    scope: str = "project",
+    max_document_bytes: int | None = None,
+    *,
+    bound_project: str | None = None,
+    metadata_cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    project_id, handoff_id = parse_ref(ref); bound = bound_project if bound_project is not None else lookup_project(workspace)
+    if scope != "all" and bound != project_id:
+        raise HandoffStoreError(
+            "handoff reference is outside workspace project; use scope='all' to read it "
+            "or handoff_project to rebind this workspace"
+        )
+    if metadata_cache is None:
+        _metadata(project_id)
+    elif project_id not in metadata_cache:
+        metadata_cache[project_id] = _metadata(project_id)
     record = data_root() / "projects" / project_id / "handoffs" / handoff_id
     if not record.is_dir(): raise HandoffStoreError("central handoff not found")
-    _check_private_dir(record.parent); _check_private_dir(record); _check_private_file(record / "manifest.json"); _check_private_file(record / "document.md")
-    manifest = _json(record / "manifest.json")
+    manifest_path = record / "manifest.json"; document_path = record / "document.md"
+    _check_private_dir(record.parent); _check_private_dir(record); _check_private_file(manifest_path); _check_private_file(document_path)
+    manifest_identity = _private_file_identity(manifest_path); document_identity = _private_file_identity(document_path)
+    manifest = _json(manifest_path, expected_identity=manifest_identity)
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
-    document_size = _private_file_size(record / "document.md")
+    document_size = _private_file_size(document_path)
     if document_size > MAX_DOCUMENT_BYTES: raise HandoffStoreError("central record exceeds size limit")
     if max_document_bytes is not None and document_size > max_document_bytes: raise HandoffBudgetExceeded("central search byte budget reached")
     try:
-        document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+        document = _read(document_path, MAX_DOCUMENT_BYTES, document_identity).decode("utf-8")
         _validate_manifest(manifest, document)
     except (HandoffStoreError, OSError, UnicodeDecodeError) as exc:
         raise HandoffRecordError(str(exc), document_size) from exc
@@ -465,11 +726,13 @@ def read_record(ref: str, workspace: str, scope: str = "project", max_document_b
 
 def _record_summary(project_id: str, handoff_id: str) -> dict[str, Any]:
     record = data_root() / "projects" / project_id / "handoffs" / handoff_id
+    manifest_path = record / "manifest.json"; document_path = record / "document.md"
     _check_private_dir(record.parent); _check_private_dir(record)
-    _check_private_file(record / "manifest.json"); _check_private_file(record / "document.md")
-    manifest = _json(record / "manifest.json")
+    _check_private_file(manifest_path); _check_private_file(document_path)
+    manifest_identity = _private_file_identity(manifest_path); document_identity = _private_file_identity(document_path)
+    manifest = _json(manifest_path, expected_identity=manifest_identity)
     if manifest.get("handoff_id") != handoff_id: raise HandoffStoreError("handoff manifest identity mismatch")
-    document = _read(record / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+    document = _read(document_path, MAX_DOCUMENT_BYTES, document_identity).decode("utf-8")
     _validate_manifest(manifest, document)
     return {"ref": make_ref(project_id, handoff_id), "project_id": project_id, "handoff_id": handoff_id, "name": manifest.get("name"), "created_at": manifest.get("created_at")}
 
@@ -481,6 +744,72 @@ def _project_ids() -> Iterator[str]:
     with os.scandir(projects) as entries:
         for entry in entries:
             if _UUID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False): yield entry.name
+
+
+def _encode_project_cursor(project_id: str) -> str:
+    payload = json.dumps({"v": 1, "last": project_id}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+
+def _decode_project_cursor(cursor: str) -> str:
+    try:
+        if not isinstance(cursor, str) or not cursor or len(cursor) > 2048 or not re.fullmatch(r"[A-Za-z0-9_-]+", cursor): raise ValueError
+        value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HandoffStoreError("invalid project cursor") from exc
+    if not isinstance(value, dict) or set(value) != {"v", "last"} or type(value.get("v")) is not int or value["v"] != 1 or not isinstance(value.get("last"), str) or not _UUID.fullmatch(value["last"]):
+        raise HandoffStoreError("invalid project cursor")
+    return value["last"]
+
+
+def list_projects(limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise HandoffStoreError("project limit must be a positive integer")
+    after = _decode_project_cursor(cursor) if cursor is not None else None
+    projects = data_root() / "projects"
+    if not projects.exists() and not projects.is_symlink():
+        if after is not None: raise HandoffStoreError("project cursor does not match this request")
+        return {"projects": [], "count": 0, "has_more": False, "next_cursor": None, "scan_truncated": False, "skipped_count": 0}
+    _check_private_dir(data_root()); _check_private_dir(projects)
+    names: list[str] = []
+    scan_truncated = False
+    scanned_entries = 0
+    with os.scandir(projects) as entries:
+        for entry in entries:
+            scanned_entries += 1
+            if scanned_entries > MAX_PROJECTS_SCAN:
+                scan_truncated = True
+                break
+            try:
+                valid = _UUID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False)
+            except OSError:
+                valid = False
+            if not valid:
+                continue
+            bisect.insort(names, entry.name)
+    candidates: list[dict[str, Any]] = []
+    skipped_count = 0
+    for project_id in names:
+        if after is not None and project_id <= after:
+            continue
+        try:
+            metadata = _metadata(project_id)
+        except (HandoffStoreError, OSError, UnicodeDecodeError):
+            skipped_count += 1
+            continue
+        candidates.append({"project_id": project_id, "label": metadata["label"]})
+    items = candidates[:limit]
+    has_more = not scan_truncated and len(candidates) > limit
+    next_cursor = _encode_project_cursor(items[-1]["project_id"]) if has_more else None
+    return {
+        "projects": items,
+        "count": len(items),
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "scan_truncated": scan_truncated,
+        "skipped_count": skipped_count,
+        "total_count": len(items) if after is None and not has_more and not scan_truncated and not skipped_count else None,
+    }
 
 
 def _sync_catalog(connection: sqlite3.Connection, projects: Iterable[str]) -> None:
@@ -549,10 +878,20 @@ def _catalog_page(connection: sqlite3.Connection, bound: str | None, scope: str,
     return {"items": items, "count": len(items), "total_count": total_count, "offset": 0, "has_more": more, "next_offset": None, "next_cursor": next_cursor, "scan_truncated": False, "skipped_count": skipped_count}
 
 
-def list_records(workspace: str, scope: str = "project", limit: int = 20, offset: int = 0, cursor: str | None = None, *, cursor_operation: str = "list", cursor_query: str | None = None) -> dict[str, Any]:
+def list_records(
+    workspace: str,
+    scope: str = "project",
+    limit: int = 20,
+    offset: int = 0,
+    cursor: str | None = None,
+    *,
+    cursor_operation: str = "list",
+    cursor_query: str | None = None,
+    bound_project: str | None = None,
+) -> dict[str, Any]:
     if scope not in {"project", "all"}: raise HandoffStoreError("scope must be project or all")
     if offset: raise HandoffStoreError("offset is not supported for central storage; use cursor")
-    bound = lookup_project(workspace)
+    bound = bound_project if bound_project is not None else lookup_project(workspace)
     if not bound and scope != "all":
         if cursor is not None: raise HandoffStoreError("cursor does not match this request")
         return {"items": [], "count": 0, "total_count": 0, "offset": 0, "has_more": False, "next_offset": None, "next_cursor": None, "scan_truncated": False, "skipped_count": 0}
@@ -590,25 +929,67 @@ def export_record(ref: str, workspace: str, directory: str) -> dict[str, Any]:
     except ValueError as exc: raise HandoffStoreError("export directory must remain inside workspace") from exc
     if any(part == ".." for part in supplied.parts) or destination.is_symlink(): raise HandoffStoreError("export directory is unsafe")
     if not destination.parent.exists() or destination.parent.is_symlink(): raise HandoffStoreError("export directory parent is unsafe")
-    if destination.exists():
-        if not destination.is_dir() or {p.name for p in destination.iterdir()} != {"document.md", "manifest.json"}: raise HandoffStoreError("export destination conflicts")
-        if _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode() or _read(destination / "manifest.json", MAX_MANIFEST_BYTES) != json.dumps(record["manifest"], separators=(",", ":")).encode(): raise HandoffStoreError("export destination conflicts")
-        return {"directory": str(destination), "ref": ref, "idempotent": True}
-    staging = destination.parent / ("." + destination.name + ".staging." + secrets.token_hex(8)); _mkdir(staging)
-    try:
-        _write(staging / "document.md", record["content"].encode())
-        _write(staging / "manifest.json", json.dumps(record["manifest"], separators=(",", ":")).encode())
-        parent, name = _parent_fd(destination); os.rename(staging.name, name, src_dir_fd=parent, dst_dir_fd=parent); os.fsync(parent); os.close(parent)
-    finally:
-        try: _remove_staging(staging)
-        except FileNotFoundError: pass
+    with _lock():
+        if destination.exists():
+            if not destination.is_dir() or {p.name for p in destination.iterdir()} != {"document.md", "manifest.json"}: raise HandoffStoreError("export destination conflicts")
+            if _read(destination / "document.md", MAX_DOCUMENT_BYTES) != record["content"].encode() or _read(destination / "manifest.json", MAX_MANIFEST_BYTES) != json.dumps(record["manifest"], separators=(",", ":")).encode(): raise HandoffStoreError("export destination conflicts")
+            return {"directory": str(destination), "ref": ref, "idempotent": True}
+        staging = destination.parent / ("." + destination.name + ".staging." + secrets.token_hex(8)); _mkdir(staging)
+        try:
+            _write(staging / "document.md", record["content"].encode())
+            _write(staging / "manifest.json", json.dumps(record["manifest"], separators=(",", ":")).encode())
+            parent, name = _parent_fd(destination)
+            try:
+                try:
+                    _rename_noreplace(parent, staging.name, name)
+                except FileExistsError as exc:
+                    raise HandoffStoreError("export destination conflicts") from exc
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        finally:
+            try: _remove_staging(staging)
+            except FileNotFoundError: pass
     return {"directory": str(destination), "ref": ref, "idempotent": False}
+
+
+def _validate_bundle_directory(source: Path) -> None:
+    """Require a portable bundle to contain only its two canonical files."""
+    parent, name = _parent_fd(source)
+    bundle_fd = None
+    try:
+        bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        entries = []
+        with os.scandir(bundle_fd) as iterator:
+            for entry in iterator:
+                entries.append(entry.name)
+                if len(entries) > 2:
+                    raise HandoffStoreError("invalid handoff bundle")
+        if set(entries) != {"document.md", "manifest.json"}:
+            raise HandoffStoreError("invalid handoff bundle")
+        for child in entries:
+            fd = os.open(child, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=bundle_fd)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise HandoffStoreError("invalid handoff bundle")
+            finally:
+                os.close(fd)
+    except HandoffStoreError:
+        raise
+    except OSError as exc:
+        raise HandoffStoreError("invalid handoff bundle") from exc
+    finally:
+        if bundle_fd is not None:
+            os.close(bundle_fd)
+        os.close(parent)
 
 
 def import_bundle(workspace: str, source: str, document: str | None = None, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     if manifest is None:
-        manifest = _json(Path(source) / "manifest.json")
-        document = _read(Path(source) / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
+        bundle = Path(source).expanduser()
+        _validate_bundle_directory(bundle)
+        manifest = _json(bundle / "manifest.json")
+        document = _read(bundle / "document.md", MAX_DOCUMENT_BYTES).decode("utf-8")
     if not isinstance(document, str) or not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
         raise HandoffStoreError("invalid handoff bundle")
     handoff_id = manifest.get("handoff_id"); name = manifest.get("name")

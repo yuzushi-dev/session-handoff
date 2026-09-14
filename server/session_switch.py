@@ -12,6 +12,7 @@ import pty
 import re
 import secrets
 import select
+import shlex
 import signal
 import shutil
 import struct
@@ -38,12 +39,18 @@ CONTROL_PATH_ENV = "SESSION_HANDOFF_CONTROL"
 CONTROL_TOKEN_ENV = "SESSION_HANDOFF_CONTROL_TOKEN"
 CONTROL_PROTOCOL_ENV = "SESSION_HANDOFF_CONTROL_PROTOCOL"
 CONTROL_PROTOCOL_VERSION = "2"
+CLIENT_ENV = "SESSION_HANDOFF_CLIENT"
 REQUEST_LIMIT = 64 * 1024
 SUPPORTED_CLIENTS = {"codex", "claude"}
 TELEMETRY_PLUGIN_VERSION = PACKAGE_VERSION
 TELEMETRY_SUMMARY_FIELDS = frozenset(
     {"handoff_bytes", "redacted_count", "dropped_events", "normalized_fields", "duration_seconds"}
 )
+
+
+def _python_cli_command(*args: str) -> str:
+    cli = Path(__file__).resolve().parents[1] / "bin/session-handoff"
+    return shlex.join([sys.executable, str(cli), *args])
 
 
 def _safe_numeric_summary(summary: dict[str, Any] | None) -> dict[str, int | float]:
@@ -323,12 +330,22 @@ def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
         control.unlink(missing_ok=True)
 
 
+def _prompt_quote(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("handoff prompt values must be strings")
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+
 def handoff_prompt(workspace: str, path: str | None = None, ref: str | None = None) -> str:
+    quoted_workspace = _prompt_quote(workspace)
     if ref is not None:
-        instruction = f"usa handoff_read con workspace={workspace!r} ref={ref!r}"
+        instruction = f"handoff_read(workspace={quoted_workspace}, ref={_prompt_quote(ref)})"
     else:
-        instruction = f"reference [{path}]"
-    return f"Ripresa, non creazione: {instruction}, poi riparti da qui; non creare un nuovo handoff"
+        if path is None:
+            raise ValueError("handoff prompt requires a path or ref")
+        quoted_path = _prompt_quote(path)
+        instruction = f"handoff_read(workspace={quoted_workspace}, path={quoted_path})"
+    return f"Resume task: call {instruction} and proceed with the next steps. Do not create a new handoff."
 
 
 def _fresh_session_args(
@@ -478,6 +495,7 @@ def _with_control_path(client: str, args: list[str], control: Path) -> list[str]
     settings = [
         f"mcp_servers.session-handoff.env.{CONTROL_PATH_ENV}={json.dumps(str(control))}",
         f"mcp_servers.session-handoff.env.{CONTROL_PROTOCOL_ENV}={json.dumps(CONTROL_PROTOCOL_VERSION)}",
+        f"mcp_servers.session-handoff.env.{CLIENT_ENV}={json.dumps(client)}",
     ]
     prefix = [item for setting in settings if setting not in args for item in ("-c", setting)]
     return [*prefix, *args]
@@ -517,7 +535,7 @@ def _repair_launcher(executable: str, client: str, original: str | None) -> None
             temporary.unlink(missing_ok=True)
         print(
             f"session-handoff: launcher repair failed for {launcher}: {exc}; "
-            f"run `npx session-handoff@latest setup --client {client} --yes`",
+            f"run `{_python_cli_command('setup', '--client', client, '--yes')}`",
             file=sys.stderr,
         )
 
@@ -573,7 +591,7 @@ def _reconcile_claude_target(
     except (OSError, ValueError) as exc:
         print(
             f"session-handoff: Claude target repair failed for {target}: {exc}; "
-            "run `npx session-handoff@latest setup --client claude --yes`",
+            f"run `{_python_cli_command('setup', '--client', 'claude', '--yes')}`",
             file=sys.stderr,
         )
 
@@ -726,11 +744,11 @@ class _DraftProcess:
 
 
 def _telemetry_notice(client: str, stream: Any = None) -> None:
-    """Ask the one-time telemetry consent question, once, on Codex only.
+    """Fallback telemetry consent notice, once, on Codex only.
 
-    Claude asks in chat from its SessionStart hook. That hook does not run on
-    Codex, so the managed launcher asks there instead, after the client exits:
-    a full-screen client would otherwise paint over the notice.
+    Client hooks normally ask in chat. The managed Codex launcher retains this
+    fallback for installs where the hook is missing or did not run. It prints
+    after exit because the full-screen client would otherwise hide the notice.
     """
     stream = sys.stderr if stream is None else stream
     try:
@@ -742,10 +760,11 @@ def _telemetry_notice(client: str, stream: Any = None) -> None:
             return
         if not telemetry.claim_consent_prompt():
             return
+        yes = _python_cli_command("telemetry", "yes")
+        no = _python_cli_command("telemetry", "no")
         print(
             "session-handoff telemetry is off by default. Run "
-            "`npx session-handoff telemetry yes` to enable anonymous aggregate "
-            "telemetry, or `npx session-handoff telemetry no` to decline. "
+            f"`{yes}` to enable anonymous aggregate telemetry, or `{no}` to decline. "
             f"Details: {telemetry.TELEMETRY_DETAILS_URL}",
             file=stream,
         )
@@ -788,6 +807,12 @@ class SessionSupervisor:
     def _client_executable(self, client: str) -> str | None:
         return self.client_executables.get(client) or shutil.which(client)
 
+    @staticmethod
+    def _launch_environment(client: str, env: dict[str, str]) -> dict[str, str]:
+        launch_env = dict(env)
+        launch_env[CLIENT_ENV] = client
+        return launch_env
+
     def _launch(
         self,
         client: str,
@@ -797,8 +822,9 @@ class SessionSupervisor:
         *,
         cwd: str | None = None,
     ) -> Any:
-        return self.popen([executable, *args], env=env, cwd=cwd) if cwd else self.popen(
-            [executable, *args], env=env
+        launch_env = self._launch_environment(client, env)
+        return self.popen([executable, *args], env=launch_env, cwd=cwd) if cwd else self.popen(
+            [executable, *args], env=launch_env
         )
 
     def _run(self, control_dir: Path) -> int:
@@ -858,7 +884,7 @@ class SessionSupervisor:
                         try:
                             process = _DraftProcess(
                                 [current_executable, *fresh_args],
-                                env,
+                                self._launch_environment(current_client, env),
                                 request["workspace"],
                                 handoff_prompt(request["workspace"], request.get("path"), request.get("ref")),
                             )

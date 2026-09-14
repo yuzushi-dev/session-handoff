@@ -9,6 +9,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    from . import handoff_store
+except ImportError:  # Direct `python server/command_matrix.py` invocation.
+    import handoff_store
+
 
 CLIENTS = ("codex", "claude")
 INVOCATIONS = {"codex": "$session-handoff", "claude": "/session-handoff"}
@@ -98,14 +103,22 @@ def probe_command_matrix(
             "ready": migration_ready,
         },
     }
+    central_store = probe_central_store()
+    central_ready = central_store["status"] in {"absent", "healthy"} and central_store["writable"]
     return {
         "schema_version": 1,
         "provider_calls": 0,
         "migration_engine": "internal",
         "clients": clients,
         "flows": flows,
-        "ready": all(flow["ready"] for flow in flows.values()),
+        "central_store": central_store,
+        "ready": all(flow["ready"] for flow in flows.values()) and central_ready,
     }
+
+
+def probe_central_store() -> dict[str, Any]:
+    """Return read-only central-store health, including a non-mutating catalog check."""
+    return handoff_store.probe_health()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,10 +132,26 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))),
     )
     parser.add_argument("--pretty", action="store_true")
+    parser.add_argument("--human", action="store_true", help="Render a human-readable readiness summary.")
     args = parser.parse_args(argv)
     result = probe_command_matrix(args.home)
-    print(json.dumps(result, indent=2 if args.pretty else None, sort_keys=True))
+    if args.human:
+        print(render_human(result))
+    else:
+        print(json.dumps(result, indent=2 if args.pretty else None, sort_keys=True))
     return 0 if result["ready"] else 1
+
+
+def render_human(result: dict[str, Any]) -> str:
+    central = result["central_store"]
+    lines = [f"Session-handoff doctor: {'ready' if result['ready'] else 'not ready'}"]
+    for client, status in result["clients"].items():
+        lines.append(f"- {client}: {'ready' if status['ready'] else 'not ready'}")
+    lines.append(f"- central store: {central['status']} ({'writable' if central['writable'] else 'not writable'})")
+    lines.append(f"  data: {central['data_root']['status']} — {central['data_root']['path']}")
+    lines.append(f"  state: {central['state_root']['status']} — {central['state_root']['path']}")
+    lines.append(f"  catalog: {central['catalog']['status']} — {central['catalog']['path']}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

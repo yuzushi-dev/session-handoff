@@ -5,6 +5,8 @@ import multiprocessing
 import os
 import socket
 import stat
+import shlex
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -83,6 +85,50 @@ def test_enable_is_a_noop_under_do_not_track(tmp_path, capsys, monkeypatch):
     assert not (tmp_path / CONFIG).exists()
 
 
+def test_yes_is_explicit_noninteractive_consent(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin(False))
+
+    assert cli._telemetry(["yes"]) == 0
+    assert telemetry.load_config(tmp_path)["enabled"] is True
+    assert "enabled" in capsys.readouterr().out.lower()
+
+
+def test_yes_respects_do_not_track(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+
+    assert cli._telemetry(["yes"]) == 0
+    assert "DO_NOT_TRACK" in capsys.readouterr().out
+    assert not (tmp_path / CONFIG).exists()
+
+
+def test_yes_reenables_prior_decline_and_is_repeatable(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.disabled_config())
+
+    assert cli._telemetry(["yes"]) == 0
+    assert cli._telemetry(["yes"]) == 0
+    assert telemetry.load_config(tmp_path)["enabled"] is True
+
+
+def test_no_disables_without_purging_and_is_repeatable(tmp_path, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.enabled_config())
+    queue = tmp_path / telemetry.STATE_PATH / telemetry._QUEUE_NAME
+    queue.parent.mkdir(parents=True)
+    queue.write_text("preserved\n", encoding="utf-8")
+
+    assert cli._telemetry(["no"]) == 0
+    assert cli._telemetry(["no"]) == 0
+    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
+    assert queue.read_text(encoding="utf-8") == "preserved\n"
+
+
 def test_enable_requires_interactive_explicit_yes(tmp_path, capsys, monkeypatch):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
@@ -112,7 +158,7 @@ def test_enable_prompt_points_to_docs_instead_of_inline_disclosure(tmp_path, mon
     assert "Collected fields" not in seen_prompt["text"]
 
 
-def test_declined_consent_is_not_reenabled_by_enable_command(tmp_path, capsys, monkeypatch):
+def test_declined_consent_can_be_reenabled_by_explicit_enable_command(tmp_path, capsys, monkeypatch):
     cli = load_cli()
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.disabled_config())
@@ -120,8 +166,20 @@ def test_declined_consent_is_not_reenabled_by_enable_command(tmp_path, capsys, m
     monkeypatch.setattr(builtins, "input", lambda _prompt: pytest.fail("consent was requested again"))
 
     assert cli._telemetry(["enable"]) == 0
-    assert "declined" in capsys.readouterr().out.lower()
-    assert telemetry.load_config(tmp_path) == telemetry.disabled_config()
+    assert "enabled" in capsys.readouterr().out.lower()
+    assert telemetry.load_config(tmp_path)["enabled"] is True
+
+
+def test_pending_enable_prints_full_python_consent_commands(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    telemetry.write_config(tmp_path, telemetry.asked_config())
+
+    assert cli._telemetry(["enable"]) == 0
+    output = capsys.readouterr().out
+    executable = str((ROOT / "bin/session-handoff").resolve())
+    assert shlex.join([sys.executable, executable, "telemetry", "yes"]) in output
+    assert shlex.join([sys.executable, executable, "telemetry", "no"]) in output
 
 
 def test_missing_config_generation_changes_after_create_delete_during_consent(tmp_path):
@@ -287,6 +345,22 @@ def test_setup_no_records_decline(tmp_path, monkeypatch):
 
     assert cli._setup(["--client", "codex"]) == 0
     assert telemetry.load_config(tmp_path)["enabled"] is False
+
+
+def test_uninstall_reports_preserved_storage_locations(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    home = tmp_path / "home"; data = tmp_path / "xdg-data"; state = tmp_path / "xdg-state"
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(cli, "restore_setup", lambda _home: {"restored": True, "already_clean": False})
+
+    assert cli._uninstall(["--yes"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"Central data preserved: {data / 'session-handoff'}" in output
+    assert f"Central state preserved: {state / 'session-handoff'}" in output
+    assert f"Checkpoints preserved: {home / '.local/state/session-handoff/checkpoints'}" in output
 
 
 def test_setup_yes_flag_never_enables_telemetry(tmp_path, monkeypatch):

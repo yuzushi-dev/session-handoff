@@ -340,6 +340,46 @@ def test_snapshot_diff_represents_binary_files_by_hash(tmp_path):
     assert "binary sha256:" in diff
 
 
+def test_repository_sha256_rejects_git_ls_files_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(study_runner, "ROOT", tmp_path)
+
+    with pytest.raises(study_runner.StudyRunError, match="git ls-files"):
+        study_runner._repository_sha256()
+
+
+def test_repository_sha256_rejects_missing_tracked_file(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    tracked.unlink()
+    monkeypatch.setattr(study_runner, "ROOT", repository)
+
+    with pytest.raises(study_runner.StudyRunError, match="tracked repository file"):
+        study_runner._repository_sha256()
+
+
+@pytest.mark.parametrize("state", [{"provenance": {}}, {"provenance": {"repository_sha256": None}}, {}])
+def test_validate_runtime_provenance_rejects_missing_repository_digest(
+    state, monkeypatch
+):
+    args = SimpleNamespace(
+        client="codex",
+        condition="handoff",
+        handoff_format="markdown-v1",
+        codex_executable="codex",
+        claude_executable="claude",
+        sandbox_executable="bwrap",
+        pass_env=[],
+    )
+    monkeypatch.setattr(study_runner, "_repository_sha256", lambda: None)
+
+    with pytest.raises(study_runner.StudyRunError, match="repository provenance"):
+        study_runner._validate_runtime_provenance(args, state, "environment", None)
+
+
 def prepare_study(tmp_path: Path) -> Path:
     study = tmp_path / "study"
     result = subprocess.run(
@@ -657,6 +697,42 @@ def test_default_is_a_content_free_plan_with_no_provider_call(tmp_path):
     assert payload["handoff_format"] == "markdown-v1"
     assert "Initial decision" not in result.stdout
     assert not (tmp_path / "results").exists()
+
+
+def test_product_roundtrip_supplies_real_read_content_and_provenance(tmp_path):
+    evaluation = prepare_study(tmp_path)
+    claude = tmp_path / "claude-fake"
+    codex = tmp_path / "codex-fake"
+    migration = tmp_path / "migration-fake"
+    write_fake_agent(claude)
+    write_fake_agent(codex)
+    write_fake_migration(migration)
+    output = tmp_path / "results"
+
+    result = subprocess.run(
+        [
+            *command(evaluation, output, "handoff", "codex", claude, codex, migration),
+            "--product-root",
+            str(ROOT),
+            "--storage-mode",
+            "central",
+            "--execute",
+            "--acknowledge-provider-cost",
+        ],
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    run_dir = output / json.loads(result.stdout)["run_id"]
+    product = json.loads((run_dir / "product-roundtrip.json").read_text())
+    state = json.loads((run_dir / "state.json").read_text())
+    assert (run_dir / "supplied-context.md").read_text() == product["read"]["content"]
+    assert product["storage"] == "central"
+    assert state["provenance"]["product"]["root"] == str(ROOT)
+    assert state["provenance"]["product"]["storage"] == "central"
 
 
 def test_execute_requires_separate_provider_cost_acknowledgment(tmp_path):

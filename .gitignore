@@ -5,3 +5,8 @@ __pycache__/
 benchmark/generated*/
 benchmark/results*/
 handoffs/
+
+# Internal plans, pilot reports, benchmark results, and scratch patches.
+# Never tracked; public docs live in docs/ and benchmark/ (harness only).
+.internal/
+.sando/

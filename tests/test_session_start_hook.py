@@ -17,6 +17,13 @@ ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "hooks/session-start.py"
 
 
+@pytest.fixture(autouse=True)
+def supervised_session(monkeypatch):
+    # This suite covers telemetry/checkpoints; marketplace setup is exercised
+    # separately in test_onboarding.py without a supervisor environment.
+    monkeypatch.setenv("SESSION_HANDOFF_CONTROL", "/isolated/test-control")
+
+
 class TTYStream(io.StringIO):
     def isatty(self):
         return True
@@ -56,6 +63,19 @@ def test_session_start_hook_parsing_fails_open_on_unicode_errors(error, monkeypa
     monkeypatch.setattr(hook.sys, "stdin", RaisingInput())
 
     assert hook._hook_input() == {}
+
+
+def test_onboarding_failure_preserves_checkpoint_context(monkeypatch):
+    hook = load_hook()
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    monkeypatch.setattr(hook.sys, "stdin", io.StringIO("{}"))
+    output = io.StringIO()
+    monkeypatch.setattr(hook.sys, "stdout", output)
+    monkeypatch.setattr(hook.checkpoint, "compact_context", lambda event: "saved checkpoint pointer")
+    monkeypatch.setattr(hook.checkpoint, "record_session_start", lambda *args: None)
+    monkeypatch.setattr(hook, "launcher_notice", lambda root: (_ for _ in ()).throw(RuntimeError("no home")))
+    assert hook.main() == 0
+    assert json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"] == "saved checkpoint pointer"
 
 
 def test_session_start_hook_nudges_until_consent_is_recorded(tmp_path):
