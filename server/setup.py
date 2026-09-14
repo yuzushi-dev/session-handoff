@@ -225,6 +225,16 @@ def _mcp_command(client: str, executable: Path, action: str) -> list[str]:
     return command + ["session-handoff"]
 
 
+def _mcp_add_command(client: str, executable: Path, server: Path) -> list[str]:
+    return _mcp_command(client, executable, "add") + [
+        "--env",
+        f"SESSION_HANDOFF_CLIENT={client}",
+        "--",
+        "python3",
+        str(server),
+    ]
+
+
 def _stage_bundle(package_root: Path, bundle: Path) -> Path:
     bundle.parent.mkdir(parents=True, exist_ok=True)
     app_root = bundle.parent.lstat()
@@ -350,6 +360,7 @@ def install_setup(
     skill_changes: list[tuple[Path, tuple[str, bytes | str, int] | None]] = []
     launcher_changes: list[tuple[Path, Path | None, tuple[str, bytes | str, int] | None]] = []
     registered: list[tuple[str, Path]] = []
+    removed_registrations: list[tuple[str, Path]] = []
     try:
         if bundle.exists():
             old_bundle = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.rollback-", dir=bundle.parent))
@@ -366,16 +377,12 @@ def install_setup(
             skill_changes.append((skill, snapshot))
             _write_text(skill, skill_content)
 
-        for client in new_clients:
-            executable = launchers[client]
-            command = _mcp_command(client, executable, "add") + [
-                "--env",
-                f"SESSION_HANDOFF_CLIENT={client}",
-                "--",
-                "python3",
-                str(server),
-            ]
-            runner(command)
+        for client in all_clients:
+            executable = targets[client] if client in managed else launchers[client]
+            if client in managed:
+                runner(_mcp_command(client, executable, "remove"))
+                removed_registrations.append((client, executable))
+            runner(_mcp_add_command(client, executable, server))
             registered.append((client, executable))
 
         for client in all_clients:
@@ -427,6 +434,11 @@ def install_setup(
         for client, executable in reversed(registered):
             try:
                 runner(_mcp_command(client, executable, "remove"))
+            except (OSError, subprocess.CalledProcessError, RuntimeError):
+                pass
+        for client, executable in reversed(removed_registrations):
+            try:
+                runner(_mcp_add_command(client, executable, server))
             except (OSError, subprocess.CalledProcessError, RuntimeError):
                 pass
         for skill, snapshot in reversed(skill_changes):

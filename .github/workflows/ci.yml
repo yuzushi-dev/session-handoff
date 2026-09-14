@@ -140,6 +140,10 @@ jobs:
             echo "::error::Internal handoffs must not be tracked in the public repository."
             exit 1
           fi
+          if [ -n "$(git ls-files '.internal/**')" ]; then
+            echo "::error::.internal/ must not be tracked in the public repository."
+            exit 1
+          fi
 
       - name: Check npm package contents
         run: npm pack --dry-run --ignore-scripts

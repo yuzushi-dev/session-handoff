@@ -121,7 +121,20 @@ def test_setup_is_idempotent_and_preserves_existing_skill(tmp_path):
 
     assert result["installed"] is True
     assert (home / ".codex/skills/session-handoff/SKILL.md").read_text(encoding="utf-8") == first_skill
-    assert len(calls) == 1
+    assert calls[1:] == [
+        [str(bin_dir / "codex.session-handoff-original"), "mcp", "remove", "session-handoff"],
+        [
+            str(bin_dir / "codex.session-handoff-original"),
+            "mcp",
+            "add",
+            "session-handoff",
+            "--env",
+            "SESSION_HANDOFF_CLIENT=codex",
+            "--",
+            "python3",
+            str(home / ".local/share/session-handoff/plugin/server/handoff_mcp.py"),
+        ],
+    ]
 
 
 def test_setup_refuses_to_overwrite_a_different_user_skill(tmp_path):
@@ -184,13 +197,14 @@ def test_setup_refreshes_the_persistent_bundle_on_reinstall(tmp_path):
     original.parent.mkdir(parents=True)
     original.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     original.chmod(0o755)
+    calls = []
 
     install_setup(
         package,
         home,
         ["codex"],
         executable_paths={"codex": original},
-        runner=lambda _: None,
+        runner=calls.append,
     )
     bundle_entrypoint = home / ".local/share/session-handoff/plugin/bin/session-handoff"
     bundle_entrypoint.write_text("stale", encoding="utf-8")
@@ -200,10 +214,15 @@ def test_setup_refreshes_the_persistent_bundle_on_reinstall(tmp_path):
         home,
         ["codex"],
         executable_paths={"codex": home / ".local/bin/codex"},
-        runner=lambda _: (_ for _ in ()).throw(AssertionError("MCP must not be re-registered")),
+        runner=calls.append,
     )
 
     assert bundle_entrypoint.read_text(encoding="utf-8") == (package / "bin/session-handoff").read_text(encoding="utf-8")
+    assert calls[1][0].endswith("codex.session-handoff-original")
+    assert calls[1][1:] == ["mcp", "remove", "session-handoff"]
+    assert calls[2][0].endswith("codex.session-handoff-original")
+    assert calls[2][1:4] == ["mcp", "add", "session-handoff"]
+    assert calls[2][4:6] == ["--env", "SESSION_HANDOFF_CLIENT=codex"]
 
 
 def test_setup_rolls_back_all_changes_when_mcp_registration_fails(tmp_path):
@@ -331,7 +350,10 @@ def test_setup_can_add_a_second_client_after_the_first(tmp_path):
     assert (bin_dir / "codex.session-handoff-original").read_text(encoding="utf-8") == "codex-original"
     assert (bin_dir / "claude.session-handoff-original").read_text(encoding="utf-8") == "claude-original"
     assert json.loads((home / ".config/session-handoff/state.json").read_text(encoding="utf-8"))["clients"] == ["codex", "claude"]
-    assert len(calls) == 2
+    assert len(calls) == 4
+    assert calls[1][1:] == ["mcp", "remove", "session-handoff"]
+    assert calls[2][1:4] == ["mcp", "add", "session-handoff"]
+    assert calls[3][1:6] == ["mcp", "add", "--scope", "user", "session-handoff"]
 
 
 def test_setup_reports_corrupt_state_as_a_setup_error(tmp_path):
@@ -465,7 +487,9 @@ def test_setup_rewraps_a_client_symlink_replaced_by_an_update(tmp_path):
     content = launcher.read_text(encoding="utf-8")
     assert "session-handoff-active" in content
     assert (bin_dir / "codex.session-handoff-original").is_symlink()
-    assert len(calls) == 1
+    assert len(calls) == 3
+    assert calls[1][1:] == ["mcp", "remove", "session-handoff"]
+    assert calls[2][1:4] == ["mcp", "add", "session-handoff"]
 
 
 def test_restore_setup_returns_the_original_launcher_and_removes_managed_files(tmp_path):
