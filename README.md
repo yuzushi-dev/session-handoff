@@ -60,7 +60,7 @@ Start a new session with the plugin and its hooks enabled in a client that suppo
 
 After setup, restart your terminal and launch `claude` or `codex` from it. The launcher can then open a fresh CLI session after a handoff or migrate between clients. It does not restart desktop app or IDE sessions.
 
-The notices appear once. If you skipped setup or your client does not display plugin hooks, ask “Show session-handoff setup and telemetry commands.” The plugin's read-only `handoff_setup` tool finds its own installation and returns complete commands. You do not need to find a directory or fill in a path.
+The notices appear once. If you skipped setup or your client does not display plugin hooks, ask "Show session-handoff setup and telemetry commands." The plugin's read-only `handoff_setup` tool finds its own installation and returns complete commands. You do not need to find a directory or fill in a path.
 
 Run the setup command for the client you want to configure, or both commands for both clients. The client executable must already be on `PATH`. Setup installs a persistent user-scoped bundle, registers the MCP server and skill, and saves the original launcher as `*.session-handoff-original` before wrapping it. A setup confirmation never enables telemetry.
 
