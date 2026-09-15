@@ -4,6 +4,10 @@
 
 </p>
 
+# session-handoff
+
+**Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the whole native session to the other client instead.**
+
 **Claude Code**:
 
 ```text
@@ -16,9 +20,19 @@
 $session-handoff the next task is to refactor the benchmarking tool
 ```
 
-# session-handoff
+Or migrate the whole session to the other client instead:
 
-**Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the whole native session to the other client instead.**
+**Claude Code**:
+
+```text
+/session-handoff migrate codex
+```
+
+**Codex**:
+
+```text
+$session-handoff migrate claude
+```
 
 ## Measured recovery
 
