@@ -1,6 +1,20 @@
 <p align="center">
+
   <img src="assets/session-handoff-mark.png" alt="session-handoff logo" width="96">
+
 </p>
+
+**Claude Code**:
+
+```text
+/session-handoff the next task is to run full pre-release suite
+```
+
+**Codex**:
+
+```text
+$session-handoff the next task is to refactor the benchmarking tool
+```
 
 # session-handoff
 
@@ -8,12 +22,14 @@
 
 ## Measured recovery
 
-| Harness | Benchmark result | session-handoff | Native compact |
-|---|---|---:|---:|
-| Codex | Critical facts recovered | **37/37** | 37/37 |
-| Codex | Task success (valid runs) | **9/9** | 9/9 |
-| Claude Code | Critical facts recovered | **6/6** | 6/6 |
-| Claude Code | Task success (valid runs) | **1/1** | 1/1 |
+
+| Harness     | Benchmark result          | session-handoff | Native compact |
+| ----------- | ------------------------- | ---------------: | --------------: |
+| Codex       | Critical facts recovered  | **37/37**       | 37/37          |
+| Codex       | Task success (valid runs) | **9/9**         | 9/9            |
+| Claude Code | Critical facts recovered  | **6/6**         | 6/6            |
+| Claude Code | Task success (valid runs) | **1/1**         | 1/1            |
+
 
 Zero critical facts lost in either pilot: session-handoff matched native compact on
 critical-fact recovery and task success, while starting from a fresh session. Measured
@@ -71,19 +87,19 @@ setup (it still does not grant telemetry consent). Restart your terminal and cli
 ## What you get
 
 - **Ref-first handoff records.** `handoff_create` stores an immutable record outside the
-  workspace and returns a `handoff://<project-uuid>/<handoff-uuid>` reference; a clean
-  repository needs no project file or dependency to use it.
+workspace and returns a `handoff://<project-uuid>/<handoff-uuid>` reference; a clean
+repository needs no project file or dependency to use it.
 - **Automatic session switching.** Once set up, the managed launcher can open the fresh session
-  for you after a handoff; migration between Claude Code and Codex works the same way.
+for you after a handoff; migration between Claude Code and Codex works the same way.
 - **Compaction recovery, kept separate.** A fail-open `PreCompact` hook writes a small redacted
-  checkpoint before compaction and reinjects only a pointer to it — recovery evidence, not a
-  semantic handoff.
+checkpoint before compaction and reinjects only a pointer to it — recovery evidence, not a
+semantic handoff.
 - **Secrets redacted before storage.** The MCP server redacts common credential forms in every
-  handoff, on top of the model being told never to copy secrets into one.
+handoff, on top of the model being told never to copy secrets into one.
 - **Doctor without spending a turn.** `session-handoff doctor --human` reports client and
-  central-store readiness without starting a model session.
+central-store readiness without starting a model session.
 - **Telemetry off until you say yes.** No collection happens without an explicit choice; see
-  [docs/telemetry.md](docs/telemetry.md) for the full inventory and controls.
+[docs/telemetry.md](docs/telemetry.md) for the full inventory and controls.
 
 ## Architecture in brief
 
