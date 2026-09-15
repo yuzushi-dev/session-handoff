@@ -3,7 +3,7 @@
 Older history through the last published release (0.7.2) is archived at
 [`docs/CHANGELOG-0.7.2.md`](CHANGELOG-0.7.2.md).
 
-## Unreleased
+## 0.7.3 — 2026-09-15
 
 - Install launcher setup automatically for the detected client on the first
   session, instead of only showing a manual command; the other client and any
@@ -15,9 +15,6 @@ Older history through the last published release (0.7.2) is archived at
 - Serialize `setup`/`uninstall` with a per-home lock, so an automatic and a
   manual install started close together can no longer race and silently drop
   one client's registration.
-
-## 0.7.3 — 2026-09-14
-
 - Store handoffs centrally with reference-first retrieval and legacy compatibility.
 - Use native Claude/Codex plugin manifests; archive the portable manifest outside
   the package root so Codex loads hooks and starts MCP correctly.
