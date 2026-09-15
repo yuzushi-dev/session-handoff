@@ -133,7 +133,7 @@ PreCompact hook ──► local recovery checkpoint (redacted, pointer-only rein
 The managed bundle carries `hooks/`, `server/` (MCP server and migration engine), `skills/`,
 `bin/`, and `commands/`, copied once into a persistent per-user location by setup.
 
-Release notes: [CHANGELOG.md](CHANGELOG.md).
+Release notes: [docs/CHANGELOG-0.7.3.md](docs/CHANGELOG-0.7.3.md).
 
 ---
 
