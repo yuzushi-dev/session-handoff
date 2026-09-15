@@ -315,10 +315,10 @@ separately. No provider execution is started by the implementation lane:
 python3 -m benchmark.information_preservation --dry-run
 python3 -m benchmark.information_preservation \
   --verify-native \
-  --codex-binary /home/cristina/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex
+  --codex-binary ~/.codex/packages/standalone/releases/0.153.4-*/bin/codex
 python3 -m benchmark.information_preservation \
   --verify-native-lifecycle \
-  --codex-binary /home/cristina/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex \
+  --codex-binary ~/.codex/packages/standalone/releases/0.153.4-*/bin/codex \
   --timeout 10
 ```
 
@@ -327,7 +327,7 @@ verifies its generated schema before use. `--verify-native` reports only
 `native-schema-verified`; `--verify-native-lifecycle` additionally proves
 initialize/thread-start/history-inject and fork/read/items-list on persistent
 temporary threads, but does not compact or call a model.
-Use the pinned ELF above, not the `/home/cristina/.local/bin/codex` wrapper.
+Use the pinned ELF above, not the managed `codex` launcher wrapper.
 Native compaction is successful only after a correlated `item/completed` event
 with `contextCompaction`; an empty `thread/compact/start` acknowledgement is
 insufficient.

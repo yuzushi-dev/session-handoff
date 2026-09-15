@@ -17,7 +17,9 @@ from urllib.parse import urlsplit
 from benchmark.claude_seed import native_messages
 
 
-PINNED_BINARY = Path("/home/cristina/.local/share/claude/versions/2.1.263")
+PINNED_BINARY = Path(
+    os.environ.get("SESSION_HANDOFF_PINNED_CLAUDE", "/home/cristina/.local/share/claude/versions/2.1.263")
+)
 PINNED_VERSION = "2.1.263 (Claude Code)"
 NATIVE_CWD = "/mnt/work"
 NATIVE_HOME = "/mnt/native"

@@ -1,7 +1,6 @@
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 import socket
 import subprocess
 import threading
@@ -11,8 +10,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from benchmark.claude_proxy import PROXY_BINARY as PROXY
 
-PROXY = Path("/home/cristina/.local/bin/claude-code-proxy")
 PROXY_VERSION = "claude-code-proxy 0.1.22"
 COMPACT_MARKER = "You are a helpful AI assistant tasked with summarizing conversations"
 
