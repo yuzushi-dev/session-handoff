@@ -1,6 +1,8 @@
 import json
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from server import setup as _setup_impl
@@ -510,3 +512,51 @@ def test_restore_setup_returns_the_original_launcher_and_removes_managed_files(t
     assert not (home / ".local/share/session-handoff/plugin").exists()
     assert not (home / ".codex/skills/session-handoff/SKILL.md").exists()
     assert calls[-1] == [str(launcher.with_name("codex.session-handoff-original")), "mcp", "remove", "session-handoff"]
+
+
+def test_concurrent_install_setup_for_two_clients_does_not_clobber_state(tmp_path):
+    # Without a lock around the read-modify-write of state.json, two
+    # install_setup() calls racing for different clients each read an empty
+    # "managed" list and each write back only their own single client: the
+    # second writer clobbers the first's registration even though both
+    # install_setup() calls reported success.
+    package = Path(__file__).parents[1]
+    home = tmp_path / "home"
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    codex, claude = bin_dir / "codex", bin_dir / "claude"
+    codex.write_text("codex-original", encoding="utf-8")
+    claude.write_text("claude-original", encoding="utf-8")
+    codex.chmod(0o755)
+    claude.chmod(0o755)
+
+    codex_started = threading.Event()
+    errors = []
+
+    def slow_runner(_argv):
+        codex_started.set()
+        time.sleep(0.3)
+
+    def run_codex():
+        try:
+            install_setup(package, home, ["codex"], executable_paths={"codex": codex}, runner=slow_runner)
+        except Exception as exc:  # pragma: no cover - surfaced via `errors`
+            errors.append(exc)
+
+    def run_claude():
+        try:
+            install_setup(package, home, ["claude"], executable_paths={"claude": claude}, runner=lambda _argv: None)
+        except Exception as exc:  # pragma: no cover - surfaced via `errors`
+            errors.append(exc)
+
+    codex_thread = threading.Thread(target=run_codex)
+    codex_thread.start()
+    assert codex_started.wait(timeout=5)
+    claude_thread = threading.Thread(target=run_claude)
+    claude_thread.start()
+    codex_thread.join(timeout=5)
+    claude_thread.join(timeout=5)
+
+    assert errors == []
+    state = json.loads((home / ".config/session-handoff/state.json").read_text(encoding="utf-8"))
+    assert set(state["clients"]) == {"codex", "claude"}

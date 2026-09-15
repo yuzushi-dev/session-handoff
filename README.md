@@ -77,17 +77,16 @@ codex plugin add session-handoff@yuzushi
 
 Start a new session with the plugin and its hooks enabled in a client that supports plugin
 hooks, and approve the hook trust request if prompted. In the tested clients (Claude Code
-2.1.263 and Codex 0.153.4) a notice then offers two independent, one-time choices: automatic
-session switching, and telemetry — reply in chat with exactly `session-handoff telemetry yes` or
-`session-handoff telemetry no`; it stays off without an explicit yes. Copy the Python setup
-command the notice shows for your client into a terminal to enable
-switching; setup displays its changes and asks for confirmation before making them, and skipping
-it just means resuming handoffs manually. If you skipped it or your client does not show plugin
-hooks, ask "Show session-handoff setup and telemetry commands" — the read-only `handoff_setup`
-tool finds its own installation and returns the exact commands, so there is no path to look up.
-After running setup, restart your terminal and launch `claude` or `codex` from it; supervision
-covers those CLI processes, not a desktop app or IDE session. Setup itself never enables
-telemetry.
+2.1.263 and Codex 0.153.4), the first session installs automatic session switching for that
+client on its own, in the background, and a notice confirms it; restart your terminal afterward
+and launch `claude` or `codex` from it for supervision to take effect. Use the manual command the
+notice shows to also enable switching for your other client. Telemetry is a separate, one-time
+choice — reply in chat with exactly `session-handoff telemetry yes` or `session-handoff telemetry
+no`; it stays off without an explicit yes. If the notice never appeared or your client does not
+show plugin hooks, ask "Show session-handoff setup and telemetry commands" — the read-only
+`handoff_setup` tool finds its own installation and returns the exact commands, so there is no
+path to look up. Supervision covers `claude`/`codex` CLI processes, not a desktop app or IDE
+session. Setup itself never enables telemetry, and running it again is safe.
 
 Install with npm instead if you'd rather not use the marketplace (also needs Python 3.10+):
 

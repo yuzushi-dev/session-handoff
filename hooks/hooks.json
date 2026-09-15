@@ -1,5 +1,5 @@
 {
-  "description": "Optional launcher setup, telemetry consent, and compaction recovery.",
+  "description": "Automatic launcher setup, optional telemetry consent, and compaction recovery.",
   "hooks": {
     "SessionStart": [
       {
@@ -9,7 +9,7 @@
             "type": "command",
             "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/hooks/session-start.py\"",
             "timeout": 5,
-            "statusMessage": "Checking session-handoff setup"
+            "statusMessage": "Installing session-handoff setup"
           }
         ]
       }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import hashlib
 import os
 import shlex
@@ -10,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -294,6 +296,31 @@ def _run_default(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
+@contextmanager
+def _setup_lock(home: Path):
+    """Serialize install_setup/restore_setup for one home: concurrent calls
+    (e.g. an automatic and a manual setup started around the same time) must
+    not interleave their read-modify-write of state.json and the launchers."""
+    lock_dir = home / STATE_PATH.parent
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "setup.lock"
+    if lock_path.is_symlink():
+        raise SetupError(f"refusing to lock through a symlink: {lock_path}")
+    # Only lock *acquisition* is wrapped: a failure here is ours to translate.
+    # Once acquired, the caller's own body runs unwrapped below, so whatever
+    # it raises (SetupError, a raw OSError, anything) propagates unchanged.
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        raise SetupError(f"could not lock session-handoff setup: {lock_path}") from exc
+    with os.fdopen(descriptor, "r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def install_setup(
     package_root: Path,
     home: Path,
@@ -304,163 +331,165 @@ def install_setup(
 ) -> dict[str, object]:
     """Install the persistent plugin bundle and user-scoped client adapters."""
 
-    selected = _validate_clients(clients)
-    state_path = home / STATE_PATH
-    previous_state = state_path.read_bytes() if state_path.is_file() else None
-    state = _load_state(state_path) if previous_state is not None else {}
-    managed = state.get("clients", [])
-    if not isinstance(managed, list) or any(client not in CLIENTS for client in managed):
-        raise SetupError(f"invalid session-handoff state: {state_path}")
-    managed = list(dict.fromkeys(managed))
-    all_clients = list(dict.fromkeys([*managed, *selected]))
-    new_clients = [client for client in all_clients if client not in managed]
-    skill_source = package_root / "skills/session-handoff/SKILL.md"
-    if not skill_source.is_file():
-        raise SetupError(f"plugin skill not found: {skill_source}")
-    skill_content = skill_source.read_text(encoding="utf-8")
-    skill_hashes = state.get("skill_hashes", {})
-    if not isinstance(skill_hashes, dict):
-        raise SetupError(f"invalid session-handoff state: {state_path}")
-    launchers, backups, targets = _validate_state_paths(
-        home,
-        all_clients,
-        state,
-        fallback_launchers={
-            client: executable_paths[client]
-            for client in selected
-            if client in executable_paths
-        },
-    )
-    plan = setup_plan(package_root, home, all_clients, executable_paths=launchers)
-    bundle = Path(plan["bundle"])
-    server = Path(plan["server"])
-    supervisor = bundle / "bin/session-handoff"
+    with _setup_lock(home):
 
-    # Preflight all user-owned files before changing anything.
-    for client in all_clients:
-        skill = Path(plan["skills"][client])
-        if (
-            skill.exists()
-            and skill.read_text(encoding="utf-8") != skill_content
-            and not (client in managed and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")))
-        ):
-            raise SetupError(f"refusing to overwrite user-owned skill: {skill}")
-        launcher, backup, target = launchers[client], backups[client], targets[client]
-        executable = launcher
-        if not executable.is_file() and not executable.is_symlink():
-            if not (client in managed and backup.is_file()):
-                raise SetupError(f"client executable not found: {executable}")
-        if client in new_clients and backup.exists():
-            raise SetupError(f"launcher backup already exists: {backup}")
-        if not launcher.parent.exists() or not os.access(launcher.parent, os.W_OK):
-            raise SetupError(f"launcher directory is not writable: {launcher.parent}")
+        selected = _validate_clients(clients)
+        state_path = home / STATE_PATH
+        previous_state = state_path.read_bytes() if state_path.is_file() else None
+        state = _load_state(state_path) if previous_state is not None else {}
+        managed = state.get("clients", [])
+        if not isinstance(managed, list) or any(client not in CLIENTS for client in managed):
+            raise SetupError(f"invalid session-handoff state: {state_path}")
+        managed = list(dict.fromkeys(managed))
+        all_clients = list(dict.fromkeys([*managed, *selected]))
+        new_clients = [client for client in all_clients if client not in managed]
+        skill_source = package_root / "skills/session-handoff/SKILL.md"
+        if not skill_source.is_file():
+            raise SetupError(f"plugin skill not found: {skill_source}")
+        skill_content = skill_source.read_text(encoding="utf-8")
+        skill_hashes = state.get("skill_hashes", {})
+        if not isinstance(skill_hashes, dict):
+            raise SetupError(f"invalid session-handoff state: {state_path}")
+        launchers, backups, targets = _validate_state_paths(
+            home,
+            all_clients,
+            state,
+            fallback_launchers={
+                client: executable_paths[client]
+                for client in selected
+                if client in executable_paths
+            },
+        )
+        plan = setup_plan(package_root, home, all_clients, executable_paths=launchers)
+        bundle = Path(plan["bundle"])
+        server = Path(plan["server"])
+        supervisor = bundle / "bin/session-handoff"
 
-    staging: Path | None = _stage_bundle(package_root, bundle)
-    old_bundle: Path | None = None
-    skill_changes: list[tuple[Path, tuple[str, bytes | str, int] | None]] = []
-    launcher_changes: list[tuple[Path, Path | None, tuple[str, bytes | str, int] | None]] = []
-    registered: list[tuple[str, Path]] = []
-    removed_registrations: list[tuple[str, Path]] = []
-    try:
-        if bundle.exists():
-            old_bundle = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.rollback-", dir=bundle.parent))
-            old_bundle.rmdir()
-            os.replace(bundle, old_bundle)
-        os.replace(staging, bundle)
-        staging = None
-
+        # Preflight all user-owned files before changing anything.
         for client in all_clients:
             skill = Path(plan["skills"][client])
-            snapshot = _capture(skill)
-            if snapshot is not None and skill.read_text(encoding="utf-8") == skill_content:
-                continue
-            skill_changes.append((skill, snapshot))
-            _write_text(skill, skill_content)
-
-        for client in all_clients:
-            executable = targets[client] if client in managed else launchers[client]
-            if client in managed:
-                runner(_mcp_command(client, executable, "remove"))
-                removed_registrations.append((client, executable))
-            runner(_mcp_add_command(client, executable, server))
-            registered.append((client, executable))
-
-        for client in all_clients:
+            if (
+                skill.exists()
+                and skill.read_text(encoding="utf-8") != skill_content
+                and not (client in managed and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")))
+            ):
+                raise SetupError(f"refusing to overwrite user-owned skill: {skill}")
             launcher, backup, target = launchers[client], backups[client], targets[client]
-            snapshot = _capture(launcher)
-            moved_to: Path | None = None
-            if client in new_clients:
-                os.replace(launcher, backup)
-                target = backup
-                targets[client] = target
-                moved_to = backup
-            elif not _is_wrapper(launcher, client):
-                if launcher.exists() or launcher.is_symlink():
-                    if target.exists():
-                        active = launcher.with_name(launcher.name + ".session-handoff-active")
-                        suffix = 1
-                        while active.exists():
-                            active = launcher.with_name(
-                                f"{launcher.name}.session-handoff-active-{suffix}"
-                            )
-                            suffix += 1
-                        target = active
-                        targets[client] = target
-                    os.replace(launcher, target)
-                    moved_to = target
-                elif not target.exists():
-                    raise SetupError(f"managed launcher is missing: {launcher}")
-            launcher_changes.append((launcher, moved_to, snapshot))
-            _write_text(launcher, _wrapper(client, supervisor, target))
-            launcher.chmod(0o755)
+            executable = launcher
+            if not executable.is_file() and not executable.is_symlink():
+                if not (client in managed and backup.is_file()):
+                    raise SetupError(f"client executable not found: {executable}")
+            if client in new_clients and backup.exists():
+                raise SetupError(f"launcher backup already exists: {backup}")
+            if not launcher.parent.exists() or not os.access(launcher.parent, os.W_OK):
+                raise SetupError(f"launcher directory is not writable: {launcher.parent}")
 
-        new_state = {
-            "version": 2,
-            "bundle": str(bundle),
-            "clients": all_clients,
-            "backups": {client: str(backups[client]) for client in all_clients},
-            "launchers": {client: str(launchers[client]) for client in all_clients},
-            "targets": {client: str(targets[client]) for client in all_clients},
-            "skill_hashes": {client: _digest(skill_content) for client in all_clients},
-        }
-        _write_json(state_path, new_state)
-    except BaseException:
-        for launcher, moved_to, snapshot in reversed(launcher_changes):
-            _remove(launcher)
-            if moved_to is not None and moved_to.exists():
-                os.replace(moved_to, launcher)
-            else:
-                _restore(launcher, snapshot)
-        for client, executable in reversed(registered):
-            try:
-                runner(_mcp_command(client, executable, "remove"))
-            except (OSError, subprocess.CalledProcessError, RuntimeError):
-                pass
-        for client, executable in reversed(removed_registrations):
-            try:
+        staging: Path | None = _stage_bundle(package_root, bundle)
+        old_bundle: Path | None = None
+        skill_changes: list[tuple[Path, tuple[str, bytes | str, int] | None]] = []
+        launcher_changes: list[tuple[Path, Path | None, tuple[str, bytes | str, int] | None]] = []
+        registered: list[tuple[str, Path]] = []
+        removed_registrations: list[tuple[str, Path]] = []
+        try:
+            if bundle.exists():
+                old_bundle = Path(tempfile.mkdtemp(prefix=f".{bundle.name}.rollback-", dir=bundle.parent))
+                old_bundle.rmdir()
+                os.replace(bundle, old_bundle)
+            os.replace(staging, bundle)
+            staging = None
+
+            for client in all_clients:
+                skill = Path(plan["skills"][client])
+                snapshot = _capture(skill)
+                if snapshot is not None and skill.read_text(encoding="utf-8") == skill_content:
+                    continue
+                skill_changes.append((skill, snapshot))
+                _write_text(skill, skill_content)
+
+            for client in all_clients:
+                executable = targets[client] if client in managed else launchers[client]
+                if client in managed:
+                    runner(_mcp_command(client, executable, "remove"))
+                    removed_registrations.append((client, executable))
                 runner(_mcp_add_command(client, executable, server))
-            except (OSError, subprocess.CalledProcessError, RuntimeError):
-                pass
-        for skill, snapshot in reversed(skill_changes):
-            _restore(skill, snapshot)
-        _remove(bundle)
-        if old_bundle is not None and old_bundle.exists():
-            os.replace(old_bundle, bundle)
-        if staging is not None and staging.exists():
-            _remove(staging)
-        if previous_state is None:
-            _remove(state_path)
+                registered.append((client, executable))
+
+            for client in all_clients:
+                launcher, backup, target = launchers[client], backups[client], targets[client]
+                snapshot = _capture(launcher)
+                moved_to: Path | None = None
+                if client in new_clients:
+                    os.replace(launcher, backup)
+                    target = backup
+                    targets[client] = target
+                    moved_to = backup
+                elif not _is_wrapper(launcher, client):
+                    if launcher.exists() or launcher.is_symlink():
+                        if target.exists():
+                            active = launcher.with_name(launcher.name + ".session-handoff-active")
+                            suffix = 1
+                            while active.exists():
+                                active = launcher.with_name(
+                                    f"{launcher.name}.session-handoff-active-{suffix}"
+                                )
+                                suffix += 1
+                            target = active
+                            targets[client] = target
+                        os.replace(launcher, target)
+                        moved_to = target
+                    elif not target.exists():
+                        raise SetupError(f"managed launcher is missing: {launcher}")
+                launcher_changes.append((launcher, moved_to, snapshot))
+                _write_text(launcher, _wrapper(client, supervisor, target))
+                launcher.chmod(0o755)
+
+            new_state = {
+                "version": 2,
+                "bundle": str(bundle),
+                "clients": all_clients,
+                "backups": {client: str(backups[client]) for client in all_clients},
+                "launchers": {client: str(launchers[client]) for client in all_clients},
+                "targets": {client: str(targets[client]) for client in all_clients},
+                "skill_hashes": {client: _digest(skill_content) for client in all_clients},
+            }
+            _write_json(state_path, new_state)
+        except BaseException:
+            for launcher, moved_to, snapshot in reversed(launcher_changes):
+                _remove(launcher)
+                if moved_to is not None and moved_to.exists():
+                    os.replace(moved_to, launcher)
+                else:
+                    _restore(launcher, snapshot)
+            for client, executable in reversed(registered):
+                try:
+                    runner(_mcp_command(client, executable, "remove"))
+                except (OSError, subprocess.CalledProcessError, RuntimeError):
+                    pass
+            for client, executable in reversed(removed_registrations):
+                try:
+                    runner(_mcp_add_command(client, executable, server))
+                except (OSError, subprocess.CalledProcessError, RuntimeError):
+                    pass
+            for skill, snapshot in reversed(skill_changes):
+                _restore(skill, snapshot)
+            _remove(bundle)
+            if old_bundle is not None and old_bundle.exists():
+                os.replace(old_bundle, bundle)
+            if staging is not None and staging.exists():
+                _remove(staging)
+            if previous_state is None:
+                _remove(state_path)
+            else:
+                state_path.write_bytes(previous_state)
+            raise
         else:
-            state_path.write_bytes(previous_state)
-        raise
-    else:
-        if old_bundle is not None and old_bundle.exists():
-            _remove(old_bundle)
-        return {
-            "installed": True,
-            "already_configured": not new_clients,
-            "clients": all_clients,
-        }
+            if old_bundle is not None and old_bundle.exists():
+                _remove(old_bundle)
+            return {
+                "installed": True,
+                "already_configured": not new_clients,
+                "clients": all_clients,
+            }
 
 
 def restore_setup(
@@ -470,49 +499,51 @@ def restore_setup(
 ) -> dict[str, object]:
     """Restore launchers created by setup and remove its managed files."""
 
-    state_path = home / STATE_PATH
-    if not state_path.is_file():
-        return {"restored": False, "already_clean": True}
-    state = _load_state(state_path)
-    clients = state.get("clients", [])
-    skill_hashes = state.get("skill_hashes", {})
-    if (
-        not isinstance(clients, list)
-        or any(client not in CLIENTS for client in clients)
-        or not isinstance(skill_hashes, dict)
-    ):
-        raise SetupError(f"invalid session-handoff state: {state_path}")
+    with _setup_lock(home):
 
-    launchers, backups, targets = _validate_state_paths(home, clients, state)
-    restore_plan: list[tuple[str, Path, Path, Path]] = []
-    for client in clients:
-        launcher, backup, target = launchers[client], backups[client], targets[client]
-        if not _is_wrapper(launcher, client):
-            raise SetupError(f"managed launcher changed externally: {launcher}")
-        if not (target.exists() or target.is_symlink() or backup.exists() or backup.is_symlink()):
-            raise SetupError(f"original launcher is missing: {backup}")
-        restore_plan.append((client, launcher, backup, target))
+        state_path = home / STATE_PATH
+        if not state_path.is_file():
+            return {"restored": False, "already_clean": True}
+        state = _load_state(state_path)
+        clients = state.get("clients", [])
+        skill_hashes = state.get("skill_hashes", {})
+        if (
+            not isinstance(clients, list)
+            or any(client not in CLIENTS for client in clients)
+            or not isinstance(skill_hashes, dict)
+        ):
+            raise SetupError(f"invalid session-handoff state: {state_path}")
 
-    for client, launcher, backup, target in restore_plan:
-        try:
-            runner(_mcp_command(client, target if target.exists() else backup, "remove"))
-        except (OSError, subprocess.CalledProcessError):
-            raise SetupError(f"could not remove MCP registration for {client}")
+        launchers, backups, targets = _validate_state_paths(home, clients, state)
+        restore_plan: list[tuple[str, Path, Path, Path]] = []
+        for client in clients:
+            launcher, backup, target = launchers[client], backups[client], targets[client]
+            if not _is_wrapper(launcher, client):
+                raise SetupError(f"managed launcher changed externally: {launcher}")
+            if not (target.exists() or target.is_symlink() or backup.exists() or backup.is_symlink()):
+                raise SetupError(f"original launcher is missing: {backup}")
+            restore_plan.append((client, launcher, backup, target))
 
-    for client, launcher, backup, target in restore_plan:
-        _remove(launcher)
-        os.replace(target if target.exists() or target.is_symlink() else backup, launcher)
-        if target != backup:
-            _remove(backup)
+        for client, launcher, backup, target in restore_plan:
+            try:
+                runner(_mcp_command(client, target if target.exists() else backup, "remove"))
+            except (OSError, subprocess.CalledProcessError):
+                raise SetupError(f"could not remove MCP registration for {client}")
 
-    for client in clients:
-        skill = _skill_path(home, client)
-        if skill.is_file() and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")):
-            _remove(skill)
-    bundle = Path(os.path.abspath(home / BUNDLE_PATH))
-    _remove(bundle)
-    _remove(state_path)
-    return {"restored": True, "already_clean": False, "clients": clients}
+        for client, launcher, backup, target in restore_plan:
+            _remove(launcher)
+            os.replace(target if target.exists() or target.is_symlink() else backup, launcher)
+            if target != backup:
+                _remove(backup)
+
+        for client in clients:
+            skill = _skill_path(home, client)
+            if skill.is_file() and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")):
+                _remove(skill)
+        bundle = Path(os.path.abspath(home / BUNDLE_PATH))
+        _remove(bundle)
+        _remove(state_path)
+        return {"restored": True, "already_clean": False, "clients": clients}
 
 
 def render_plan(plan: dict[str, object]) -> str:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offer optional launcher setup and independent telemetry consent."""
+"""Install launcher setup automatically for the detected client, and offer independent telemetry consent."""
 
 import json
 import sys
