@@ -220,9 +220,8 @@ changing the original worktree's index.
 This lane is valid for the 0.6.1/0.7.0 change because those releases differ in
 telemetry consent and hook behavior. It is not a context-rot or model-quality
 benchmark. A bounded provider-backed pilot now also compares the common
-Markdown path on the two release trees; it is documented in
-`docs/2026-09-02-version-aware-benchmark.md` and the aggregated
-`docs/2026-09-02-real-context-rot-pilot.md`. It remains exploratory and its
+Markdown path on the two release trees, recorded in an internal pilot report.
+It remains exploratory and its
 metrics are not pooled with the modern high-reasoning Markdown/state lane. A
 future release comparison that changes handoff/migration logic still needs a
 separate provider-backed matrix, with cost authorization before execution.
@@ -283,8 +282,8 @@ drop is performed, and process-fresh does not mean cold OS cache. Configure
 `--deadline`, `--timeout`, and `--disk-budget`; only runner-owned temporary
 fixtures are removed.
 
-See [the verified pilot report](../docs/2026-09-07-efficiency-benchmark.md) for
-measurements, coverage limits and the separate byte-budget/catalog checks.
+Measurements, coverage limits and the separate byte-budget/catalog checks are
+recorded in an internal pilot report.
 
 For network isolation on Linux, wrap execution externally:
 
@@ -410,8 +409,8 @@ The offline pilot uses fake executables and no provider:
 python3 -m pytest -q tests/test_run_study.py
 ```
 
-The first live Codex/Luna exploratory pilot is recorded in
-[the 2026-08-25 pilot report](../docs/2026-08-25-codex-luna-pilot.md).
+The first live Codex/Luna exploratory pilot is recorded in an internal
+2026-08-25 pilot report.
 
 ## Native migration integration
 

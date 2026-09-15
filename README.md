@@ -19,9 +19,7 @@ Zero critical facts lost in either pilot: session-handoff matched native compact
 critical-fact recovery and task success, while starting from a fresh session. Measured
 September 8, 2026, with Luna xhigh. Codex: ten synthetic case/context-length combinations.
 Claude Code: one paired comparison on `compound-rot/long`. Each fact had to be recoverable in
-both probe answers, assessed for meaning. Method and results:
-[Codex](docs/2026-09-08-information-preservation-pilot.md) ·
-[Claude Code](docs/2026-09-08-claude-information-pilot.md).
+both probe answers, assessed for meaning, and recorded in internal pilot reports.
 
 ## Install
 
