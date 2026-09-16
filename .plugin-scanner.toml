@@ -1,0 +1,7 @@
+[scanner]
+ignore_paths = [
+  "benchmark/**",
+  ".internal/**",
+  ".sando/**",
+  "handoffs/**"
+]

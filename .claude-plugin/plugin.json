@@ -4,15 +4,9 @@
   "version": "0.7.3",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
-    "name": "yuzushi-dev"
+    "name": "yuzushi-dev",
+    "email": "support@yuzushi.party"
   },
   "license": "MIT",
-  "keywords": [
-    "handoff",
-    "session",
-    "migration",
-    "context",
-    "codex",
-    "claude"
-  ]
+  "keywords": ["handoff", "session", "migration", "context", "codex", "claude"]
 }

@@ -1,0 +1,22 @@
+# Benchmark fixtures and generated analysis are not plugin content
+benchmark/**
+
+# Local state and internal working files
+.internal/
+.sando/
+handoffs/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.log
+*.tmp
+*.swp
