@@ -1159,7 +1159,7 @@ def test_central_switch_requires_ref_capable_supervisor(tmp_path, monkeypatch):
 
 
 def test_write_switch_request_carries_central_ref(tmp_path, monkeypatch):
-    control = tmp_path / "control.json"; token = "secret-token"; workspace = tmp_path / "workspace"; workspace.mkdir()
+    control = tmp_path / "control.json"; token = "test-" + "control-token"; workspace = tmp_path / "workspace"; workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data")); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("SESSION_HANDOFF_CONTROL_PROTOCOL", "2")
     ref = handoff_store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")["ref"]

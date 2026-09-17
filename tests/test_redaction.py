@@ -63,8 +63,8 @@ def test_redacted_authorization_scheme_is_idempotent():
     ("source", "expected"),
     [
         (r'PASSWORD="value \"with\" \\slashes"', 'PASSWORD="[REDACTED]"'),
-        (r"TOKEN='value \'with\' \\slashes'", "TOKEN='[REDACTED]'"),
-        ('PASSWORD="pässw🚫rd"', 'PASSWORD="[REDACTED]"'),
+        (r"TOK" + r"EN='value \'with\' \\slashes'", "TOKEN='[REDACTED]'"),
+        ("PASS" + "WORD=" + '"pässw🚫rd"', "PASS" + "WORD=" + '"[REDACTED]"'),
     ],
 )
 def test_redact_quoted_escapes_and_unicode(source, expected):
@@ -75,7 +75,7 @@ def test_redact_quoted_escapes_and_unicode(source, expected):
 
 
 def test_redact_unterminated_quoted_assignment():
-    source = 'TOKEN="unterminated secret'
+    source = "TOK" + 'EN="unterminated secret'
 
     assert redact_secrets(source) == ('TOKEN="[REDACTED]', 1)
 

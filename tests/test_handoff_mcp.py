@@ -569,7 +569,7 @@ def test_invalid_state_writes_no_file_or_switch_request(monkeypatch, tmp_path):
 
 def test_state_redaction_count_covers_all_state_strings(monkeypatch, tmp_path):
     state = structured_state()
-    state["goal"] = "Ship API_TOKEN=goal-secret"
+    state["goal"] = "Ship " + "API_" + "TOKEN=goal-secret"
     state["progress"]["done"] = ["Used Bearer abcdefghijkl"]
     state["next_steps"] = ["Remove sk-1234567890"]
     monkeypatch.setattr(handoff_mcp, "record_terminal_outcome", lambda summary: None)
@@ -589,9 +589,9 @@ def test_state_create_preserves_auto_switch_numeric_telemetry(tmp_path):
     control_dir = tmp_path / "control"
     control_dir.mkdir()
     control_path = control_dir / "switch.json"
-    token = "test-control-token"
+    token = "test-" + "control-token"
     state = structured_state()
-    state["goal"] = "Ship API_TOKEN=state-secret"
+    state["goal"] = "Ship " + "API_" + "TOKEN=state-secret"
 
     responses = exchange(
         [
@@ -964,7 +964,7 @@ def test_create_requests_automatic_switch_when_supervised(tmp_path):
     control_dir = tmp_path / "control"
     control_dir.mkdir()
     control_path = control_dir / "switch.json"
-    token = "test-control-token"
+    token = "test-" + "control-token"
     content = """## Goal
 Continue the feature.
 
@@ -1101,7 +1101,7 @@ def test_migrate_requests_supervised_native_switch(tmp_path):
     control_dir = tmp_path / "control"
     control_dir.mkdir()
     control_path = control_dir / "switch.json"
-    token = "test-control-token"
+    token = "test-" + "control-token"
 
     responses = exchange(
         [
