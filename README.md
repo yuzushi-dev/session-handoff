@@ -12,12 +12,12 @@
 **Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the whole native session to the other client instead.**
 
 <p align="center">
-  <a href="session-handoff-promo.mp4">
+  <a href="https://raw.githubusercontent.com/yuzushi-dev/session-handoff/main/session-handoff-promo.mp4">
     <img src="assets/screenshot-terminal.png" alt="Session Handoff demo: validated handoff and native migration" width="960">
   </a>
 </p>
 <p align="center">
-  <a href="session-handoff-promo.mp4">▶ Watch the 21-second demo</a>
+  <a href="https://raw.githubusercontent.com/yuzushi-dev/session-handoff/main/session-handoff-promo.mp4">▶ Watch the 21-second demo</a>
 </p>
 
 **Claude Code**:
