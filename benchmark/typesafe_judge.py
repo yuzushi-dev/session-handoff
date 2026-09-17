@@ -1,7 +1,8 @@
 """TypeSafe AI / Jev Benchmark Judge for context-rot evaluation.
 
 Evaluates blinded run artifacts against the formal JUDGE.md rubric using
-structured choice and noul questions.
+structured choice and noul questions, with robust word-boundary matching,
+per-item DoD resolution, and trace extraction.
 """
 
 from __future__ import annotations
@@ -26,6 +27,19 @@ from server.typesafe_client import (
     TypeSafeClient,
 )
 
+_REJECTION_RE = re.compile(
+    r"\b(obsolete|rejected|superseded|deprecated|avoid|don't|do not|never|instead of)\b",
+    re.IGNORECASE,
+)
+_FAILURE_RE = re.compile(
+    r"\b(failed|failure|failing|error|exceptions?|traceback)\b",
+    re.IGNORECASE,
+)
+_SUCCESS_RE = re.compile(
+    r"\b(\d+ passed|success|ok|all tests passed)\b",
+    re.IGNORECASE,
+)
+
 
 def _load_text(path: Path) -> str:
     if not path.is_file():
@@ -36,79 +50,145 @@ def _load_text(path: Path) -> str:
         return ""
 
 
+def _count_word_matches(tokens: list[str], text: str) -> int:
+    """Count token matches respecting word boundaries."""
+    count = 0
+    for token in tokens:
+        if re.search(rf"\b{re.escape(token)}\b", text, re.IGNORECASE):
+            count += 1
+    return count
+
+
 def _offline_rubric_heuristic(
     state: dict[str, Any], questions: dict[str, Question]
 ) -> dict[str, Answer]:
-    """Calibrated offline heuristic evaluator matching JUDGE.md rules when no live API key is present."""
-    context = (state.get("supplied_context") or "").lower()
-    continuation = (state.get("continuation") or "").lower()
-    diff = (state.get("workspace_diff") or "").lower()
-    verify = (state.get("verification") or "").lower()
-    acceptance = (state.get("acceptance") or "").lower()
-    combined_output = f"{context}\n{continuation}\n{diff}\n{verify}\n{acceptance}"
+    """Calibrated offline heuristic evaluator matching JUDGE.md rules."""
+    context = state.get("supplied_context") or ""
+    continuation = state.get("continuation") or ""
+    diff = state.get("workspace_diff") or ""
+    verify = state.get("verification") or ""
+    acceptance = state.get("acceptance") or ""
+
+    verify_passed = bool(_SUCCESS_RE.search(verify)) and not bool(re.search(r"\b\d+ failed\b", verify, re.IGNORECASE))
+    acceptance_passed = bool(_SUCCESS_RE.search(acceptance)) and not bool(re.search(r"\b\d+ failed\b", acceptance, re.IGNORECASE))
 
     answers: dict[str, Answer] = {}
 
     for q_id, q in questions.items():
+        # 1. Gold facts
         if q_id.startswith("fact_"):
             statement = state.get(f"{q_id}_statement", "")
             tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_]{3,}", statement)]
-            matches = sum(1 for t in tokens if t in context or t in continuation)
-            ratio = matches / max(1, len(tokens))
+            meaningful_tokens = [t for t in tokens if t not in {"the", "and", "must", "for", "with", "this"}]
 
-            # Check if conflicting/stale tokens dominate
-            if ratio >= 0.5:
+            ctx_matches = _count_word_matches(meaningful_tokens, context)
+            cont_matches = _count_word_matches(meaningful_tokens, continuation)
+            max_matches = max(ctx_matches, cont_matches)
+            total = max(1, len(meaningful_tokens))
+            ratio = max_matches / total
+
+            if ratio >= 0.50:
                 answers[q_id] = Answer(
                     value="preserved",
-                    confidence=min(0.98, 0.70 + ratio * 0.25),
-                    probabilities={"preserved": 0.85, "missing": 0.10, "incorrect": 0.05},
+                    confidence=min(0.98, 0.70 + (ratio * 0.28)),
+                    probabilities={"preserved": ratio, "missing": (1.0 - ratio) * 0.7, "incorrect": (1.0 - ratio) * 0.3},
                 )
             elif ratio >= 0.25:
                 answers[q_id] = Answer(
-                    value="incorrect" if "error" in combined_output else "missing",
+                    value="missing",
                     confidence=0.75,
-                    probabilities={"preserved": 0.20, "missing": 0.60, "incorrect": 0.20},
+                    probabilities={"preserved": 0.25, "missing": 0.65, "incorrect": 0.10},
                 )
             else:
                 answers[q_id] = Answer(
                     value="missing",
-                    confidence=0.90,
+                    confidence=0.92,
                     probabilities={"preserved": 0.05, "missing": 0.90, "incorrect": 0.05},
                 )
 
+        # 2. Stale traps
         elif q_id.startswith("trap_"):
             statement = state.get(f"{q_id}_statement", "")
-            # Find discriminatory tokens (action verbs and distinctive terms)
             tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_]{4,}", statement)]
-            # Words that indicate negative or historical context
-            rejection_terms = {"obsolete", "rejected", "superseded", "avoid", "not", "deprecated"}
-            has_rejection = any(term in continuation for term in rejection_terms)
+            # Filter out common verbs
+            distinctive_tokens = [t for t in tokens if t not in {"convert", "change", "make", "with", "from", "into"}]
 
-            # A trap is activated only if its core discriminatory keywords appear without rejection
-            # Common trap indicators like 'async', '60 second', 'revert', 'restore'
-            action_tokens = [t for t in tokens if t not in {"convert", "change", "use", "make"}]
-            # Require at least 70% of distinctive trap tokens in continuation to trigger activation
-            match_count = sum(1 for t in action_tokens if t in continuation)
-            trap_active = (match_count == len(action_tokens) and len(action_tokens) > 0) and not has_rejection
+            has_rejection = bool(_REJECTION_RE.search(continuation))
+            matches = _count_word_matches(distinctive_tokens, continuation)
+            total = max(1, len(distinctive_tokens))
 
-            val = 0.85 if trap_active else 0.10
+            # Activated if all distinctive terms appear without an explicit rejection marker
+            is_active = (matches == total) and not has_rejection
+            val = 0.85 if is_active else 0.10
             answers[q_id] = Answer(
                 value=val,
                 confidence=0.88,
                 probabilities={"true": val, "false": 1.0 - val},
             )
 
+        # 3. Definition of Done (Per-Item Evaluation)
         elif q_id.startswith("dod_"):
-            automated = state.get("automated_pass", True)
-            has_test_failure = "fail" in verify or "error" in verify or "failed" in acceptance
-            val = 0.95 if (automated and not has_test_failure) else 0.10
+            stmt = state.get(f"{q_id}_statement", "")
+            automated = state.get("automated_pass", False)
+
+            # Check if this specific item refers to a passing test
+            test_terms = re.findall(r"test_[a-zA-Z0-9_]+|[A-Za-z0-9_]+\.py::[a-zA-Z0-9_]+", stmt)
+            item_passed = True
+
+            if test_terms:
+                for t in test_terms:
+                    # Test must appear in verify output and not be flagged as failed
+                    if t.lower() in verify.lower():
+                        if re.search(rf"\bFAILED\s+{re.escape(t)}\b", verify, re.IGNORECASE):
+                            item_passed = False
+                    else:
+                        item_passed = False
+            else:
+                # General DoD item relies on verify + acceptance outcome
+                item_passed = automated and (verify_passed or acceptance_passed)
+
+            val = 0.95 if item_passed else 0.08
             answers[q_id] = Answer(
                 value=val,
-                confidence=0.92,
+                confidence=0.90,
                 probabilities={"true": val, "false": 1.0 - val},
             )
 
     return answers
+
+
+def _extract_trace_counters(trace_path: Path) -> tuple[int, int]:
+    """Extract repeated failed attempts and recovery reads from trace.json."""
+    if not trace_path.is_file():
+        return 0, 0
+    try:
+        data = json.loads(trace_path.read_text(encoding="utf-8"))
+        events = data.get("events", data) if isinstance(data, dict) else data
+        if not isinstance(events, list):
+            return 0, 0
+
+        failed_attempts = 0
+        recovery_reads = 0
+        last_error_cmd = ""
+
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            tool = ev.get("tool") or ev.get("name") or ""
+            status = ev.get("status") or ev.get("exit_code")
+            if tool in ("read", "file_read", "fetch", "sando_read"):
+                recovery_reads += 1
+            if status not in (0, "success", None):
+                cmd = str(ev.get("input") or "")[:50]
+                if cmd and cmd == last_error_cmd:
+                    failed_attempts += 1
+                last_error_cmd = cmd
+            else:
+                last_error_cmd = ""
+
+        return failed_attempts, recovery_reads
+    except Exception:
+        return 0, 0
 
 
 def judge_blind_run(
@@ -128,7 +208,9 @@ def judge_blind_run(
     workspace_diff = _load_text(blind_dir / "workspace.diff")
     verification = _load_text(blind_dir / "verify.stdout")
     acceptance = _load_text(blind_dir / "acceptance.stdout")
-    trace_text = _load_text(blind_dir / "trace.json")
+    trace_path = blind_dir / "trace.json"
+
+    automated_pass = all(d.get("automated_pass") is True for d in payload.get("dod", []))
 
     state: dict[str, Any] = {
         "blind_id": payload.get("blind_id"),
@@ -137,7 +219,7 @@ def judge_blind_run(
         "workspace_diff": workspace_diff[:4000],
         "verification": verification[:2000],
         "acceptance": acceptance[:2000],
-        "automated_pass": all(d.get("automated_pass", True) for d in payload.get("dod", [])),
+        "automated_pass": automated_pass,
     }
 
     questions: dict[str, Question] = {}
@@ -165,7 +247,7 @@ def judge_blind_run(
             instructions=f"Does the handoff or continuation treat this obsolete fact as active: '{stmt}'?"
         )
 
-    # 3. DoD questions
+    # 3. DoD questions (evaluated per-item)
     for dod in payload.get("dod", []):
         did = dod["id"]
         stmt = dod.get("statement", "")
@@ -178,6 +260,10 @@ def judge_blind_run(
     eval_result = client.evaluate(
         state, questions, offline_handler=_offline_rubric_heuristic
     )
+
+    # Benchmark correctness: fail-closed if evaluation itself failed
+    if not eval_result.ok:
+        raise RuntimeError(f"TypeSafe benchmark evaluation failed: {eval_result.error}")
 
     # Update payload facts
     for fact in payload.get("facts", []):
@@ -203,11 +289,12 @@ def judge_blind_run(
             dod["passed"] = float(ans.value) > 0.5
             dod["evidence"] = f"TypeSafe Jev p={ans.value:.2f} conf={ans.confidence:.2f}"
 
-    # Set counters
+    # Extract real trace counters
+    failed_attempts, recovery_reads = _extract_trace_counters(trace_path)
     counters = payload.setdefault("counters", {})
-    counters["repeated_failed_attempts"] = 0
+    counters["repeated_failed_attempts"] = failed_attempts
     counters["stale_decisions_acted_on"] = sum(1 for t in payload.get("stale_traps", []) if t.get("activated"))
-    counters["recovery_reads"] = 0
+    counters["recovery_reads"] = recovery_reads
     counters["evidence"] = f"Evaluation completed via {eval_result.model} in {eval_result.elapsed_ms:.1f}ms"
 
     # Calibration metadata

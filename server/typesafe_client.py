@@ -1,13 +1,16 @@
 """TypeSafe AI (Jev System One) Client for structured semantic evaluations.
 
-Provides typed questions (choice, score, noul), automatic secret redaction,
-fail-open error handling, and support for offline/calibrated fallback.
+Provides typed questions (choice, score, noul), automatic secret redaction
+across both state and questions, fail-open error handling, and support
+for offline/calibrated fallback.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -15,14 +18,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+logger = logging.getLogger("session_handoff.typesafe")
+
 try:
     from .redaction import redact_secrets
 except ImportError:
     try:
         from server.redaction import redact_secrets
     except ImportError:
+        _FALLBACK_TOKEN_RE = re.compile(
+            r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
+            r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|"
+            r"(?i)(?:key|token|secret|password)\s*[:=]\s*['\"][^'\"]+['\"]"
+        )
         def redact_secrets(text: str) -> tuple[str, int]:
-            return text, 0
+            return _FALLBACK_TOKEN_RE.sub("[REDACTED]", text), 1
 
 
 QuestionType = Literal["choice", "score", "noul"]
@@ -92,6 +102,8 @@ class EvaluationResult:
 class TypeSafeClient:
     """System One client for TypeSafe AI (Jev)."""
 
+    _auth_warned: bool = False
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -133,6 +145,27 @@ class TypeSafeClient:
             return [self._redact_value(v) for v in value]
         return value
 
+    def _redact_questions(self, questions: dict[str, Question]) -> dict[str, Question]:
+        redacted: dict[str, Question] = {}
+        for q_id, q in questions.items():
+            if isinstance(q, ChoiceQuestion):
+                redacted[q_id] = ChoiceQuestion(
+                    instructions=self._redact_value(q.instructions),
+                    criteria=self._redact_value(q.criteria),
+                )
+            elif isinstance(q, ScoreQuestion):
+                redacted[q_id] = ScoreQuestion(
+                    instructions=self._redact_value(q.instructions),
+                    criteria=self._redact_value(q.criteria),
+                )
+            elif isinstance(q, NoulQuestion):
+                redacted[q_id] = NoulQuestion(
+                    instructions=self._redact_value(q.instructions),
+                )
+            else:
+                redacted[q_id] = q
+        return redacted
+
     def evaluate(
         self,
         state: dict[str, Any],
@@ -145,14 +178,15 @@ class TypeSafeClient:
         start_time = time.perf_counter()
         call_timeout = timeout or self.timeout
 
-        # Step 1: Redact state for security and privacy
+        # Step 1: Redact both state AND questions for comprehensive privacy
         safe_state = self._redact_value(state)
+        safe_questions = self._redact_questions(questions)
 
-        # Step 2: If no key or offline handler provided, use offline evaluation
+        # Step 2: Offline evaluation when unconfigured
         if not self.api_key:
             if offline_handler:
                 try:
-                    answers = offline_handler(safe_state, questions)
+                    answers = offline_handler(safe_state, safe_questions)
                     elapsed = (time.perf_counter() - start_time) * 1000
                     return EvaluationResult(
                         ok=True,
@@ -168,7 +202,7 @@ class TypeSafeClient:
                         answers={},
                         model="offline-heuristic",
                         elapsed_ms=elapsed,
-                        error=str(exc),
+                        error=f"Offline handler error: {exc}",
                         offline=True,
                     )
             elapsed = (time.perf_counter() - start_time) * 1000
@@ -184,7 +218,7 @@ class TypeSafeClient:
         # Step 3: Build HTTP request
         payload = {
             "state": safe_state,
-            "questions": {k: q.to_dict() for k, q in questions.items()},
+            "questions": {k: q.to_dict() for k, q in safe_questions.items()},
         }
         body = json.dumps(payload).encode("utf-8")
         url = f"{self.base_url}/evaluate"
@@ -218,17 +252,44 @@ class TypeSafeClient:
                 elapsed_ms=elapsed,
                 offline=False,
             )
-        except Exception as exc:
+        except urllib.error.HTTPError as http_err:
             elapsed = (time.perf_counter() - start_time) * 1000
+            if http_err.code in (401, 403) and not TypeSafeClient._auth_warned:
+                TypeSafeClient._auth_warned = True
+                logger.warning("TypeSafe API key rejected (HTTP %d). Check TYPESAFE_API_KEY.", http_err.code)
+
             if self.offline_fallback and offline_handler:
                 try:
-                    answers = offline_handler(safe_state, questions)
+                    answers = offline_handler(safe_state, safe_questions)
                     return EvaluationResult(
                         ok=True,
                         answers=answers,
                         model="offline-fallback-heuristic",
                         elapsed_ms=elapsed,
-                        error=f"Live request failed ({exc}), fell back to offline handler",
+                        error=f"Live request returned HTTP {http_err.code}; fell back to offline handler",
+                        offline=True,
+                    )
+                except Exception:
+                    pass
+            return EvaluationResult(
+                ok=False,
+                answers={},
+                model="jev-1",
+                elapsed_ms=elapsed,
+                error=f"TypeSafe HTTP {http_err.code}: {http_err.reason}",
+                offline=False,
+            )
+        except Exception as exc:
+            elapsed = (time.perf_counter() - start_time) * 1000
+            if self.offline_fallback and offline_handler:
+                try:
+                    answers = offline_handler(safe_state, safe_questions)
+                    return EvaluationResult(
+                        ok=True,
+                        answers=answers,
+                        model="offline-fallback-heuristic",
+                        elapsed_ms=elapsed,
+                        error=f"Live request failed ({exc}); fell back to offline handler",
                         offline=True,
                     )
                 except Exception:
