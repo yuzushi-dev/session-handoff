@@ -26,10 +26,11 @@ except ImportError:
     try:
         from server.redaction import redact_secrets
     except ImportError:
+        # Global flag (?i) placed at start of pattern for Python 3.11+ compatibility
         _FALLBACK_TOKEN_RE = re.compile(
-            r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
+            r"(?i)\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
             r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|"
-            r"(?i)(?:key|token|secret|password)\s*[:=]\s*['\"][^'\"]+['\"]"
+            r"(?i)\b(?:key|token|secret|password)\s*[:=]\s*['\"][^'\"]+['\"]"
         )
         def redact_secrets(text: str) -> tuple[str, int]:
             return _FALLBACK_TOKEN_RE.sub("[REDACTED]", text), 1

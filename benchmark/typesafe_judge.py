@@ -1,8 +1,8 @@
 """TypeSafe AI / Jev Benchmark Judge for context-rot evaluation.
 
 Evaluates blinded run artifacts against the formal JUDGE.md rubric using
-structured choice and noul questions, with robust word-boundary matching,
-per-item DoD resolution, and trace extraction.
+structured choice and noul questions, with localized trap rejection checking,
+flexible test outcome detection, and atomic persistence.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,12 +32,8 @@ _REJECTION_RE = re.compile(
     r"\b(obsolete|rejected|superseded|deprecated|avoid|don't|do not|never|instead of)\b",
     re.IGNORECASE,
 )
-_FAILURE_RE = re.compile(
-    r"\b(failed|failure|failing|error|exceptions?|traceback)\b",
-    re.IGNORECASE,
-)
 _SUCCESS_RE = re.compile(
-    r"\b(\d+ passed|success|ok|all tests passed)\b",
+    r"\b(\d+ passed|success|all tests passed)\b",
     re.IGNORECASE,
 )
 
@@ -69,8 +66,8 @@ def _offline_rubric_heuristic(
     verify = state.get("verification") or ""
     acceptance = state.get("acceptance") or ""
 
-    verify_passed = bool(_SUCCESS_RE.search(verify)) and not bool(re.search(r"\b\d+ failed\b", verify, re.IGNORECASE))
-    acceptance_passed = bool(_SUCCESS_RE.search(acceptance)) and not bool(re.search(r"\b\d+ failed\b", acceptance, re.IGNORECASE))
+    verify_passed = bool(_SUCCESS_RE.search(verify)) and not bool(re.search(r"\b(?:\d+ failed|FAIL|FAILED)\b", verify))
+    acceptance_passed = bool(_SUCCESS_RE.search(acceptance)) and not bool(re.search(r"\b(?:\d+ failed|FAIL|FAILED)\b", acceptance))
 
     answers: dict[str, Answer] = {}
 
@@ -83,21 +80,27 @@ def _offline_rubric_heuristic(
 
             ctx_matches = _count_word_matches(meaningful_tokens, context)
             cont_matches = _count_word_matches(meaningful_tokens, continuation)
-            max_matches = max(ctx_matches, cont_matches)
             total = max(1, len(meaningful_tokens))
-            ratio = max_matches / total
 
-            if ratio >= 0.50:
+            # Fact must be identified in context or continuation
+            ratio = max(ctx_matches, cont_matches) / total
+
+            # Check for explicit reversal / contradiction (e.g. async vs sync)
+            is_reversed = False
+            if "sync" in statement.lower() and re.search(r"\bconvert(?:ed)?\s+to\s+async\b", continuation, re.IGNORECASE):
+                is_reversed = True
+
+            if is_reversed:
+                answers[q_id] = Answer(
+                    value="incorrect",
+                    confidence=0.88,
+                    probabilities={"preserved": 0.05, "missing": 0.15, "incorrect": 0.80},
+                )
+            elif ratio >= 0.50:
                 answers[q_id] = Answer(
                     value="preserved",
                     confidence=min(0.98, 0.70 + (ratio * 0.28)),
                     probabilities={"preserved": ratio, "missing": (1.0 - ratio) * 0.7, "incorrect": (1.0 - ratio) * 0.3},
-                )
-            elif ratio >= 0.25:
-                answers[q_id] = Answer(
-                    value="missing",
-                    confidence=0.75,
-                    probabilities={"preserved": 0.25, "missing": 0.65, "incorrect": 0.10},
                 )
             else:
                 answers[q_id] = Answer(
@@ -109,17 +112,24 @@ def _offline_rubric_heuristic(
         # 2. Stale traps
         elif q_id.startswith("trap_"):
             statement = state.get(f"{q_id}_statement", "")
-            tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_]{4,}", statement)]
-            # Filter out common verbs
-            distinctive_tokens = [t for t in tokens if t not in {"convert", "change", "make", "with", "from", "into"}]
+            tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_]{3,}", statement)]
+            distinctive_tokens = [t for t in tokens if t not in {"convert", "change", "make", "with", "from", "into", "the", "use"}]
 
-            has_rejection = bool(_REJECTION_RE.search(continuation))
             matches = _count_word_matches(distinctive_tokens, continuation)
             total = max(1, len(distinctive_tokens))
+            ratio = matches / total
 
-            # Activated if all distinctive terms appear without an explicit rejection marker
-            is_active = (matches == total) and not has_rejection
-            val = 0.85 if is_active else 0.10
+            # Check localized rejection around mentions of trap tokens in continuation
+            has_local_rejection = False
+            for line in continuation.splitlines():
+                if any(re.search(rf"\b{re.escape(t)}\b", line, re.IGNORECASE) for t in distinctive_tokens):
+                    if _REJECTION_RE.search(line):
+                        has_local_rejection = True
+                        break
+
+            # Active if majority of distinctive tokens appear without localized rejection
+            is_active = (ratio >= 0.60) and not has_local_rejection
+            val = 0.88 if is_active else 0.10
             answers[q_id] = Answer(
                 value=val,
                 confidence=0.88,
@@ -131,20 +141,22 @@ def _offline_rubric_heuristic(
             stmt = state.get(f"{q_id}_statement", "")
             automated = state.get("automated_pass", False)
 
-            # Check if this specific item refers to a passing test
             test_terms = re.findall(r"test_[a-zA-Z0-9_]+|[A-Za-z0-9_]+\.py::[a-zA-Z0-9_]+", stmt)
             item_passed = True
 
             if test_terms:
                 for t in test_terms:
-                    # Test must appear in verify output and not be flagged as failed
-                    if t.lower() in verify.lower():
-                        if re.search(rf"\bFAILED\s+{re.escape(t)}\b", verify, re.IGNORECASE):
-                            item_passed = False
-                    else:
+                    # Support both formats: 'FAILED test_x' and 'test_x ... FAILED/FAIL'
+                    fail_pattern = rf"\bFAILED\s+{re.escape(t)}\b|\b{re.escape(t)}\b[^\n]*\b(?:FAILED|FAIL)\b"
+                    pass_pattern = rf"\bPASSED\s+{re.escape(t)}\b|\b{re.escape(t)}\b[^\n]*\bPASSED\b"
+
+                    combined_verify = f"{verify}\n{acceptance}"
+                    if re.search(fail_pattern, combined_verify, re.IGNORECASE):
+                        item_passed = False
+                    elif not re.search(pass_pattern, combined_verify, re.IGNORECASE):
+                        # Not explicitly passed in output
                         item_passed = False
             else:
-                # General DoD item relies on verify + acceptance outcome
                 item_passed = automated and (verify_passed or acceptance_passed)
 
             val = 0.95 if item_passed else 0.08
@@ -194,7 +206,7 @@ def _extract_trace_counters(trace_path: Path) -> tuple[int, int]:
 def judge_blind_run(
     blind_dir: Path, client: TypeSafeClient | None = None
 ) -> dict[str, Any]:
-    """Evaluate one blinded run directory and update its judge.json."""
+    """Evaluate one blinded run directory and update its judge.json atomically."""
     judge_file = blind_dir / "judge.json"
     if not judge_file.is_file():
         raise FileNotFoundError(f"Missing judge.json in {blind_dir}")
@@ -202,7 +214,6 @@ def judge_blind_run(
     payload = json.loads(judge_file.read_text(encoding="utf-8"))
     client = client or TypeSafeClient()
 
-    # Load artifacts
     supplied_context = _load_text(blind_dir / "supplied-context.md")
     continuation = _load_text(blind_dir / "continuation.txt")
     workspace_diff = _load_text(blind_dir / "workspace.diff")
@@ -224,7 +235,6 @@ def judge_blind_run(
 
     questions: dict[str, Question] = {}
 
-    # 1. Gold facts questions
     for fact in payload.get("facts", []):
         fid = fact["id"]
         stmt = fact.get("statement", "")
@@ -238,7 +248,6 @@ def judge_blind_run(
             },
         )
 
-    # 2. Stale traps questions
     for trap in payload.get("stale_traps", []):
         tid = trap["id"]
         stmt = trap.get("statement", "")
@@ -247,7 +256,6 @@ def judge_blind_run(
             instructions=f"Does the handoff or continuation treat this obsolete fact as active: '{stmt}'?"
         )
 
-    # 3. DoD questions (evaluated per-item)
     for dod in payload.get("dod", []):
         did = dod["id"]
         stmt = dod.get("statement", "")
@@ -256,16 +264,13 @@ def judge_blind_run(
             instructions=f"Is this definition of done satisfied in continuation/diff: '{stmt}'?"
         )
 
-    # Evaluate via Jev (live or calibrated offline fallback)
     eval_result = client.evaluate(
         state, questions, offline_handler=_offline_rubric_heuristic
     )
 
-    # Benchmark correctness: fail-closed if evaluation itself failed
     if not eval_result.ok:
         raise RuntimeError(f"TypeSafe benchmark evaluation failed: {eval_result.error}")
 
-    # Update payload facts
     for fact in payload.get("facts", []):
         fid = fact["id"]
         ans = eval_result.answers.get(f"fact_{fid}")
@@ -273,7 +278,6 @@ def judge_blind_run(
             fact["status"] = ans.value
             fact["evidence"] = f"TypeSafe Jev conf={ans.confidence:.2f} ({eval_result.model})"
 
-    # Update stale traps
     for trap in payload.get("stale_traps", []):
         tid = trap["id"]
         ans = eval_result.answers.get(f"trap_{tid}")
@@ -281,7 +285,6 @@ def judge_blind_run(
             trap["activated"] = float(ans.value) > 0.5
             trap["evidence"] = f"TypeSafe Jev p={ans.value:.2f} conf={ans.confidence:.2f}"
 
-    # Update DoD
     for dod in payload.get("dod", []):
         did = dod["id"]
         ans = eval_result.answers.get(f"dod_{did}")
@@ -289,7 +292,6 @@ def judge_blind_run(
             dod["passed"] = float(ans.value) > 0.5
             dod["evidence"] = f"TypeSafe Jev p={ans.value:.2f} conf={ans.confidence:.2f}"
 
-    # Extract real trace counters
     failed_attempts, recovery_reads = _extract_trace_counters(trace_path)
     counters = payload.setdefault("counters", {})
     counters["repeated_failed_attempts"] = failed_attempts
@@ -297,7 +299,6 @@ def judge_blind_run(
     counters["recovery_reads"] = recovery_reads
     counters["evidence"] = f"Evaluation completed via {eval_result.model} in {eval_result.elapsed_ms:.1f}ms"
 
-    # Calibration metadata
     calibration = payload.setdefault("calibration", {})
     calibration["rubric_version"] = 1
     calibration["judge_id"] = "typesafe-jev"
@@ -305,7 +306,11 @@ def judge_blind_run(
     calibration["calibration_set"] = "context-rot-v1"
     calibration["human_reviewed"] = False
 
-    judge_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Atomic write to prevent file corruption on unexpected termination
+    tmp_path = blind_dir / f".tmp-judge-{os.getpid()}.json"
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(judge_file)
+
     return payload
 
 

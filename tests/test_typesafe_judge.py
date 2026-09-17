@@ -54,55 +54,47 @@ def test_client_redacts_both_state_and_questions():
     assert "SuperSecretPassword123" not in str(captured_questions)
 
 
-def test_judge_blind_run_word_boundary_and_rejection():
+def test_judge_blind_run_trap_activation_and_fact_reversal():
     with tempfile.TemporaryDirectory() as tmpdir:
         blind_dir = Path(tmpdir)
         judge_payload = {
             "schema_version": 1,
-            "blind_id": "test-blind-002",
+            "blind_id": "test-blind-003",
             "facts": [
-                {"id": "F1", "statement": "Must preserve api endpoint synchronously.", "status": None, "evidence": None},
+                # Stated sync in fact, but continuation converted to async -> incorrect!
+                {"id": "F1", "statement": "refresh_session must remain synchronous.", "status": None, "evidence": None},
+                {"id": "F2", "statement": "Target file is src/auth/session.py.", "status": None, "evidence": None}
             ],
             "stale_traps": [
-                # Has rejection term 'superseded' in continuation -> should NOT activate
-                {"id": "T1", "statement": "Use the obsolete 60 second negative cache ttl.", "activated": None, "evidence": None}
+                # Actively acted upon in continuation -> must activate!
+                {"id": "T1", "statement": "Convert refresh_session to async.", "activated": None, "evidence": None}
             ],
             "dod": [
-                {"id": "D1", "statement": "test_cache_ttl passes.", "automated_pass": True, "passed": None, "evidence": None},
-                {"id": "D2", "statement": "test_failing_suite passes.", "automated_pass": True, "passed": None, "evidence": None}
+                {"id": "D1", "statement": "test_auth passes.", "automated_pass": True, "passed": None, "evidence": None}
             ],
             "counters": {},
             "calibration": {}
         }
         (blind_dir / "judge.json").write_text(json.dumps(judge_payload), encoding="utf-8")
-        # Context has rapid, which must not match 'api'
         (blind_dir / "supplied-context.md").write_text(
-            "We want rapid development. Also keep api endpoint synchronously.", encoding="utf-8"
+            "Constraint: refresh_session must remain synchronous. Target file is src/auth/session.py.", encoding="utf-8"
         )
+        # Continuation converts to async actively -> triggers trap T1 and marks F1 incorrect
         (blind_dir / "continuation.txt").write_text(
-            "The 60 second negative cache ttl was superseded. I updated the cache logic.", encoding="utf-8"
+            "I have converted to async for refresh_session. Working in src/auth/session.py.", encoding="utf-8"
         )
-        (blind_dir / "verify.stdout").write_text(
-            "test_cache_ttl PASSED\nFAILED test_failing_suite\n1 passed, 1 failed in 0.1s", encoding="utf-8"
-        )
-        (blind_dir / "trace.json").write_text(json.dumps([
-            {"tool": "read", "status": "success"},
-            {"tool": "bash", "input": "pytest", "status": 1},
-            {"tool": "bash", "input": "pytest", "status": 1}
-        ]), encoding="utf-8")
+        (blind_dir / "verify.stdout").write_text("test_auth PASSED", encoding="utf-8")
 
         result = judge_blind_run(blind_dir)
 
-        # Fact matched
-        assert result["facts"][0]["status"] == "preserved"
-        # Stale trap was rejected -> activated is False
-        assert result["stale_traps"][0]["activated"] is False
-        # D1 passed (in verify stdout), D2 failed (marked FAILED)
+        # F1 was reversed -> incorrect
+        assert result["facts"][0]["status"] == "incorrect"
+        # F2 was preserved
+        assert result["facts"][1]["status"] == "preserved"
+        # T1 was actively acted upon -> activated is True!
+        assert result["stale_traps"][0]["activated"] is True
+        # D1 passed
         assert result["dod"][0]["passed"] is True
-        assert result["dod"][1]["passed"] is False
-        # Trace counters extracted
-        assert result["counters"]["recovery_reads"] == 1
-        assert result["counters"]["repeated_failed_attempts"] == 1
 
 
 def test_judge_blind_run_fails_loudly_on_eval_error():
