@@ -263,3 +263,41 @@ def test_capture_checkpoint_falls_back_to_placeholder_when_transcript_is_missing
     result = capture_checkpoint(payload, home=home)
     content = Path(result["path"]).read_text(encoding="utf-8")
     assert "Tool summary: unavailable from lifecycle hook" in content
+
+
+def test_checkpoint_asker_defaults_to_none_when_unset(monkeypatch):
+    monkeypatch.delenv(checkpoint.CHECKPOINT_SCORER_ENV, raising=False)
+    assert checkpoint._checkpoint_asker() is None
+
+
+def test_checkpoint_asker_ignores_unrecognized_value(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "something-else")
+    assert checkpoint._checkpoint_asker() is None
+
+
+def test_checkpoint_asker_selects_ollama_explicitly(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "ollama")
+    asker = checkpoint._checkpoint_asker()
+    assert isinstance(asker, checkpoint.OllamaAsker)
+
+
+def test_checkpoint_asker_selects_typesafe_explicitly(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "typesafe")
+    asker = checkpoint._checkpoint_asker()
+    assert isinstance(asker, checkpoint.TypeSafeAsker)
+
+
+def test_capture_checkpoint_behavior_unchanged_when_scorer_env_is_unset(tmp_path, monkeypatch):
+    # Non-regression: the default (no opt-in) path must produce exactly the
+    # same checkpoint content as before either asker existed.
+    monkeypatch.delenv(checkpoint.CHECKPOINT_SCORER_ENV, raising=False)
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    payload = event(repo)
+    _write_transcript_with_one_call(Path(payload["transcript_path"]))
+    monkeypatch.setattr(checkpoint.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    result = capture_checkpoint(payload, home=home)
+    content = Path(result["path"]).read_text(encoding="utf-8")
+    assert "Bash" in content
+    assert "pinned_recent" in content

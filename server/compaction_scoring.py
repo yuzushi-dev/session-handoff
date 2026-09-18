@@ -112,7 +112,8 @@ def resolve_ambiguous(
         if confidence < CONFIDENCE_FLOOR or decision not in {"keep", "truncate", "drop"}:
             resolved.append(ScoredItem(item.call, item.result, "keep", "low_confidence_default"))
             continue
-        resolved.append(ScoredItem(item.call, item.result, decision, "local_model"))
+        source = getattr(asker, "source_name", "local_model")
+        resolved.append(ScoredItem(item.call, item.result, decision, source))
     return resolved
 
 
@@ -179,6 +180,8 @@ OLLAMA_PROMPT = (
 
 
 class OllamaAsker:
+    source_name = "local_model"
+
     def __init__(
         self,
         *,
@@ -216,3 +219,56 @@ class OllamaAsker:
         if decision not in {"keep", "truncate", "drop"}:
             raise ValueError(f"unexpected decision: {decision!r}")
         return decision, confidence
+
+
+TYPESAFE_KEEP_INSTRUCTIONS = (
+    "A recovery checkpoint is being written before a Claude Code session compacts. "
+    "Does this tool call and its result still matter enough to keep verbatim?"
+)
+TYPESAFE_HIGH = 0.7
+TYPESAFE_LOW = 0.3
+
+
+class TypeSafeAsker:
+    """Alternative to OllamaAsker: same .ask(call, result) contract, backed by
+    the real TypeSafe/Jev `noul` primitive instead of a local model. Opt-in
+    only: requires an explicitly configured TypeSafeClient (TYPESAFE_API_KEY
+    or ~/.config/typesafe/auth.json) and is never constructed by default.
+    """
+
+    source_name = "typesafe_remote"
+
+    def __init__(self, client: Any | None = None) -> None:
+        if client is None:
+            from server.typesafe_client import TypeSafeClient
+
+            client = TypeSafeClient()
+        self.client = client
+
+    def ask(self, call: dict[str, Any], result: dict[str, Any] | None) -> tuple[str, float]:
+        from server.typesafe_client import NoulQuestion
+
+        state = {
+            "tool": call.get("name", "<unknown>"),
+            "input": call.get("input", {}),
+            "output": "" if result is None else result.get("output", ""),
+        }
+        questions = {"should_keep": NoulQuestion(instructions=TYPESAFE_KEEP_INSTRUCTIONS)}
+        eval_result = self.client.evaluate(state, questions)
+        if not eval_result.ok:
+            raise RuntimeError(eval_result.error or "TypeSafe evaluation failed")
+        answer = eval_result.answers.get("should_keep")
+        if answer is None or not isinstance(answer.value, (int, float)):
+            raise ValueError("TypeSafe returned no usable noul answer")
+        noul = float(answer.value)
+        if noul >= TYPESAFE_HIGH:
+            return "keep", noul
+        if noul <= TYPESAFE_LOW:
+            return "drop", 1.0 - noul
+        # TypeSafe's own documented uncertainty zone (0.30-0.70, see the
+        # consistency/noul cookbook): always report confidence 0.0 here,
+        # unconditionally below resolve_ambiguous's CONFIDENCE_FLOOR, so the
+        # existing low-confidence-defaults-to-keep safety net decides this
+        # case instead of us guessing a direction from a noul value TypeSafe
+        # itself flags as too uncertain to act on.
+        return "keep", 0.0

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 try:
-    from server.sanitize import redact_secrets
+    from server.redaction import redact_secrets
 except ImportError:
     _SECRET_PATTERN = re.compile(
         r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"

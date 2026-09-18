@@ -6,6 +6,7 @@ import pytest
 from server.compaction_scoring import (
     OllamaAsker,
     ScoredItem,
+    TypeSafeAsker,
     heuristic_score,
     pair_tool_events,
     render_tool_summary,
@@ -269,3 +270,72 @@ def test_ollama_asker_low_confidence_end_to_end_defaults_to_keep(monkeypatch):
     resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
     assert resolved[0].decision == "keep"
     assert resolved[0].reason == "low_confidence_default"
+
+
+class _FakeAnswer:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeEvalResult:
+    def __init__(self, *, ok=True, answers=None, error=None):
+        self.ok = ok
+        self.answers = answers or {}
+        self.error = error
+
+
+class _FakeTypeSafeClient:
+    def __init__(self, noul=None, *, ok=True, error=None):
+        self._noul = noul
+        self._ok = ok
+        self._error = error
+        self.seen_state = None
+        self.seen_questions = None
+
+    def evaluate(self, state, questions):
+        self.seen_state = state
+        self.seen_questions = questions
+        if not self._ok:
+            return _FakeEvalResult(ok=False, error=self._error)
+        return _FakeEvalResult(answers={"should_keep": _FakeAnswer(self._noul)})
+
+
+def test_typesafe_asker_high_noul_means_keep():
+    client = _FakeTypeSafeClient(noul=0.9)
+    asker = TypeSafeAsker(client=client)
+    decision, confidence = asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+    assert (decision, confidence) == ("keep", 0.9)
+
+
+def test_typesafe_asker_low_noul_means_drop():
+    client = _FakeTypeSafeClient(noul=0.1)
+    asker = TypeSafeAsker(client=client)
+    decision, confidence = asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+    assert decision == "drop"
+    assert confidence == pytest.approx(0.9)
+
+
+def test_typesafe_asker_uncertain_zone_is_zero_confidence_keep():
+    client = _FakeTypeSafeClient(noul=0.5)
+    asker = TypeSafeAsker(client=client)
+    decision, confidence = asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+    assert (decision, confidence) == ("keep", 0.0)
+
+
+def test_typesafe_asker_eval_failure_raises():
+    client = _FakeTypeSafeClient(noul=None, ok=False, error="simulated failure")
+    asker = TypeSafeAsker(client=client)
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+
+
+def test_typesafe_asker_resolves_ambiguous_item_end_to_end_with_honest_reason():
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    client = _FakeTypeSafeClient(noul=0.05)  # confident drop
+    asker = TypeSafeAsker(client=client)
+    resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "drop"
+    # Not "local_model": TypeSafe is a real remote API, the checkpoint must
+    # say so honestly instead of reusing OllamaAsker's label.
+    assert resolved[0].reason == "typesafe_remote"
