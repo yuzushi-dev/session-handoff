@@ -14,7 +14,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 PROXY_BINARY = Path(
-    os.environ.get("SESSION_HANDOFF_PINNED_PROXY", "/home/cristina/.local/bin/claude-code-proxy")
+    os.environ.get("SESSION_HANDOFF_PINNED_PROXY", str(Path.home() / ".local/bin/claude-code-proxy"))
 )
 PROXY_SHA256 = "146f2e9dde5283998eb24f3abc044513876cd04fcdb85ae11dffbc82565f78dd"
 
