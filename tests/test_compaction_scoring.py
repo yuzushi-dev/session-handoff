@@ -1,6 +1,13 @@
+import json
 import time
 
-from server.compaction_scoring import heuristic_score, pair_tool_events, resolve_ambiguous, score_pairs
+from server.compaction_scoring import (
+    heuristic_score,
+    pair_tool_events,
+    resolve_ambiguous,
+    score_pairs,
+    score_transcript,
+)
 
 
 def test_pair_tool_events_matches_call_to_result_by_id():
@@ -130,3 +137,31 @@ def test_most_recent_turn_error_survives_even_with_a_confident_drop_verdict():
     assert scored[-1].decision == "keep"
     assert asker.seen  # the asker WAS consulted for something...
     assert all(call["id"] != "recent" for call, _ in asker.seen)  # ...but never for the recent error
+
+
+def _write_transcript(path, session_id="sess-1"):
+    records = [
+        {"type": "user", "sessionId": session_id, "uuid": "u1", "message": {"role": "user", "content": "go"}},
+        {
+            "type": "assistant", "sessionId": session_id, "uuid": "a1", "parentUuid": "u1",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+            ]},
+        },
+        {
+            "type": "user", "sessionId": session_id, "uuid": "u2", "parentUuid": "a1",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "file.py", "is_error": False},
+            ]},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def test_score_transcript_reads_real_transcript_file(tmp_path):
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript)
+    scored = score_transcript(str(transcript), session_id="sess-1", preserve_recent=6)
+    assert len(scored) == 1
+    assert scored[0].call["name"] == "Bash"
+    assert scored[0].decision == "keep"  # inside the pinned window

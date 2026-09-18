@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import time as _time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+try:
+    from .migration_engine import _parse_claude, _read_jsonl
+except ImportError:  # direct `python server/compaction_scoring.py` execution
+    from migration_engine import _parse_claude, _read_jsonl
 
 
 def pair_tool_events(events: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
@@ -118,3 +124,26 @@ def score_pairs(
 ) -> list[ScoredItem]:
     heuristic = heuristic_score(pairs, preserve_recent=preserve_recent, truncate_chars=truncate_chars)
     return resolve_ambiguous(heuristic, asker=asker, deadline=deadline if deadline is not None else _time.monotonic())
+
+
+def score_transcript(
+    transcript_path: str,
+    *,
+    session_id: str,
+    preserve_recent: int = 6,
+    truncate_chars: int = 4000,
+    asker: Any | None = None,
+    deadline: float | None = None,
+) -> list[ScoredItem]:
+    """Parse a real Claude transcript JSONL file and score its tool calls."""
+    data = Path(transcript_path).read_bytes()
+    records = _read_jsonl(data)
+    _metadata, events, _dropped = _parse_claude(records, session_id)
+    pairs = pair_tool_events(events)
+    return score_pairs(
+        pairs,
+        preserve_recent=preserve_recent,
+        truncate_chars=truncate_chars,
+        asker=asker,
+        deadline=deadline,
+    )
