@@ -1,4 +1,6 @@
-from server.compaction_scoring import heuristic_score, pair_tool_events
+import time
+
+from server.compaction_scoring import heuristic_score, pair_tool_events, resolve_ambiguous
 
 
 def test_pair_tool_events_matches_call_to_result_by_id():
@@ -60,3 +62,60 @@ def test_unremarkable_pair_outside_pinned_window_is_ambiguous():
     pairs = [plain] + [_pair(str(i)) for i in range(6)]
     scored = heuristic_score(pairs, preserve_recent=6)
     assert scored[0].decision == "ambiguous"
+
+
+class _FakeAsker:
+    def __init__(self, decisions):
+        self._decisions = decisions
+        self.seen = []
+
+    def ask(self, call, result):
+        self.seen.append((call, result))
+        return self._decisions.pop(0)
+
+
+def test_resolve_ambiguous_uses_asker_verdict():
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    asker = _FakeAsker([("drop", 0.9)])
+    resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "drop"
+    assert asker.seen[0][0]["id"] == "plain"  # asker saw the real call
+    assert asker.seen[0][1]["output"] == "fine"  # and the real result, not a note
+
+
+def test_resolve_ambiguous_low_confidence_defaults_to_keep():
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    asker = _FakeAsker([("drop", 0.4)])  # below the confidence floor
+    resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "keep"
+    assert resolved[0].reason == "low_confidence_default"
+
+
+def test_resolve_ambiguous_without_asker_defaults_to_keep():
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    resolved = resolve_ambiguous(scored, asker=None, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "keep"
+    assert resolved[0].reason == "no_asker"
+
+
+def test_resolve_ambiguous_asker_failure_defaults_to_keep():
+    class _BrokenAsker:
+        def ask(self, call, result):
+            raise RuntimeError("ollama unreachable")
+
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    resolved = resolve_ambiguous(scored, asker=_BrokenAsker(), deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "keep"
+    assert resolved[0].reason == "asker_error"
+
+
+def test_resolve_ambiguous_stops_before_deadline():
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    resolved = resolve_ambiguous(scored, asker=_FakeAsker([("drop", 0.9)]), deadline=time.monotonic() - 1)
+    assert resolved[0].decision == "keep"
+    assert resolved[0].reason == "deadline_reached"

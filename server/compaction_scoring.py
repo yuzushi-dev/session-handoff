@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,3 +74,35 @@ def heuristic_score(
             continue
         scored.append(ScoredItem(call, result, "ambiguous", "no_heuristic_signal"))
     return scored
+
+
+CONFIDENCE_FLOOR = 0.6
+
+
+def resolve_ambiguous(
+    items: list[ScoredItem],
+    *,
+    asker: Any | None,
+    deadline: float,
+) -> list[ScoredItem]:
+    resolved: list[ScoredItem] = []
+    for item in items:
+        if item.decision != "ambiguous":
+            resolved.append(item)
+            continue
+        if asker is None:
+            resolved.append(ScoredItem(item.call, item.result, "keep", "no_asker"))
+            continue
+        if _time.monotonic() >= deadline:
+            resolved.append(ScoredItem(item.call, item.result, "keep", "deadline_reached"))
+            continue
+        try:
+            decision, confidence = asker.ask(item.call, item.result)
+        except Exception:
+            resolved.append(ScoredItem(item.call, item.result, "keep", "asker_error"))
+            continue
+        if confidence < CONFIDENCE_FLOOR or decision not in {"keep", "truncate", "drop"}:
+            resolved.append(ScoredItem(item.call, item.result, "keep", "low_confidence_default"))
+            continue
+        resolved.append(ScoredItem(item.call, item.result, decision, "local_model"))
+    return resolved
