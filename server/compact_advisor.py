@@ -31,9 +31,9 @@ except ImportError:  # direct `python server/compact_advisor.py` execution
     from typesafe_client import ChoiceQuestion, TypeSafeClient
 
 try:
-    from .migration_engine import _parse_claude, _read_jsonl
+    from .migration_engine import _parse_transcript_file
 except ImportError:  # direct `python server/compact_advisor.py` execution
-    from migration_engine import _parse_claude, _read_jsonl
+    from migration_engine import _parse_transcript_file
 
 COMPACT_HINT_ENV = "SESSION_HANDOFF_COMPACT_HINT"
 
@@ -121,9 +121,7 @@ def estimate_usage(transcript_path: str) -> float:
 
 
 def _recent_transcript_text(transcript_path: str, session_id: str, *, max_chars: int) -> str:
-    data = Path(transcript_path).read_bytes()
-    records = _read_jsonl(data)
-    _metadata, events, _dropped = _parse_claude(records, session_id)
+    _metadata, events, _dropped = _parse_transcript_file(transcript_path, session_id)
     lines: list[str] = []
     for event in events:
         kind = event.get("kind")
@@ -143,29 +141,36 @@ def advise(
     client: TypeSafeClient | None = None,
 ) -> str | None:
     """Return a hint message if this looks like a good checkpoint to
-    /compact, else None. Fail-open: any error returns None, never raises."""
-    client = client or TypeSafeClient()
-    if not client.is_configured():
+    /compact, else None. Fail-open: any error returns None, never raises -
+    enforced here directly (not just by main()'s own broad catch), so any
+    other caller of advise() gets the same guarantee the hook relies on:
+    a Codex paginated-history projection failure, a malformed transcript,
+    or a client error all degrade to "no hint" the same way."""
+    try:
+        client = client or TypeSafeClient()
+        if not client.is_configured():
+            return None
+        text = _recent_transcript_text(transcript_path, session_id, max_chars=RECENT_TEXT_MAX_CHARS)
+        state = {"recent_conversation": text}
+        questions = {
+            "done": ChoiceQuestion(instructions=DONE_INSTRUCTIONS, criteria=DONE_CRITERIA),
+            "shape": ChoiceQuestion(instructions=SHAPE_INSTRUCTIONS, criteria=SHAPE_CRITERIA),
+        }
+        result = client.evaluate(state, questions)
+        if not result.ok:
+            return None
+        done = result.answers.get("done")
+        shape = result.answers.get("shape")
+        if done is None or shape is None:
+            return None
+        finished_p = done.probabilities.get("finished", 0.0)
+        hands_on_p = shape.probabilities.get("hands_on", 0.0)
+        usage = estimate_usage(transcript_path)
+        if not qualifies(finished_p, hands_on_p, usage):
+            return None
+        return HINT_MESSAGE
+    except Exception:
         return None
-    text = _recent_transcript_text(transcript_path, session_id, max_chars=RECENT_TEXT_MAX_CHARS)
-    state = {"recent_conversation": text}
-    questions = {
-        "done": ChoiceQuestion(instructions=DONE_INSTRUCTIONS, criteria=DONE_CRITERIA),
-        "shape": ChoiceQuestion(instructions=SHAPE_INSTRUCTIONS, criteria=SHAPE_CRITERIA),
-    }
-    result = client.evaluate(state, questions)
-    if not result.ok:
-        return None
-    done = result.answers.get("done")
-    shape = result.answers.get("shape")
-    if done is None or shape is None:
-        return None
-    finished_p = done.probabilities.get("finished", 0.0)
-    hands_on_p = shape.probabilities.get("hands_on", 0.0)
-    usage = estimate_usage(transcript_path)
-    if not qualifies(finished_p, hands_on_p, usage):
-        return None
-    return HINT_MESSAGE
 
 
 def main(*, stdin_text: str | None = None, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:

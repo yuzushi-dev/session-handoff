@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -350,6 +351,67 @@ def _codex_item(
     else:
         dropped[f"response_item:{item_type or 'missing'}"] += 1
     return 0
+
+
+def _parse_transcript_auto(
+    records: list[dict[str, Any]], session_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]], Counter[str]]:
+    """Parse already-read transcript records without the caller having to
+    know which client wrote them. A Codex rollout's first record always has
+    type "session_meta" (see _parse_codex); anything else is treated as
+    Claude's format. This does NOT handle Codex's paginated (SQLite-backed)
+    history mode - that needs the transcript's file location, not just its
+    records, to find the sibling thread_history_1.sqlite; see
+    _parse_transcript_file, which callers reading from a path should use
+    instead. Unlike convert_native_session, which is always told the source
+    client explicitly because migration is a deliberate user action, this
+    exists for hook code that only has a transcript_path and has to guess."""
+    if records and records[0].get("type") == "session_meta":
+        return _parse_codex(records, session_id)
+    return _parse_claude(records, session_id)
+
+
+def _parse_transcript_file(
+    transcript_path: str, session_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]], Counter[str]]:
+    """Parse a transcript file, including Codex's paginated (SQLite-backed)
+    history mode, which _parse_transcript_auto alone can't do since it only
+    sees already-read records. Used by server/checkpoint.py and
+    server/compact_advisor.py, which only have a transcript_path and
+    session_id from the hook payload - never told which client is running.
+
+    The paginated path re-derives Codex's home directory from the
+    CODEX_HOME environment variable (or ~/.codex), the same default
+    convert_native_session itself uses, then reuses the same, already
+    validated projection this codebase's migration path already relies on
+    (server/paginated_migration.py's project_paginated_codex): it reads
+    thread_history_1.sqlite and writes a temporary legacy-format rollout to
+    a throwaway directory that is deleted as soon as this function returns,
+    whether it succeeds or raises.
+    """
+    data = Path(transcript_path).read_bytes()
+    records = _read_jsonl(data)
+    if not (records and records[0].get("type") == "session_meta"):
+        return _parse_transcript_auto(records, session_id)
+    metadata = records[0].get("payload")
+    history_mode = metadata.get("history_mode") if isinstance(metadata, dict) else None
+    if history_mode in (None, "", "legacy"):
+        return _parse_transcript_auto(records, session_id)
+
+    try:
+        from .paginated_migration import project_paginated_codex
+    except ImportError:  # direct `python server/migration_engine.py` execution
+        from paginated_migration import project_paginated_codex
+    try:
+        from .migration import _default_home
+    except ImportError:  # direct `python server/migration_engine.py` execution
+        from migration import _default_home
+
+    source_home = _default_home("codex")
+    with tempfile.TemporaryDirectory(prefix="session-handoff-paginated-") as directory:
+        projection = project_paginated_codex(source_home, session_id, output_root=directory)
+        projected_records = _read_jsonl(projection.rollout_path.read_bytes())
+        return _parse_transcript_auto(projected_records, session_id)
 
 
 def _write_claude(

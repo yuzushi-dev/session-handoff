@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import time as _time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
 try:
-    from .migration_engine import _parse_claude, _read_jsonl
+    from .migration_engine import _parse_transcript_file
 except ImportError:  # direct `python server/compaction_scoring.py` execution
-    from migration_engine import _parse_claude, _read_jsonl
+    from migration_engine import _parse_transcript_file
 
 
 def pair_tool_events(events: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
@@ -63,6 +62,11 @@ def heuristic_score(
         if result is None:
             scored.append(ScoredItem(call, result, "keep", "no_result_yet"))
             continue
+        # Known limitation: Codex's tool_result events (migration_engine's
+        # _parse_codex/_codex_item) never set is_error at all, unlike
+        # Claude's. Under Codex this check can never fire, so a Codex tool
+        # error only gets the ordinary duplicate/size/ambiguous scoring, not
+        # this specific never-drop-an-error guarantee.
         if result.get("is_error"):
             scored.append(ScoredItem(call, result, "keep", "error"))
             continue
@@ -138,10 +142,9 @@ def score_transcript(
     asker: Any | None = None,
     deadline: float | None = None,
 ) -> list[ScoredItem]:
-    """Parse a real Claude transcript JSONL file and score its tool calls."""
-    data = Path(transcript_path).read_bytes()
-    records = _read_jsonl(data)
-    _metadata, events, _dropped = _parse_claude(records, session_id)
+    """Parse a real transcript JSONL file (Claude or Codex - legacy or
+    paginated - auto-detected) and score its tool calls."""
+    _metadata, events, _dropped = _parse_transcript_file(transcript_path, session_id)
     pairs = pair_tool_events(events)
     return score_pairs(
         pairs,
