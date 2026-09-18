@@ -1,8 +1,8 @@
-"""TypeSafe AI (Jev System One) Client for structured semantic evaluations.
+"""TypeSafe AI (Jev System One) Client for Session Handoff.
 
-Provides typed questions (choice, score, noul), automatic secret redaction
-across both state and questions, fail-open error handling, and support
-for offline/calibrated fallback.
+Provides structured judgment primitives (Choice, Score, Noul) with strict
+bidirectional secret redaction, offline heuristic fallback, and sub-second
+fail-open execution. Conforms to TypeSafe System One API (POST /v1/systemone).
 """
 
 from __future__ import annotations
@@ -10,76 +10,65 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import time
+from typing import Any, Callable
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Literal
 
-logger = logging.getLogger("session_handoff.typesafe")
+logger = logging.getLogger(__name__)
 
 try:
-    from .redaction import redact_secrets
+    from server.sanitize import redact_secrets
 except ImportError:
-    try:
-        from server.redaction import redact_secrets
-    except ImportError:
-        # Global flag (?i) placed at start of pattern for Python 3.11+ compatibility
-        _FALLBACK_TOKEN_RE = re.compile(
-            r"(?i)\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
-            r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|"
-            r"(?i)\b(?:key|token|secret|password)\s*[:=]\s*['\"][^'\"]+['\"]"
-        )
-        def redact_secrets(text: str) -> tuple[str, int]:
-            return _FALLBACK_TOKEN_RE.sub("[REDACTED]", text), 1
+    _SECRET_PATTERN = re.compile(
+        r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
+        r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|"
+        r"postgres(?:ql)?://[^@\s]+@[^\s/]+|"
+        r"(?:key|token|secret|password|passwd)\s*[:=]\s*['\"][^'\"]+['\"]",
+        flags=re.IGNORECASE,
+    )
+
+    def redact_secrets(text: str) -> tuple[str, list[str]]:
+        findings = _SECRET_PATTERN.findall(text)
+        redacted = _SECRET_PATTERN.sub("[REDACTED]", text)
+        return redacted, findings
 
 
-QuestionType = Literal["choice", "score", "noul"]
-
-
-@dataclass(frozen=True)
-class ChoiceQuestion:
-    instructions: str
-    criteria: dict[str, str]
-    type: QuestionType = "choice"
+@dataclass
+class Question:
+    type: str
+    instructions: Any
+    criteria: Any = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "instructions": self.instructions,
-            "criteria": self.criteria,
-        }
-
-
-@dataclass(frozen=True)
-class ScoreQuestion:
-    instructions: str
-    criteria: list[str]
-    type: QuestionType = "score"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "instructions": self.instructions,
-            "criteria": self.criteria,
-        }
-
-
-@dataclass(frozen=True)
-class NoulQuestion:
-    instructions: str
-    type: QuestionType = "noul"
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "type": self.type,
             "instructions": self.instructions,
         }
+        if self.criteria is not None:
+            data["criteria"] = self.criteria
+        return data
 
 
-Question = ChoiceQuestion | ScoreQuestion | NoulQuestion
+@dataclass
+class ChoiceQuestion(Question):
+    def __init__(self, instructions: Any, criteria: dict[str, Any]) -> None:
+        super().__init__(type="choice", instructions=instructions, criteria=criteria)
+
+
+@dataclass
+class ScoreQuestion(Question):
+    def __init__(self, instructions: Any, criteria: list[str]) -> None:
+        super().__init__(type="score", instructions=instructions, criteria=criteria)
+
+
+@dataclass
+class NoulQuestion(Question):
+    def __init__(self, instructions: Any, criteria: dict[str, str] | None = None) -> None:
+        super().__init__(type="noul", instructions=instructions, criteria=criteria)
 
 
 @dataclass
@@ -88,32 +77,36 @@ class Answer:
     confidence: float = 1.0
     probabilities: dict[str, float] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    type: str = ""
 
 
 @dataclass
 class EvaluationResult:
     ok: bool
     answers: dict[str, Answer]
-    model: str
-    elapsed_ms: float
+    model: str = "jev-latest"
+    elapsed_ms: float = 0.0
     error: str | None = None
     offline: bool = False
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 class TypeSafeClient:
-    """System One client for TypeSafe AI (Jev)."""
+    """Fail-open client for TypeSafe System One judgments with bidirectional redaction."""
 
-    _auth_warned: bool = False
+    _auth_warned = False
 
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str = "https://api.typesafe.ai/v1",
         timeout: float = 1.5,
+        model: str = "jev-latest",
         offline_fallback: bool = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.default_model = model
         self.offline_fallback = offline_fallback
         self.api_key = api_key or self._resolve_api_key()
 
@@ -173,11 +166,13 @@ class TypeSafeClient:
         questions: dict[str, Question],
         *,
         timeout: float | None = None,
+        model: str | None = None,
         offline_handler: Callable[[dict[str, Any], dict[str, Question]], dict[str, Answer]] | None = None,
     ) -> EvaluationResult:
         """Evaluate typed questions over state with secret redaction and fail-open handling."""
         start_time = time.perf_counter()
         call_timeout = timeout or self.timeout
+        eval_model = model or self.default_model
 
         # Step 1: Redact both state AND questions for comprehensive privacy
         safe_state = self._redact_value(state)
@@ -216,13 +211,14 @@ class TypeSafeClient:
                 offline=True,
             )
 
-        # Step 3: Build HTTP request
+        # Step 3: Build HTTP request conforming to /v1/systemone
         payload = {
             "state": safe_state,
+            "model": eval_model,
             "questions": {k: q.to_dict() for k, q in safe_questions.items()},
         }
         body = json.dumps(payload).encode("utf-8")
-        url = f"{self.base_url}/evaluate"
+        url = f"{self.base_url}/systemone"
         req = urllib.request.Request(
             url,
             data=body,
@@ -240,18 +236,31 @@ class TypeSafeClient:
             elapsed = (time.perf_counter() - start_time) * 1000
             answers = {}
             for q_id, q_ans in data.get("answers", {}).items():
+                if not isinstance(q_ans, dict):
+                    continue
+                val = q_ans.get("value")
+                if val is None:
+                    if "noul" in q_ans:
+                        val = q_ans["noul"]
+                    elif "choice" in q_ans:
+                        val = q_ans["choice"]
+                    elif "score" in q_ans:
+                        val = q_ans["score"]
+
                 answers[q_id] = Answer(
-                    value=q_ans.get("value"),
-                    confidence=float(q_ans.get("confidence", 1.0)),
+                    value=val,
+                    confidence=float(q_ans.get("confidence", 1.0 if "noul" in q_ans else 0.0)),
                     probabilities=q_ans.get("probabilities", {}),
                     raw=q_ans,
+                    type=q_ans.get("type", ""),
                 )
             return EvaluationResult(
                 ok=True,
                 answers=answers,
-                model=data.get("model", "jev-1"),
+                model=data.get("model", eval_model),
                 elapsed_ms=elapsed,
                 offline=False,
+                usage=data.get("usage", {}),
             )
         except urllib.error.HTTPError as http_err:
             elapsed = (time.perf_counter() - start_time) * 1000
@@ -275,7 +284,7 @@ class TypeSafeClient:
             return EvaluationResult(
                 ok=False,
                 answers={},
-                model="jev-1",
+                model=eval_model,
                 elapsed_ms=elapsed,
                 error=f"TypeSafe HTTP {http_err.code}: {http_err.reason}",
                 offline=False,
@@ -298,7 +307,7 @@ class TypeSafeClient:
             return EvaluationResult(
                 ok=False,
                 answers={},
-                model="jev-1",
+                model=eval_model,
                 elapsed_ms=elapsed,
                 error=f"TypeSafe evaluation failed: {exc}",
                 offline=False,
