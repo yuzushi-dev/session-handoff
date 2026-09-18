@@ -181,3 +181,13 @@ def test_render_tool_summary_lists_kept_and_dropped_items():
     assert "file.py" in text  # kept item's output is verbatim
     assert "dropped" in text.lower()
     assert "duplicate_output" in text
+
+
+def test_render_tool_summary_labels_truncated_item_with_its_real_reason():
+    call = {"id": "t1", "name": "Bash", "input": {"command": "ls"}}
+    result = {"output": "x" * 2000, "is_error": False}
+    truncated_via_model = ScoredItem(call, result, "truncate", "local_model")
+    lines = render_tool_summary([truncated_via_model])
+    text = "\n".join(lines)
+    assert "reason: local_model" in text
+    assert "reason: oversized_output" not in text
