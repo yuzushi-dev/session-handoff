@@ -19,6 +19,11 @@ try:
 except ImportError:  # direct `python server/checkpoint.py` execution
     from handoff_mcp import redact_secrets
 
+try:
+    from .compaction_scoring import render_tool_summary, score_transcript
+except ImportError:  # direct `python server/checkpoint.py` execution
+    from compaction_scoring import render_tool_summary, score_transcript
+
 
 STATE_PATH = Path(".local/state/session-handoff/checkpoints")
 EVENTS_FILENAME = "events.jsonl"
@@ -180,7 +185,22 @@ def _atomic_write(path: Path, content: str) -> None:
             Path(temporary_name).unlink(missing_ok=True)
 
 
-def _render(event: dict[str, str | None], root: Path, git: dict[str, str], created_at: str) -> str:
+def _tool_summary_lines(event: dict[str, str | None], *, deadline: float) -> list[str]:
+    if time.monotonic() >= deadline:
+        return ["- Tool summary: unavailable from lifecycle hook."]
+    path = event.get("transcript_path")
+    session_id = event.get("session_id")
+    if not path or not session_id or not Path(path).is_file():
+        return ["- Tool summary: unavailable from lifecycle hook."]
+    try:
+        scored = score_transcript(path, session_id=session_id, deadline=deadline)
+    except Exception:
+        return ["- Tool summary: unavailable from lifecycle hook."]
+    return ["- Tool summary:", ""] + render_tool_summary(scored)
+
+
+def _render(event: dict[str, str | None], root: Path, git: dict[str, str], created_at: str, *,
+           deadline: float) -> str:
     lines = [
         "## Goal", "", f"Automatic recovery checkpoint for session `{event['session_id']}`.",
         "This is deterministic evidence, not a semantic handoff.",
@@ -195,7 +215,7 @@ def _render(event: dict[str, str | None], root: Path, git: dict[str, str], creat
         f"- Workspace: `{root}`", f"- Session: `{event['session_id']}`",
         f"- Model: `{event['model'] or '<not provided>'}`",
         f"- Transcript: `{event['transcript_path'] or '<not provided>'}`",
-        f"- Captured at: `{created_at}`", "- Tool summary: unavailable from lifecycle hook.",
+        f"- Captured at: `{created_at}`", "{{TOOL_SUMMARY}}",
         "- Plan/TODO cursor: unavailable from lifecycle hook.", "", "## Files Observed", "",
         "- These paths are the current Git worktree state, not a historical edit ledger.",
     ]
@@ -212,6 +232,8 @@ def _render(event: dict[str, str | None], root: Path, git: dict[str, str], creat
         lines.extend([f"- Git {name}:", "", "```text", value, "```"])
     lines.extend(["", "## Next Steps", "", "1. Read this checkpoint only as recovery evidence.",
                   "2. Re-check the repository and the client transcript before acting."])
+    tool_summary_index = lines.index("{{TOOL_SUMMARY}}")
+    lines[tool_summary_index : tool_summary_index + 1] = _tool_summary_lines(event, deadline=deadline)
     redacted, _ = redact_secrets("\n".join(lines) + "\n")
     return redacted
 
@@ -222,10 +244,11 @@ def capture_checkpoint(payload: dict[str, Any], *, home: Path | None = None,
     event = _event(payload)
     home = (home or Path.home()).expanduser().resolve()
     created_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
-    root, git = _git_state(Path(event["cwd"] or "."), deadline=deadline)
+    effective_deadline = deadline if deadline is not None else time.monotonic() + GIT_COLLECTION_BUDGET_SECONDS
+    root, git = _git_state(Path(event["cwd"] or "."), deadline=effective_deadline)
     directory = home / STATE_PATH / _workspace_key(root)
     path = directory / f"{_session_name(event['session_id'])}.md"
-    content = _render(event, root, git, created_at)
+    content = _render(event, root, git, created_at, deadline=effective_deadline)
     _atomic_write(path, content)
     checkpoint_bytes = len(content.encode("utf-8"))
     latest = directory / "latest.json"

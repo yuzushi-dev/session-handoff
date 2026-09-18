@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
+from urllib.request import urlopen
 
 try:
     from . import handoff_store
@@ -112,6 +114,7 @@ def probe_command_matrix(
         "clients": clients,
         "flows": flows,
         "central_store": central_store,
+        "compaction_scoring": probe_compaction_scoring(),
         "ready": all(flow["ready"] for flow in flows.values()) and central_ready,
     }
 
@@ -119,6 +122,24 @@ def probe_command_matrix(
 def probe_central_store() -> dict[str, Any]:
     """Return read-only central-store health, including a non-mutating catalog check."""
     return handoff_store.probe_health()
+
+
+def probe_compaction_scoring(
+    *, model: str = "smollm2:1.7b", base_url: str = "http://localhost:11434"
+) -> dict[str, bool]:
+    """Report local-scorer readiness distinctly: installed, reachable, model present."""
+    installed = shutil.which("ollama") is not None
+    if not installed:
+        return {"installed": False, "reachable": False, "model_pulled": False}
+    try:
+        with urlopen(f"{base_url}/api/tags", timeout=1.0) as response:
+            payload = json.loads(response.read())
+    except (OSError, ValueError):
+        return {"installed": True, "reachable": False, "model_pulled": False}
+    if not isinstance(payload, dict):
+        return {"installed": True, "reachable": True, "model_pulled": False}
+    names = {entry.get("name") for entry in payload.get("models", []) if isinstance(entry, dict)}
+    return {"installed": True, "reachable": True, "model_pulled": model in names}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -151,6 +172,11 @@ def render_human(result: dict[str, Any]) -> str:
     lines.append(f"  data: {central['data_root']['status']} — {central['data_root']['path']}")
     lines.append(f"  state: {central['state_root']['status']} — {central['state_root']['path']}")
     lines.append(f"  catalog: {central['catalog']['status']} — {central['catalog']['path']}")
+    scoring = result["compaction_scoring"]
+    lines.append(
+        f"- checkpoint local scorer: installed={scoring['installed']} "
+        f"reachable={scoring['reachable']} model_pulled={scoring['model_pulled']}"
+    )
     return "\n".join(lines)
 
 
