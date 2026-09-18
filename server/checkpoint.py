@@ -20,9 +20,21 @@ except ImportError:  # direct `python server/checkpoint.py` execution
     from handoff_mcp import redact_secrets
 
 try:
-    from .compaction_scoring import render_tool_summary, score_transcript
+    from .compaction_scoring import (
+        OllamaAsker,
+        TypeSafeAsker,
+        render_tool_summary,
+        score_transcript,
+    )
 except ImportError:  # direct `python server/checkpoint.py` execution
-    from compaction_scoring import render_tool_summary, score_transcript
+    from compaction_scoring import (
+        OllamaAsker,
+        TypeSafeAsker,
+        render_tool_summary,
+        score_transcript,
+    )
+
+CHECKPOINT_SCORER_ENV = "SESSION_HANDOFF_CHECKPOINT_SCORER"
 
 
 STATE_PATH = Path(".local/state/session-handoff/checkpoints")
@@ -185,6 +197,20 @@ def _atomic_write(path: Path, content: str) -> None:
             Path(temporary_name).unlink(missing_ok=True)
 
 
+def _checkpoint_asker() -> Any | None:
+    """Opt-in only: unset (the default) means heuristic-only, unchanged from
+    before either asker existed. Never activates on its own, never sends
+    anything anywhere unless the user explicitly chose a backend here on top
+    of configuring its own credentials.
+    """
+    backend = os.environ.get(CHECKPOINT_SCORER_ENV, "").strip().lower()
+    if backend == "ollama":
+        return OllamaAsker()
+    if backend == "typesafe":
+        return TypeSafeAsker()
+    return None
+
+
 def _tool_summary_lines(event: dict[str, str | None], *, deadline: float) -> list[str]:
     if time.monotonic() >= deadline:
         return ["- Tool summary: unavailable from lifecycle hook."]
@@ -193,7 +219,9 @@ def _tool_summary_lines(event: dict[str, str | None], *, deadline: float) -> lis
     if not path or not session_id or not Path(path).is_file():
         return ["- Tool summary: unavailable from lifecycle hook."]
     try:
-        scored = score_transcript(path, session_id=session_id, deadline=deadline)
+        scored = score_transcript(
+            path, session_id=session_id, deadline=deadline, asker=_checkpoint_asker()
+        )
     except Exception:
         return ["- Tool summary: unavailable from lifecycle hook."]
     return ["- Tool summary:", ""] + render_tool_summary(scored)

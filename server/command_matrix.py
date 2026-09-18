@@ -115,6 +115,7 @@ def probe_command_matrix(
         "flows": flows,
         "central_store": central_store,
         "compaction_scoring": probe_compaction_scoring(),
+        "compaction_scoring_typesafe": probe_typesafe_scoring(),
         "ready": all(flow["ready"] for flow in flows.values()) and central_ready,
     }
 
@@ -140,6 +141,20 @@ def probe_compaction_scoring(
         return {"installed": True, "reachable": True, "model_pulled": False}
     names = {entry.get("name") for entry in payload.get("models", []) if isinstance(entry, dict)}
     return {"installed": True, "reachable": True, "model_pulled": model in names}
+
+
+def probe_typesafe_scoring() -> dict[str, bool]:
+    """Report only whether a TypeSafe credential is configured.
+
+    Never makes a network call to verify the key works: this module's own
+    "provider-free readiness matrix" contract (`provider_calls: 0`) covers
+    TypeSafe too, unlike Ollama's `/api/tags` check, which stays local.
+    """
+    try:
+        from .typesafe_client import TypeSafeClient
+    except ImportError:  # Direct `python server/command_matrix.py` invocation.
+        from typesafe_client import TypeSafeClient
+    return {"configured": TypeSafeClient().is_configured()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,6 +192,8 @@ def render_human(result: dict[str, Any]) -> str:
         f"- checkpoint local scorer: installed={scoring['installed']} "
         f"reachable={scoring['reachable']} model_pulled={scoring['model_pulled']}"
     )
+    typesafe = result["compaction_scoring_typesafe"]
+    lines.append(f"- checkpoint TypeSafe scorer: configured={typesafe['configured']}")
     return "\n".join(lines)
 
 

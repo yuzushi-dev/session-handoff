@@ -3,6 +3,7 @@ from io import StringIO
 import os
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -263,3 +264,62 @@ def test_capture_checkpoint_falls_back_to_placeholder_when_transcript_is_missing
     result = capture_checkpoint(payload, home=home)
     content = Path(result["path"]).read_text(encoding="utf-8")
     assert "Tool summary: unavailable from lifecycle hook" in content
+
+
+def test_checkpoint_asker_defaults_to_none_when_unset(monkeypatch):
+    monkeypatch.delenv(checkpoint.CHECKPOINT_SCORER_ENV, raising=False)
+    assert checkpoint._checkpoint_asker() is None
+
+
+def test_checkpoint_asker_ignores_unrecognized_value(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "something-else")
+    assert checkpoint._checkpoint_asker() is None
+
+
+def test_checkpoint_asker_selects_ollama_explicitly(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "ollama")
+    asker = checkpoint._checkpoint_asker()
+    assert isinstance(asker, checkpoint.OllamaAsker)
+
+
+def test_checkpoint_asker_selects_typesafe_explicitly(monkeypatch):
+    monkeypatch.setenv(checkpoint.CHECKPOINT_SCORER_ENV, "typesafe")
+    asker = checkpoint._checkpoint_asker()
+    assert isinstance(asker, checkpoint.TypeSafeAsker)
+
+
+def test_checkpoint_asker_works_under_direct_module_execution():
+    # Regression: hooks.json invokes this file directly
+    # (`python3 .../server/checkpoint.py`), not as part of the `server`
+    # package, so any lazy import inside an asker class must use the same
+    # relative-then-flat fallback every other import in this codebase
+    # already uses. A bare absolute import (`from server.x import y`)
+    # silently breaks the opt-in path in the real hook: the ImportError is
+    # swallowed by _tool_summary_lines' broad except, failing safe to the
+    # placeholder but never actually calling the chosen backend.
+    server_dir = Path(checkpoint.__file__).resolve().parent
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import checkpoint; print(type(checkpoint._checkpoint_asker()).__name__)"],
+        cwd=server_dir,
+        env={**os.environ, checkpoint.CHECKPOINT_SCORER_ENV: "typesafe"},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "TypeSafeAsker"
+
+
+def test_capture_checkpoint_behavior_unchanged_when_scorer_env_is_unset(tmp_path, monkeypatch):
+    # Non-regression: the default (no opt-in) path must produce exactly the
+    # same checkpoint content as before either asker existed.
+    monkeypatch.delenv(checkpoint.CHECKPOINT_SCORER_ENV, raising=False)
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    payload = event(repo)
+    _write_transcript_with_one_call(Path(payload["transcript_path"]))
+    monkeypatch.setattr(checkpoint.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    result = capture_checkpoint(payload, home=home)
+    content = Path(result["path"]).read_text(encoding="utf-8")
+    assert "Bash" in content
+    assert "pinned_recent" in content

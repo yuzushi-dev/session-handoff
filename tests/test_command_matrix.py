@@ -272,6 +272,32 @@ def test_probe_compaction_scoring_handles_non_dict_json_response(monkeypatch):
     assert status == {"installed": True, "reachable": True, "model_pulled": False}
 
 
+def test_probe_typesafe_scoring_reports_unconfigured(monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "server.typesafe_client.TypeSafeClient._resolve_api_key",
+        staticmethod(lambda: None),
+    )
+    assert command_matrix.probe_typesafe_scoring() == {"configured": False}
+
+
+def test_probe_typesafe_scoring_reports_configured_via_env(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-value")
+    assert command_matrix.probe_typesafe_scoring() == {"configured": True}
+
+
+def test_probe_typesafe_scoring_makes_no_network_call(monkeypatch):
+    # doctor's own contract is provider_calls: 0; TypeSafe is a real remote
+    # provider, unlike Ollama's local /api/tags check, so this must never
+    # attempt a request regardless of configuration state.
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("probe_typesafe_scoring must not make network calls")
+
+    monkeypatch.setattr("server.typesafe_client.urllib.request.urlopen", _forbidden)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-value")
+    command_matrix.probe_typesafe_scoring()
+
+
 def test_doctor_human_mode_is_opt_in_and_keeps_json_default(tmp_path):
     human = subprocess.run(
         [
