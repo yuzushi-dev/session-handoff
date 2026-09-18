@@ -122,9 +122,11 @@ def test_resolve_ambiguous_stops_before_deadline():
 
 
 def test_most_recent_turn_error_survives_even_with_a_confident_drop_verdict():
+    ambiguous_case = _pair("ambiguous", output="something unremarkable")
     recent_error = _pair("recent", output="Traceback: boom", is_error=True)
-    pairs = [_pair(str(i)) for i in range(5)] + [recent_error]
-    asker = _FakeAsker([("drop", 0.99)])  # would drop it if ever asked
+    pairs = [ambiguous_case] + [_pair(str(i)) for i in range(5)] + [recent_error]
+    asker = _FakeAsker([("drop", 0.99)])  # would drop the ambiguous item if consulted; must never see the error
     scored = score_pairs(pairs, preserve_recent=6, asker=asker, deadline=time.monotonic() + 5)
     assert scored[-1].decision == "keep"
-    assert asker.seen == []  # never consulted — pinned errors bypass scoring entirely
+    assert asker.seen  # the asker WAS consulted for something...
+    assert all(call["id"] != "recent" for call, _ in asker.seen)  # ...but never for the recent error
