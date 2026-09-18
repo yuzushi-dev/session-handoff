@@ -12,7 +12,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +61,6 @@ def _offline_rubric_heuristic(
     """Calibrated offline heuristic evaluator matching JUDGE.md rules."""
     context = state.get("supplied_context") or ""
     continuation = state.get("continuation") or ""
-    diff = state.get("workspace_diff") or ""
     verify = state.get("verification") or ""
     acceptance = state.get("acceptance") or ""
 

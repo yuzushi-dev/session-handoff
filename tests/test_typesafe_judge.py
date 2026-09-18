@@ -29,7 +29,12 @@ def test_question_serialization():
     assert q_score.to_dict()["type"] == "score"
 
 
-def test_client_redacts_both_state_and_questions():
+def test_client_redacts_both_state_and_questions(monkeypatch):
+    # Force offline mode deterministically: a real TYPESAFE_API_KEY or a
+    # ~/.config/typesafe/auth.json on the machine running this test would
+    # otherwise make the client take the live HTTP path instead of the
+    # offline_handler this test exercises.
+    monkeypatch.setattr(TypeSafeClient, "_resolve_api_key", staticmethod(lambda: None))
     client = TypeSafeClient(offline_fallback=True)
     captured_state = {}
     captured_questions = {}
