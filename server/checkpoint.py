@@ -186,6 +186,8 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _tool_summary_lines(event: dict[str, str | None], *, deadline: float) -> list[str]:
+    if time.monotonic() >= deadline:
+        return ["- Tool summary: unavailable from lifecycle hook."]
     path = event.get("transcript_path")
     session_id = event.get("session_id")
     if not path or not session_id or not Path(path).is_file():

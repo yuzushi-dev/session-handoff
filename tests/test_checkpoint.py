@@ -243,6 +243,17 @@ def test_capture_checkpoint_includes_real_tool_summary_when_transcript_is_readab
     assert "Bash" in content
 
 
+def test_tool_summary_returns_placeholder_immediately_when_deadline_already_passed(tmp_path):
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript_with_one_call(transcript)
+    payload_event = {
+        "transcript_path": str(transcript),
+        "session_id": "session-123",
+    }
+    lines = checkpoint._tool_summary_lines(payload_event, deadline=time.monotonic() - 1)
+    assert lines == ["- Tool summary: unavailable from lifecycle hook."]
+
+
 def test_capture_checkpoint_falls_back_to_placeholder_when_transcript_is_missing(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     home = tmp_path / "home"
