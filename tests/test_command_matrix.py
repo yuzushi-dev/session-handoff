@@ -219,6 +219,41 @@ def test_doctor_reports_read_only_catalog_as_unwritable(tmp_path, monkeypatch):
     assert health["writable"] is False
 
 
+def test_probe_compaction_scoring_reports_ollama_not_installed(monkeypatch):
+    monkeypatch.setattr(command_matrix.shutil, "which", lambda name: None)
+    status = command_matrix.probe_compaction_scoring(model="smollm2:1.7b")
+    assert status == {"installed": False, "reachable": False, "model_pulled": False}
+
+
+def test_probe_compaction_scoring_reports_installed_but_unreachable(monkeypatch):
+    monkeypatch.setattr(command_matrix.shutil, "which", lambda name: "/usr/local/bin/ollama")
+
+    def fake_urlopen(url, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(command_matrix, "urlopen", fake_urlopen)
+    status = command_matrix.probe_compaction_scoring(model="smollm2:1.7b")
+    assert status == {"installed": True, "reachable": False, "model_pulled": False}
+
+
+def test_probe_compaction_scoring_reports_model_pulled(monkeypatch):
+    monkeypatch.setattr(command_matrix.shutil, "which", lambda name: "/usr/local/bin/ollama")
+
+    class _Resp:
+        def read(self):
+            return json.dumps({"models": [{"name": "smollm2:1.7b"}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(command_matrix, "urlopen", lambda url, timeout: _Resp())
+    status = command_matrix.probe_compaction_scoring(model="smollm2:1.7b")
+    assert status == {"installed": True, "reachable": True, "model_pulled": True}
+
+
 def test_doctor_human_mode_is_opt_in_and_keeps_json_default(tmp_path):
     human = subprocess.run(
         [
