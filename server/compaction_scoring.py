@@ -162,7 +162,7 @@ def render_tool_summary(items: list[ScoredItem]) -> list[str]:
         output = "" if item.result is None else item.result.get("output", "")
         output_text = output if isinstance(output, str) else str(output)
         if item.decision == "truncate":
-            output_text = output_text[:1000] + f"\n<truncated, reason: {item.reason}>"
+            output_text = output_text[:1000] + "\n<truncated, reason: oversized_output>"
         lines.append(f"- `{name}` ({item.decision}, {item.reason}):")
         lines.extend(["", "  ```text", f"  {output_text}", "  ```", ""])
     return lines
