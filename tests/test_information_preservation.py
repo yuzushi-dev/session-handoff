@@ -900,7 +900,7 @@ for line in sys.stdin:
 def test_real_pinned_app_server_forks_injected_history_without_provider(tmp_path):
     binary = Path(os.environ.get(
         "SESSION_HANDOFF_PINNED_CODEX",
-        "/home/cristina/.codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex",
+        str(Path.home() / ".codex/packages/standalone/releases/0.153.4-x86_64-unknown-linux-musl/bin/codex"),
     ))
     if not binary.is_file() or shutil.which("bwrap") is None:
         pytest.skip("pinned Codex ELF and bubblewrap are required")
