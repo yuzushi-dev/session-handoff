@@ -4,7 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from server import handoff_mcp, session_switch
+from server.version import VERSION_PATTERN
 
 
 ROOT = Path(__file__).parents[1]
@@ -59,6 +62,22 @@ def test_all_package_version_sources_agree():
         "failure_stage": "none",
     })
     assert event["plugin_version"] == package["version"]
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("0.7.4", True),
+        ("0.7", True),
+        ("0.7.4-jev", True),
+        ("0.7.4-jev.1", True),
+        ("0.7.4-", False),
+        ("0.7.4- jev", False),
+        ("abc", False),
+    ],
+)
+def test_version_pattern_accepts_optional_prerelease_suffix(version, expected):
+    assert bool(VERSION_PATTERN.fullmatch(version)) is expected
 
 
 def test_portable_mcp_config_uses_agent_plugins_paths():

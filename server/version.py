@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 
-VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?\Z")
+VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?\Z")
 _PACKAGE_JSON = Path(__file__).resolve().parents[1] / "package.json"
 
 
