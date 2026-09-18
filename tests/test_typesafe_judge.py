@@ -11,7 +11,7 @@ from server.typesafe_client import (
     ScoreQuestion,
     TypeSafeClient,
 )
-from benchmark.typesafe_judge import judge_blind_run
+from benchmark.typesafe_judge import judge_blind_run, judge_study
 
 
 def test_question_serialization():
@@ -121,3 +121,40 @@ def test_judge_blind_run_fails_loudly_on_eval_error():
 
         with pytest.raises(RuntimeError, match="TypeSafe benchmark evaluation failed"):
             judge_blind_run(blind_dir, client=FailingClient())
+
+
+def test_judge_study_processes_all_and_collects_failures(monkeypatch):
+    # Force offline mode deterministically, same reason as
+    # test_client_redacts_both_state_and_questions above.
+    monkeypatch.setattr(TypeSafeClient, "_resolve_api_key", staticmethod(lambda: None))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        blinded_root = Path(tmpdir)
+
+        good = blinded_root / "blind-a"
+        good.mkdir()
+        (good / "judge.json").write_text(json.dumps({
+            "schema_version": 1, "blind_id": "blind-a",
+            "facts": [], "stale_traps": [], "dod": [],
+        }), encoding="utf-8")
+
+        # Malformed: a fact missing its required "id" key raises KeyError
+        # inside judge_blind_run, deterministically, with no network involved.
+        bad = blinded_root / "blind-b"
+        bad.mkdir()
+        (bad / "judge.json").write_text(json.dumps({
+            "schema_version": 1, "blind_id": "blind-b",
+            "facts": [{"statement": "missing id key"}],
+            "stale_traps": [], "dod": [],
+        }), encoding="utf-8")
+
+        # No judge.json here: must be skipped silently, not counted as a failure.
+        (blinded_root / "not-a-blind-dir").mkdir()
+
+        summary = judge_study(blinded_root, client=TypeSafeClient(offline_fallback=True))
+
+        assert summary["judged"] == ["blind-a"]
+        assert "blind-b" in summary["failed"]
+        assert "id" in summary["failed"]["blind-b"]
+        assert "not-a-blind-dir" not in summary["failed"]
+        assert "not-a-blind-dir" not in summary["judged"]

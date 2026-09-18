@@ -312,9 +312,40 @@ def judge_blind_run(
     return payload
 
 
+def judge_study(blinded_root: Path, client: TypeSafeClient | None = None) -> dict[str, Any]:
+    """Judge every blind directory under a study's `blinded/` root.
+
+    Continues past a single run's failure so one malformed artifact does not
+    block judging the rest of the batch; failures are collected and returned,
+    never silently dropped.
+    """
+    client = client or TypeSafeClient()
+    judged: list[str] = []
+    failed: dict[str, str] = {}
+    for entry in sorted(blinded_root.iterdir()):
+        if not entry.is_dir() or not (entry / "judge.json").is_file():
+            continue
+        try:
+            judge_blind_run(entry, client=client)
+            judged.append(entry.name)
+        except Exception as exc:
+            failed[entry.name] = str(exc)
+    return {"judged": judged, "failed": failed}
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate blinded run with TypeSafe Jev")
-    parser.add_argument("blind_dir", type=Path, help="Directory containing blinded run artifacts")
+    parser = argparse.ArgumentParser(
+        description="Evaluate blinded run(s) with TypeSafe Jev: pass a single "
+        "blind directory (contains judge.json), or a study's 'blinded/' root "
+        "containing many."
+    )
+    parser.add_argument("path", type=Path, help="Blind directory or blinded/ root")
     args = parser.parse_args()
-    res = judge_blind_run(args.blind_dir)
-    print(json.dumps(res, indent=2))
+    if (args.path / "judge.json").is_file():
+        res = judge_blind_run(args.path)
+        print(json.dumps(res, indent=2))
+    else:
+        summary = judge_study(args.path)
+        print(json.dumps(summary, indent=2))
+        if summary["failed"]:
+            raise SystemExit(1)
