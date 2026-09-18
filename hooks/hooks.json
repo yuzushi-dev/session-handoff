@@ -38,6 +38,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/server/compact_advisor.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking compact-hint opt-in"
+          }
+        ]
+      }
     ]
   }
 }
