@@ -322,6 +322,18 @@ def test_typesafe_asker_uncertain_zone_is_zero_confidence_keep():
     assert (decision, confidence) == ("keep", 0.0)
 
 
+@pytest.mark.parametrize("noul", [0.30, 0.70])
+def test_typesafe_asker_uncertainty_zone_boundaries_are_inclusive(noul):
+    # Regression: the zone is documented as "0.30-0.70 inclusive" and the
+    # comparisons must be strict (> / <), not >= / <=, so a noul value
+    # exactly on either boundary still falls into the low-confidence branch
+    # instead of resolving as a confident decision.
+    client = _FakeTypeSafeClient(noul=noul)
+    asker = TypeSafeAsker(client=client)
+    decision, confidence = asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+    assert (decision, confidence) == ("keep", 0.0)
+
+
 def test_typesafe_asker_eval_failure_raises():
     client = _FakeTypeSafeClient(noul=None, ok=False, error="simulated failure")
     asker = TypeSafeAsker(client=client)

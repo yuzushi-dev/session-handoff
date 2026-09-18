@@ -240,13 +240,19 @@ class TypeSafeAsker:
 
     def __init__(self, client: Any | None = None) -> None:
         if client is None:
-            from server.typesafe_client import TypeSafeClient
+            try:
+                from .typesafe_client import TypeSafeClient
+            except ImportError:  # direct `python server/checkpoint.py` execution
+                from typesafe_client import TypeSafeClient
 
             client = TypeSafeClient()
         self.client = client
 
     def ask(self, call: dict[str, Any], result: dict[str, Any] | None) -> tuple[str, float]:
-        from server.typesafe_client import NoulQuestion
+        try:
+            from .typesafe_client import NoulQuestion
+        except ImportError:  # direct `python server/checkpoint.py` execution
+            from typesafe_client import NoulQuestion
 
         state = {
             "tool": call.get("name", "<unknown>"),
@@ -261,14 +267,16 @@ class TypeSafeAsker:
         if answer is None or not isinstance(answer.value, (int, float)):
             raise ValueError("TypeSafe returned no usable noul answer")
         noul = float(answer.value)
-        if noul >= TYPESAFE_HIGH:
+        if noul > TYPESAFE_HIGH:
             return "keep", noul
-        if noul <= TYPESAFE_LOW:
+        if noul < TYPESAFE_LOW:
             return "drop", 1.0 - noul
-        # TypeSafe's own documented uncertainty zone (0.30-0.70, see the
-        # consistency/noul cookbook): always report confidence 0.0 here,
-        # unconditionally below resolve_ambiguous's CONFIDENCE_FLOOR, so the
-        # existing low-confidence-defaults-to-keep safety net decides this
-        # case instead of us guessing a direction from a noul value TypeSafe
-        # itself flags as too uncertain to act on.
+        # TypeSafe's own documented uncertainty zone, 0.30-0.70 INCLUSIVE
+        # (see the consistency/noul cookbook): always report confidence 0.0
+        # here, unconditionally below resolve_ambiguous's CONFIDENCE_FLOOR,
+        # so the existing low-confidence-defaults-to-keep safety net decides
+        # this case instead of us guessing a direction from a noul value
+        # TypeSafe itself flags as too uncertain to act on. The comparisons
+        # above are strict (> / <), not >= / <=, so noul exactly at 0.30 or
+        # 0.70 falls into this branch too, not into a confident decision.
         return "keep", 0.0
