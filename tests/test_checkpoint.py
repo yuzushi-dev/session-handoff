@@ -209,3 +209,46 @@ def test_hook_main_fails_open_and_emits_empty_json_on_invalid_input(tmp_path, ca
 
     assert result == 0
     assert json.loads(capsys.readouterr().out) == {}
+
+
+def _write_transcript_with_one_call(path: Path) -> None:
+    records = [
+        {"type": "user", "sessionId": "session-123", "uuid": "u1", "message": {"role": "user", "content": "go"}},
+        {
+            "type": "assistant", "sessionId": "session-123", "uuid": "a1", "parentUuid": "u1",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo hi"}},
+            ]},
+        },
+        {
+            "type": "user", "sessionId": "session-123", "uuid": "u2", "parentUuid": "a1",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "hi", "is_error": False},
+            ]},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def test_capture_checkpoint_includes_real_tool_summary_when_transcript_is_readable(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    payload = event(repo)
+    _write_transcript_with_one_call(Path(payload["transcript_path"]))
+    monkeypatch.setattr(checkpoint.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    result = capture_checkpoint(payload, home=home)
+    content = Path(result["path"]).read_text(encoding="utf-8")
+    assert "Tool summary: unavailable from lifecycle hook" not in content
+    assert "Bash" in content
+
+
+def test_capture_checkpoint_falls_back_to_placeholder_when_transcript_is_missing(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    payload = event(repo)  # transcript_path points at a file that does not exist
+    monkeypatch.setattr(checkpoint.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""))
+    result = capture_checkpoint(payload, home=home)
+    content = Path(result["path"]).read_text(encoding="utf-8")
+    assert "Tool summary: unavailable from lifecycle hook" in content
