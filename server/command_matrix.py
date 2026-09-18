@@ -136,6 +136,8 @@ def probe_compaction_scoring(
             payload = json.loads(response.read())
     except (OSError, ValueError):
         return {"installed": True, "reachable": False, "model_pulled": False}
+    if not isinstance(payload, dict):
+        return {"installed": True, "reachable": True, "model_pulled": False}
     names = {entry.get("name") for entry in payload.get("models", []) if isinstance(entry, dict)}
     return {"installed": True, "reachable": True, "model_pulled": model in names}
 

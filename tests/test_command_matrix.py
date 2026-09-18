@@ -254,6 +254,24 @@ def test_probe_compaction_scoring_reports_model_pulled(monkeypatch):
     assert status == {"installed": True, "reachable": True, "model_pulled": True}
 
 
+def test_probe_compaction_scoring_handles_non_dict_json_response(monkeypatch):
+    monkeypatch.setattr(command_matrix.shutil, "which", lambda name: "/usr/local/bin/ollama")
+
+    class _Resp:
+        def read(self):
+            return json.dumps([1, 2, 3]).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(command_matrix, "urlopen", lambda url, timeout: _Resp())
+    status = command_matrix.probe_compaction_scoring(model="smollm2:1.7b")
+    assert status == {"installed": True, "reachable": True, "model_pulled": False}
+
+
 def test_doctor_human_mode_is_opt_in_and_keeps_json_default(tmp_path):
     human = subprocess.run(
         [
