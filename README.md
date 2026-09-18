@@ -6,7 +6,7 @@
 
 # session-handoff
 
-[![HOL Guard Score](https://img.shields.io/badge/HOL%20Guard%20Score-100%2F100-brightgreen)](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml)
+[![HOL Guard Score](https://img.shields.io/badge/HOL%20Guard%20Score-95%2F100-brightgreen)](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml)
 [![HOL Plugin Scanner](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml/badge.svg?branch=main)](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml)
 
 **Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the whole native session to the other client instead.**
