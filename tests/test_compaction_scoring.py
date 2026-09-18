@@ -227,5 +227,45 @@ def test_ollama_asker_raises_on_malformed_response(monkeypatch):
 
     monkeypatch.setattr("server.compaction_scoring.urlopen", fake_urlopen)
     asker = OllamaAsker()
-    with pytest.raises(Exception):
+    with pytest.raises((json.JSONDecodeError, KeyError)):
         asker.ask({"name": "Bash", "input": {}}, {"output": "x"})
+
+
+def test_ollama_asker_resolves_ambiguous_item_end_to_end(monkeypatch):
+    def fake_urlopen(request, timeout):
+        class _Resp:
+            def read(self_inner):
+                return json.dumps({"response": json.dumps({"decision": "drop", "confidence": 0.9})}).encode()
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+        return _Resp()
+
+    monkeypatch.setattr("server.compaction_scoring.urlopen", fake_urlopen)
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    asker = OllamaAsker()
+    resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "drop"
+    assert resolved[0].reason == "local_model"
+
+
+def test_ollama_asker_low_confidence_end_to_end_defaults_to_keep(monkeypatch):
+    def fake_urlopen(request, timeout):
+        class _Resp:
+            def read(self_inner):
+                return json.dumps({"response": json.dumps({"decision": "drop", "confidence": 0.3})}).encode()
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+        return _Resp()
+
+    monkeypatch.setattr("server.compaction_scoring.urlopen", fake_urlopen)
+    plain = _pair("plain", output="fine")
+    scored = heuristic_score([plain] + [_pair(str(i)) for i in range(6)], preserve_recent=6)
+    asker = OllamaAsker()
+    resolved = resolve_ambiguous(scored, asker=asker, deadline=time.monotonic() + 5)
+    assert resolved[0].decision == "keep"
+    assert resolved[0].reason == "low_confidence_default"
