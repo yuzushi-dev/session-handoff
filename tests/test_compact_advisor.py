@@ -135,6 +135,15 @@ def test_advise_returns_none_on_eval_failure(tmp_path):
     assert advise(str(transcript), "sess-1", client=client) is None
 
 
+def test_advise_itself_fails_open_on_a_transcript_parsing_exception(tmp_path):
+    # advise() must catch its own errors, not rely on main() to do it - a
+    # malformed/missing transcript path is enough to exercise this without
+    # needing a real paginated-projection failure.
+    missing = tmp_path / "does-not-exist.jsonl"
+    client = _FakeTypeSafeClient(finished=1.0, hands_on=1.0)
+    assert advise(str(missing), "sess-1", client=client) is None
+
+
 def test_advise_returns_hint_when_finished_and_hands_on(tmp_path):
     transcript = tmp_path / "t.jsonl"
     _write_transcript(transcript)

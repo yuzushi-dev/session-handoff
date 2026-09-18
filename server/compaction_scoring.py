@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import time as _time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
 try:
-    from .migration_engine import _parse_transcript_auto, _read_jsonl
+    from .migration_engine import _parse_transcript_file
 except ImportError:  # direct `python server/compaction_scoring.py` execution
-    from migration_engine import _parse_transcript_auto, _read_jsonl
+    from migration_engine import _parse_transcript_file
 
 
 def pair_tool_events(events: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
@@ -143,11 +142,9 @@ def score_transcript(
     asker: Any | None = None,
     deadline: float | None = None,
 ) -> list[ScoredItem]:
-    """Parse a real transcript JSONL file (Claude or Codex, auto-detected)
-    and score its tool calls."""
-    data = Path(transcript_path).read_bytes()
-    records = _read_jsonl(data)
-    _metadata, events, _dropped = _parse_transcript_auto(records, session_id)
+    """Parse a real transcript JSONL file (Claude or Codex - legacy or
+    paginated - auto-detected) and score its tool calls."""
+    _metadata, events, _dropped = _parse_transcript_file(transcript_path, session_id)
     pairs = pair_tool_events(events)
     return score_pairs(
         pairs,

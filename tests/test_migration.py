@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -273,3 +274,52 @@ def test_parse_transcript_auto_empty_records_defaults_to_claude_parser_no_crash(
     # IndexError on records[0] when given an empty list directly.
     metadata, events, dropped = migration_engine._parse_transcript_auto([], "sess-1")
     assert events == []
+
+
+def _write_paginated_codex_fixture(source_home: Path, session_id: str) -> Path:
+    rollout_dir = source_home / "sessions" / "2026" / "01" / "01"
+    rollout_dir.mkdir(parents=True)
+    rollout_path = rollout_dir / f"rollout-test-{session_id}.jsonl"
+    rollout_path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": session_id, "history_mode": "paginated"}}) + "\n",
+        encoding="utf-8",
+    )
+    db_path = source_home / "thread_history_1.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE thread_items ("
+        "item_id INTEGER, thread_id TEXT, rollout_ordinal INTEGER, created_at_ms INTEGER, item_json TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO thread_items VALUES (?, ?, ?, ?, ?)",
+        (1, session_id, 1, None, json.dumps({"type": "userMessage", "content": "go"})),
+    )
+    conn.commit()
+    conn.close()
+    return rollout_path
+
+
+def test_parse_transcript_file_projects_paginated_codex_history(tmp_path, monkeypatch):
+    # Regression: real Codex sessions on a checked machine were all
+    # history_mode "paginated" (SQLite-backed), not "legacy" - the plain
+    # _parse_transcript_auto dispatch (records-only) can't handle this, it
+    # needs the file's location to find the sibling thread_history_1.sqlite.
+    source_home = tmp_path / "codex-home"
+    source_home.mkdir()
+    session_id = "11111111-1111-1111-1111-111111111111"
+    rollout_path = _write_paginated_codex_fixture(source_home, session_id)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    metadata, events, dropped = migration_engine._parse_transcript_file(str(rollout_path), session_id)
+    assert any(event["kind"] == "text" and event.get("text") == "go" for event in events)
+
+
+def test_parse_transcript_file_claude_format_unaffected(tmp_path):
+    transcript = tmp_path / "transcript.jsonl"
+    records = [
+        {"type": "user", "sessionId": "sess-1", "uuid": "u1", "message": {"role": "user", "content": "go"}},
+    ]
+    transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    metadata, events, dropped = migration_engine._parse_transcript_file(str(transcript), "sess-1")
+    assert events == [{"kind": "text", "role": "user", "text": "go", "timestamp": None}]
