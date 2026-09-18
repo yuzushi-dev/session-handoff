@@ -1,6 +1,6 @@
 import time
 
-from server.compaction_scoring import heuristic_score, pair_tool_events, resolve_ambiguous
+from server.compaction_scoring import heuristic_score, pair_tool_events, resolve_ambiguous, score_pairs
 
 
 def test_pair_tool_events_matches_call_to_result_by_id():
@@ -119,3 +119,12 @@ def test_resolve_ambiguous_stops_before_deadline():
     resolved = resolve_ambiguous(scored, asker=_FakeAsker([("drop", 0.9)]), deadline=time.monotonic() - 1)
     assert resolved[0].decision == "keep"
     assert resolved[0].reason == "deadline_reached"
+
+
+def test_most_recent_turn_error_survives_even_with_a_confident_drop_verdict():
+    recent_error = _pair("recent", output="Traceback: boom", is_error=True)
+    pairs = [_pair(str(i)) for i in range(5)] + [recent_error]
+    asker = _FakeAsker([("drop", 0.99)])  # would drop it if ever asked
+    scored = score_pairs(pairs, preserve_recent=6, asker=asker, deadline=time.monotonic() + 5)
+    assert scored[-1].decision == "keep"
+    assert asker.seen == []  # never consulted — pinned errors bypass scoring entirely

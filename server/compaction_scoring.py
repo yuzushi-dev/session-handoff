@@ -106,3 +106,15 @@ def resolve_ambiguous(
             continue
         resolved.append(ScoredItem(item.call, item.result, decision, "local_model"))
     return resolved
+
+
+def score_pairs(
+    pairs: list[tuple[dict[str, Any], dict[str, Any] | None]],
+    *,
+    preserve_recent: int = 6,
+    truncate_chars: int = 4000,
+    asker: Any | None = None,
+    deadline: float | None = None,
+) -> list[ScoredItem]:
+    heuristic = heuristic_score(pairs, preserve_recent=preserve_recent, truncate_chars=truncate_chars)
+    return resolve_ambiguous(heuristic, asker=asker, deadline=deadline if deadline is not None else _time.monotonic())
