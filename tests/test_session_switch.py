@@ -1149,6 +1149,7 @@ def test_central_switch_requires_ref_capable_supervisor(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("SESSION_HANDOFF_CONTROL_PROTOCOL", raising=False)
     ref = handoff_store.create_record(str(workspace), "next.md", "## Goal\ncentral\n")["ref"]
 
