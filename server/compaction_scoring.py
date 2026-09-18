@@ -147,3 +147,22 @@ def score_transcript(
         asker=asker,
         deadline=deadline,
     )
+
+
+def render_tool_summary(items: list[ScoredItem]) -> list[str]:
+    """Render scored tool calls into markdown lines for the checkpoint's tool-summary section."""
+    if not items:
+        return ["- No tool calls recorded before this compaction."]
+    lines: list[str] = []
+    for item in items:
+        name = item.call.get("name", "<unknown>")
+        if item.decision == "drop":
+            lines.append(f"- `{name}`: dropped ({item.reason}).")
+            continue
+        output = "" if item.result is None else item.result.get("output", "")
+        output_text = output if isinstance(output, str) else str(output)
+        if item.decision == "truncate":
+            output_text = output_text[:1000] + f"\n<truncated, reason: {item.reason}>"
+        lines.append(f"- `{name}` ({item.decision}, {item.reason}):")
+        lines.extend(["", "  ```text", f"  {output_text}", "  ```", ""])
+    return lines

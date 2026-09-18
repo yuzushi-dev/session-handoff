@@ -2,8 +2,10 @@ import json
 import time
 
 from server.compaction_scoring import (
+    ScoredItem,
     heuristic_score,
     pair_tool_events,
+    render_tool_summary,
     resolve_ambiguous,
     score_pairs,
     score_transcript,
@@ -165,3 +167,17 @@ def test_score_transcript_reads_real_transcript_file(tmp_path):
     assert len(scored) == 1
     assert scored[0].call["name"] == "Bash"
     assert scored[0].decision == "keep"  # inside the pinned window
+
+
+def test_render_tool_summary_lists_kept_and_dropped_items():
+    call = {"id": "t1", "name": "Bash", "input": {"command": "ls"}}
+    result = {"output": "file.py", "is_error": False}
+    kept = ScoredItem(call, result, "keep", "pinned_recent")
+    dropped_call = {"id": "t2", "name": "Bash", "input": {"command": "ls"}}
+    dropped = ScoredItem(dropped_call, {"output": "file.py"}, "drop", "duplicate_output")
+    lines = render_tool_summary([kept, dropped])
+    text = "\n".join(lines)
+    assert "Bash" in text
+    assert "file.py" in text  # kept item's output is verbatim
+    assert "dropped" in text.lower()
+    assert "duplicate_output" in text
