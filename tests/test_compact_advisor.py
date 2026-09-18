@@ -152,6 +152,29 @@ def test_advise_returns_none_when_not_finished(tmp_path):
     assert advise(str(transcript), "sess-1", client=client) is None
 
 
+def _write_codex_transcript(path: Path, session_id="sess-1"):
+    records = [
+        {"type": "session_meta", "payload": {"id": session_id}},
+        {
+            "type": "response_item", "timestamp": None,
+            "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def test_advise_reads_real_codex_transcript_file(tmp_path):
+    # Regression: _recent_transcript_text used to hardcode the Claude
+    # parser, so under Codex (session_meta-first transcripts) it would
+    # silently fail to extract any conversation content.
+    transcript = tmp_path / "t.jsonl"
+    _write_codex_transcript(transcript)
+    client = _FakeTypeSafeClient(finished=1.0, hands_on=1.0)
+    hint = advise(str(transcript), "sess-1", client=client)
+    assert hint == compact_advisor.HINT_MESSAGE
+    assert "done" in client.seen_state["recent_conversation"]
+
+
 # --- main(): hook contract, opt-in gating ---
 
 

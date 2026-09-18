@@ -245,3 +245,31 @@ def test_migration_telemetry_summary_normalizes_loss_to_numeric_counts():
     )
 
     assert summary == {"dropped_events": 3, "normalized_fields": 3}
+
+
+def test_parse_transcript_auto_detects_claude_format():
+    records = [
+        {"type": "user", "sessionId": "sess-1", "uuid": "u1", "message": {"role": "user", "content": "go"}},
+    ]
+    metadata, events, dropped = migration_engine._parse_transcript_auto(records, "sess-1")
+    assert events == [{"kind": "text", "role": "user", "text": "go", "timestamp": None}]
+
+
+def test_parse_transcript_auto_detects_codex_format():
+    records = [
+        {"type": "session_meta", "payload": {"id": "sess-1"}},
+        {
+            "type": "response_item", "timestamp": None,
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
+        },
+    ]
+    metadata, events, dropped = migration_engine._parse_transcript_auto(records, "sess-1")
+    assert events == [{"kind": "text", "role": "user", "text": "go", "timestamp": None}]
+
+
+def test_parse_transcript_auto_empty_records_defaults_to_claude_parser_no_crash():
+    # Empty input never reaches here in the real pipeline (_read_jsonl
+    # raises "session is empty" first), but the dispatch itself must not
+    # IndexError on records[0] when given an empty list directly.
+    metadata, events, dropped = migration_engine._parse_transcript_auto([], "sess-1")
+    assert events == []

@@ -173,6 +173,35 @@ def test_score_transcript_reads_real_transcript_file(tmp_path):
     assert scored[0].decision == "keep"  # inside the pinned window
 
 
+def _write_codex_transcript(path, session_id="sess-1"):
+    records = [
+        {"type": "session_meta", "payload": {"id": session_id}},
+        {
+            "type": "response_item", "timestamp": None,
+            "payload": {"type": "function_call", "call_id": "t1", "name": "Bash", "arguments": {"command": "ls"}},
+        },
+        {
+            "type": "response_item", "timestamp": None,
+            "payload": {"type": "function_call_output", "call_id": "t1", "output": "file.py"},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def test_score_transcript_reads_real_codex_transcript_file(tmp_path):
+    # Regression: score_transcript used to hardcode the Claude parser, so a
+    # Codex-format transcript (session_meta first record) would fail to
+    # parse and fall back to the empty/unavailable path, silently, under
+    # Codex specifically - even though Codex fires the same PreCompact/Stop
+    # hooks via the shared hooks.json.
+    transcript = tmp_path / "transcript.jsonl"
+    _write_codex_transcript(transcript)
+    scored = score_transcript(str(transcript), session_id="sess-1", preserve_recent=6)
+    assert len(scored) == 1
+    assert scored[0].call["name"] == "Bash"
+    assert scored[0].decision == "keep"  # inside the pinned window
+
+
 def test_render_tool_summary_lists_kept_and_dropped_items():
     call = {"id": "t1", "name": "Bash", "input": {"command": "ls"}}
     result = {"output": "file.py", "is_error": False}

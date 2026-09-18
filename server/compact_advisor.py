@@ -31,9 +31,9 @@ except ImportError:  # direct `python server/compact_advisor.py` execution
     from typesafe_client import ChoiceQuestion, TypeSafeClient
 
 try:
-    from .migration_engine import _parse_claude, _read_jsonl
+    from .migration_engine import _parse_transcript_auto, _read_jsonl
 except ImportError:  # direct `python server/compact_advisor.py` execution
-    from migration_engine import _parse_claude, _read_jsonl
+    from migration_engine import _parse_transcript_auto, _read_jsonl
 
 COMPACT_HINT_ENV = "SESSION_HANDOFF_COMPACT_HINT"
 
@@ -123,7 +123,7 @@ def estimate_usage(transcript_path: str) -> float:
 def _recent_transcript_text(transcript_path: str, session_id: str, *, max_chars: int) -> str:
     data = Path(transcript_path).read_bytes()
     records = _read_jsonl(data)
-    _metadata, events, _dropped = _parse_claude(records, session_id)
+    _metadata, events, _dropped = _parse_transcript_auto(records, session_id)
     lines: list[str] = []
     for event in events:
         kind = event.get("kind")

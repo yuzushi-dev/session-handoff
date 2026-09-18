@@ -352,6 +352,21 @@ def _codex_item(
     return 0
 
 
+def _parse_transcript_auto(
+    records: list[dict[str, Any]], session_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]], Counter[str]]:
+    """Parse a transcript without the caller having to know which client
+    wrote it. A Codex rollout's first record always has type "session_meta"
+    (see _parse_codex); anything else is treated as Claude's format. Used by
+    hook code (server/checkpoint.py, server/compact_advisor.py) that reads
+    whatever transcript_path the host hands it, unlike convert_native_session
+    which is always told the source client explicitly because migration is
+    a deliberate user action, not something to guess."""
+    if records and records[0].get("type") == "session_meta":
+        return _parse_codex(records, session_id)
+    return _parse_claude(records, session_id)
+
+
 def _write_claude(
     events: list[dict[str, Any]], session_id: str, workspace: Path, timestamp: str
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
