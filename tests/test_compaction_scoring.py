@@ -1,7 +1,10 @@
 import json
 import time
 
+import pytest
+
 from server.compaction_scoring import (
+    OllamaAsker,
     ScoredItem,
     heuristic_score,
     pair_tool_events,
@@ -191,3 +194,38 @@ def test_render_tool_summary_labels_truncated_item_with_its_real_reason():
     text = "\n".join(lines)
     assert "reason: local_model" in text
     assert "reason: oversized_output" not in text
+
+
+def test_ollama_asker_parses_a_well_formed_response(monkeypatch):
+    def fake_urlopen(request, timeout):
+        class _Resp:
+            def read(self_inner):
+                return json.dumps({"response": json.dumps({"decision": "drop", "confidence": 0.8})}).encode()
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+        assert timeout == 2.0
+        return _Resp()
+
+    monkeypatch.setattr("server.compaction_scoring.urlopen", fake_urlopen)
+    asker = OllamaAsker(model="smollm2:1.7b", timeout=2.0)
+    decision, confidence = asker.ask({"name": "Bash", "input": {"command": "ls"}}, {"output": "file.py"})
+    assert (decision, confidence) == ("drop", 0.8)
+
+
+def test_ollama_asker_raises_on_malformed_response(monkeypatch):
+    def fake_urlopen(request, timeout):
+        class _Resp:
+            def read(self_inner):
+                return b"not json"
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+        return _Resp()
+
+    monkeypatch.setattr("server.compaction_scoring.urlopen", fake_urlopen)
+    asker = OllamaAsker()
+    with pytest.raises(Exception):
+        asker.ask({"name": "Bash", "input": {}}, {"output": "x"})

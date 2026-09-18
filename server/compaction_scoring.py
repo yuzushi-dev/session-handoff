@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 try:
     from .migration_engine import _parse_claude, _read_jsonl
@@ -166,3 +168,51 @@ def render_tool_summary(items: list[ScoredItem]) -> list[str]:
         lines.append(f"- `{name}` ({item.decision}, {item.reason}):")
         lines.extend(["", "  ```text", f"  {output_text}", "  ```", ""])
     return lines
+
+
+OLLAMA_PROMPT = (
+    "A recovery checkpoint is being written before a Claude Code session compacts. "
+    "Decide whether this tool call and its result still matter enough to keep verbatim. "
+    "Tool: {name}\nInput: {input}\nResult: {output}\n"
+    'Reply with only a JSON object: {{"decision": "keep"|"truncate"|"drop", "confidence": 0.0-1.0}}'
+)
+
+
+class OllamaAsker:
+    def __init__(
+        self,
+        *,
+        model: str = "smollm2:1.7b",
+        base_url: str = "http://localhost:11434",
+        timeout: float = 2.0,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url
+        self.timeout = timeout
+
+    def ask(self, call: dict[str, Any], result: dict[str, Any] | None) -> tuple[str, float]:
+        prompt = OLLAMA_PROMPT.format(
+            name=call.get("name", "<unknown>"),
+            input=call.get("input", {}),
+            output="" if result is None else result.get("output", ""),
+        )
+        body = json.dumps({
+            "model": self.model,
+            "prompt": prompt,
+            "format": "json",
+            "stream": False,
+        }).encode("utf-8")
+        request = Request(
+            f"{self.base_url}/api/generate",
+            data=body,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=self.timeout) as response:
+            envelope = json.loads(response.read())
+        verdict = json.loads(envelope["response"])
+        decision = verdict["decision"]
+        confidence = float(verdict["confidence"])
+        if decision not in {"keep", "truncate", "drop"}:
+            raise ValueError(f"unexpected decision: {decision!r}")
+        return decision, confidence
