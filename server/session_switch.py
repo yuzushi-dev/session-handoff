@@ -854,6 +854,58 @@ class SessionSupervisor:
         pending_summary: dict[str, Any] | None = None
         pending_started: float | None = None
 
+        rollback_source: dict[str, str] | None = None
+
+        def _resume_source(
+            source_client: str,
+            source_executable: str,
+            source_session_id: str,
+            workspace: str,
+            started: float,
+        ) -> Any | None:
+            nonlocal current_client, current_executable, current_args
+            nonlocal pending_summary, pending_started, rollback_source
+            rollback_args = _with_control_path(
+                source_client,
+                _resume_args(source_client, source_session_id),
+                control,
+            )
+            print("session-handoff: target resume failed; resuming source session", file=sys.stderr)
+            fallback_summary = {
+                "operation": "migrate",
+                "source_client": source_client,
+                "target_client": current_client,
+                "result": "fallback",
+                "failure_stage": "target_resume",
+                "dropped_events": 0,
+                "normalized_fields": 0,
+            }
+            current_client = source_client
+            current_executable = source_executable
+            current_args = rollback_args
+            rollback_source = None
+            try:
+                resumed = self._launch(
+                    source_client,
+                    source_executable,
+                    rollback_args,
+                    env,
+                    cwd=workspace,
+                )
+            except (OSError, subprocess.SubprocessError):
+                print("session-handoff: source session resume failed", file=sys.stderr)
+                record_terminal_outcome({
+                    **fallback_summary,
+                    "result": "failure",
+                    "failure_stage": "source_resume",
+                    "duration_seconds": max(0.0, time.monotonic() - started),
+                })
+                return None
+            pending_summary = fallback_summary
+            pending_started = started
+            return resumed
+
+
         try:
             while True:
                 if hasattr(process, "pump"):
@@ -875,6 +927,7 @@ class SessionSupervisor:
                         pending_summary = None
                         pending_started = None
                     self._terminate(process)
+                    rollback_source = None
                     fresh_args = _fresh_session_args(
                         current_client,
                         current_args,
@@ -943,6 +996,7 @@ class SessionSupervisor:
                         )
                         pending_summary = None
                         pending_started = None
+                    rollback_source = None
                     source_client = request["source_client"]
                     target_client = request["target_client"]
                     source_session_id = request["source_session_id"]
@@ -972,6 +1026,7 @@ class SessionSupervisor:
                         })
                         continue
                     self._terminate(process)
+                    source_executable = current_executable
                     started = time.monotonic()
                     try:
                         migration = self.migrate(
@@ -1050,6 +1105,12 @@ class SessionSupervisor:
                         **migration_telemetry_summary(migration),
                     }
                     pending_started = started
+                    rollback_source = {
+                        "client": source_client,
+                        "executable": source_executable,
+                        "session_id": source_session_id,
+                        "workspace": workspace,
+                    }
                     try:
                         process = self._launch(
                             current_client,
@@ -1059,16 +1120,30 @@ class SessionSupervisor:
                             cwd=workspace,
                         )
                     except (OSError, subprocess.SubprocessError):
-                        record_terminal_outcome({
-                            **_terminal_summary(pending_summary, pending_started or time.monotonic()),
-                            "result": "failure",
-                            "failure_stage": "target_resume",
-                        })
-                        return 1
+                        source = rollback_source
+                        if source is None:
+                            return 1
+                        process = _resume_source(
+                            source["client"], source["executable"], source["session_id"], source["workspace"], started
+                        )
+                        if process is None:
+                            return 1
                     continue
 
                 status = process.poll()
                 if status is not None:
+                    if status != 0 and rollback_source is not None:
+                        source = rollback_source
+                        process = _resume_source(
+                            source["client"],
+                            source["executable"],
+                            source["session_id"],
+                            source["workspace"],
+                            pending_started or time.monotonic(),
+                        )
+                        if process is None:
+                            return 1
+                        continue
                     if pending_summary is not None:
                         terminal = _terminal_summary(
                             pending_summary, pending_started or time.monotonic()

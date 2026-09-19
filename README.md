@@ -9,7 +9,7 @@
 [![HOL Guard Score](https://img.shields.io/badge/HOL%20Guard%20Score-95%2F100-brightgreen)](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml)
 [![HOL Plugin Scanner](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml/badge.svg?branch=main)](https://github.com/yuzushi-dev/session-handoff/actions/workflows/hol-plugin-scanner.yml)
 
-**Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the whole native session to the other client instead.**
+**Handoff and migration plugin for Claude Code and Codex. Start a clean session with your decisions and pending work carried over, or migrate the supported portable conversation history to the other client instead.**
 
 <p align="center">
   <a href="https://raw.githubusercontent.com/yuzushi-dev/session-handoff/main/session-handoff-promo.mp4">
@@ -32,7 +32,7 @@
 $session-handoff the next task is to refactor the benchmarking tool
 ```
 
-Or migrate the whole session to the other client instead:
+Or migrate the supported portable conversation history to the other client instead:
 
 **Claude Code**:
 
@@ -166,7 +166,7 @@ Codex:
 $session-handoff
 ```
 
-Use `migrate claude` or `migrate codex` to preserve the native session while changing clients.
+Use `migrate claude` or `migrate codex` to preserve supported portable conversation history while changing clients.
 A normal handoff starts a clean session and keeps the implementation state in the handoff file.
 
 Create mode is central and ref-first: `handoff_create(name="next.md", workspace=...)` stores an
@@ -180,11 +180,13 @@ workspace file.
 <details>
 <summary><b>Reference: compaction recovery checkpoint</b></summary>
 
-Before Claude Code or Codex compacts a session, the plugin writes a small deterministic recovery
+Before Claude Code or Codex compacts a session, the plugin writes a small recovery
 checkpoint under `~/.local/state/session-handoff/checkpoints/`. After
 `SessionStart(source=compact)` it injects only a pointer to that file. The checkpoint contains
 redacted Git state and a local lifecycle event log; it is recovery evidence, not a semantic
-summary, and manual `$session-handoff` remains the semantic handoff path. Lifecycle events
+summary, and manual `$session-handoff` remains the semantic handoff path. If the optional
+checkpoint scorer is explicitly configured, its tool summary may make a model call; the default
+checkpoint path is deterministic. Lifecycle events
 record only hook names, IDs, paths, timestamps, and byte counts; they never contain prompts or
 tool payloads.
 

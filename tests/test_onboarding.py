@@ -81,6 +81,52 @@ def test_first_start_auto_installs_the_detected_client(tmp_path):
     assert run_start(tmp_path, extra_env={"PATH": str(bindir)}) == {}
 
 
+def test_spawn_failure_releases_notice_for_retry(tmp_path, monkeypatch):
+    from server import onboarding
+
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-1")
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("SESSION_HANDOFF_CONTROL", raising=False)
+    monkeypatch.setattr(onboarding.shutil, "which", lambda client: "/tmp/fake-client")
+    calls = []
+
+    def fail_once(*args):
+        calls.append(args)
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(onboarding, "_spawn_detached_setup", fail_once)
+    with pytest.raises(OSError, match="spawn failed"):
+        onboarding.launcher_notice(ROOT)
+
+    marker = tmp_path / ".config/session-handoff/launcher-notice-v1"
+    assert not marker.exists()
+
+    monkeypatch.setattr(onboarding, "_spawn_detached_setup", lambda *args: calls.append(args))
+    assert onboarding.launcher_notice(ROOT)
+    assert len(calls) == 2
+
+
+def test_failed_detached_setup_releases_notice_for_retry(tmp_path, monkeypatch):
+    from server import onboarding
+
+    plugin_root = tmp_path / "plugin"
+    cli = plugin_root / "bin/session-handoff"
+    cli.parent.mkdir(parents=True)
+    cli.write_text("#!/usr/bin/env python3\nraise SystemExit(7)\n", encoding="utf-8")
+    cli.chmod(0o700)
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path / "home"))
+    marker = Path(os.environ["SESSION_HANDOFF_HOME"]) / ".config/session-handoff/launcher-notice-v1"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    onboarding._spawn_detached_setup(plugin_root, "claude")
+    deadline = time.time() + 3
+    while time.time() < deadline and marker.exists():
+        time.sleep(0.05)
+    assert not marker.exists()
+
+
 def test_pre_existing_notice_marker_blocks_auto_install(tmp_path, monkeypatch):
     # Simulates a user who already saw the pre-upgrade manual notice (the
     # marker exists) but never ran setup (no state.json). The upgrade to

@@ -1,6 +1,8 @@
 """Unit tests for TypeSafe client and benchmark judge."""
 
 import json
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import pytest
@@ -166,3 +168,59 @@ def test_judge_study_processes_all_and_collects_failures(monkeypatch):
         assert "id" in summary["failed"]["blind-b"]
         assert "not-a-blind-dir" not in summary["failed"]
         assert "not-a-blind-dir" not in summary["judged"]
+
+
+def test_live_http_payload_redacts_nested_sensitive_values(monkeypatch):
+    client = TypeSafeClient(api_key="configured")
+    sent = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"answers":{"q":{"value":"keep"}}}'
+
+    def intercept(request, **kwargs):
+        sent.update(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", intercept)
+    secret = "structured-" + "credential"
+    state = {
+        "input": {
+            "password": secret,
+            "api_token": {"nested": secret},
+            "credential": [secret, 7],
+        },
+        "metadata": {"name": "visible", "count": 7},
+    }
+    result = client.evaluate(state, {"q": NoulQuestion(instructions="keep")})
+
+    assert result.ok
+    safe = sent["state"]
+    assert safe["input"]["password"] == "[REDACTED]"
+    assert safe["input"]["api_token"] == "[REDACTED]"
+    assert safe["input"]["credential"] == "[REDACTED]"
+    assert safe["metadata"] == {"name": "visible", "count": 7}
+    assert secret not in json.dumps(sent)
+
+
+def test_typesafe_client_direct_module_import_uses_shared_redaction():
+    server_dir = Path(__file__).resolve().parents[1] / "server"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import typesafe_client; assert callable(typesafe_client.redact_value)",
+        ],
+        cwd=server_dir,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr

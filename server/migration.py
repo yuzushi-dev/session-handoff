@@ -237,6 +237,7 @@ def _migrate_path(
     target_id: str,
     target_root: Path,
     projection: PaginatedProjection | None = None,
+    source_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         result = convert_native_session(
@@ -247,6 +248,7 @@ def _migrate_path(
             target_id,
             root,
             target_root,
+            source_provenance=source_provenance,
         )
     except MigrationError:
         raise
@@ -340,6 +342,7 @@ def migrate_session(
                     target_id,
                     target_root,
                     projection,
+                    _paginated_source_provenance(source_path, projection, source_root, source_session_id),
                 )
         return _migrate_path(
             source_path,
@@ -354,3 +357,43 @@ def migrate_session(
         raise
     except PaginatedMigrationError as exc:
         raise MigrationError(str(exc)) from exc
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _paginated_source_provenance(
+    source_path: Path,
+    projection: PaginatedProjection,
+    source_root: Path,
+    session_id: str,
+) -> dict[str, Any]:
+    history_db = source_root / "thread_history_1.sqlite"
+    native_records = sum(1 for line in source_path.read_bytes().splitlines() if line.strip())
+    projection_records = projection.rollout_path.read_bytes().count(b"\n")
+    return {
+        "path": str(source_path.resolve()),
+        "sha256": _sha256_path(source_path),
+        "records": native_records,
+        "projection": {
+            "format": "codex-legacy-jsonl",
+            "records": projection_records,
+            "path": str(projection.rollout_path.resolve()),
+            "sha256": _sha256_path(projection.rollout_path),
+            "temporary": True,
+        },
+        "history": {
+            "format": "sqlite",
+            "path": str(history_db.resolve()),
+            "item_count": projection.history_item_count,
+            "items_sha256": projection.history_items_sha256,
+            "session_id": session_id,
+            "selection": "thread_items WHERE thread_id = ? ORDER BY rollout_ordinal, item_id",
+            "digest": "sha256 of compact UTF-8 JSON rows [item_id, rollout_ordinal, created_at_ms, item_json] followed by LF",
+        },
+    }

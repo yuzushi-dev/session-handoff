@@ -177,24 +177,53 @@ def test_precompact_records_secret_free_lifecycle_event(tmp_path):
     assert record["event"] == "precompact"
     assert record["session_id"] == "session-123"
     assert record["trigger"] == "auto"
-    assert record["checkpoint_path"].endswith("session-123.md")
+    assert record["checkpoint_path"].endswith(".md")
     assert record["checkpoint_bytes"] > 0
     assert record["injected"] is False
     assert record["injected_bytes"] == 0
     assert "sk-1234567890" not in (checkpoint_dir / "events.jsonl").read_text()
 
 
-def test_compact_context_returns_short_pointer_for_matching_workspace(tmp_path):
+def test_compact_context_returns_short_pointer_for_matching_session(tmp_path):
     repo = make_repo(tmp_path)
     home = tmp_path / "home"
     result = capture_checkpoint(event(repo), home=home)
 
-    context = compact_context({"cwd": str(repo), "source": "compact", "session_id": "next"}, home=home)
+    context = compact_context(
+        {"cwd": str(repo), "source": "compact", "session_id": "session-123"}, home=home
+    )
 
     assert context is not None
     assert str(result["path"]) in context
     assert "non-semantic" in context
     assert len(context) < 1000
+
+
+def test_compact_context_does_not_fallback_to_another_session(tmp_path):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    capture_checkpoint({**event(repo), "session_id": "session-A"}, home=home)
+
+    assert compact_context(
+        {"cwd": str(repo), "source": "compact", "session_id": "session-B"}, home=home
+    ) is None
+
+
+def test_interleaved_sessions_retrieve_their_own_checkpoints(tmp_path):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    first = capture_checkpoint({**event(repo), "session_id": "session-A"}, home=home)
+    second = capture_checkpoint({**event(repo), "session_id": "session-B"}, home=home)
+
+    first_context = compact_context(
+        {"cwd": str(repo), "source": "compact", "session_id": "session-A"}, home=home
+    )
+    second_context = compact_context(
+        {"cwd": str(repo), "source": "compact", "session_id": "session-B"}, home=home
+    )
+
+    assert first_context is not None and first["path"] in first_context
+    assert second_context is not None and second["path"] in second_context
 
 
 def test_invalid_event_is_rejected_without_guessing(tmp_path):

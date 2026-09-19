@@ -11,7 +11,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import time
 from typing import Any, Callable
 import urllib.error
@@ -21,20 +20,9 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 try:
-    from server.redaction import redact_secrets
+    from server.redaction import redact_value
 except ImportError:
-    _SECRET_PATTERN = re.compile(
-        r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b|"
-        r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|"
-        r"postgres(?:ql)?://[^@\s]+@[^\s/]+|"
-        r"(?:key|token|secret|password|passwd)\s*[:=]\s*['\"][^'\"]+['\"]",
-        flags=re.IGNORECASE,
-    )
-
-    def redact_secrets(text: str) -> tuple[str, list[str]]:
-        findings = _SECRET_PATTERN.findall(text)
-        redacted = _SECRET_PATTERN.sub("[REDACTED]", text)
-        return redacted, findings
+    from redaction import redact_value
 
 
 @dataclass
@@ -130,14 +118,7 @@ class TypeSafeClient:
         return bool(self.api_key)
 
     def _redact_value(self, value: Any) -> Any:
-        if isinstance(value, str):
-            redacted, _ = redact_secrets(value)
-            return redacted
-        if isinstance(value, dict):
-            return {k: self._redact_value(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._redact_value(v) for v in value]
-        return value
+        return redact_value(value)
 
     def _redact_questions(self, questions: dict[str, Question]) -> dict[str, Question]:
         redacted: dict[str, Question] = {}

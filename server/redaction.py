@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 _SECRET_WORD = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|AUTHORIZATION)"
 _SECRET_KEY = rf"\b(?:{_SECRET_WORD}|[A-Za-z][A-Za-z0-9_-]*{_SECRET_WORD})\b"
@@ -33,11 +34,85 @@ _TOKEN = re.compile(
 _PRIVATE = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.DOTALL,
 )
+_SECRET_KEY_RE = re.compile(_SECRET_KEY, re.IGNORECASE)
+_YAML_BLOCK = re.compile(
+    rf"^(?P<prefix>[ ]*(?:-[ ]+)?)(?P<keyquote>['\"]?)(?P<key>{_SECRET_KEY})(?P=keyquote)"
+    r"(?P<spacing>[ ]*):(?P<after>[ ]*)"
+    r"(?P<indicator>[|>](?:[1-9][+-]?|[+-]?[1-9]|[+-]?))"
+    r"(?P<comment>[ ]+#.*)?[ ]*$",
+    re.IGNORECASE,
+)
+
+
+def is_secret_key(key: object) -> bool:
+    return isinstance(key, str) and _SECRET_KEY_RE.fullmatch(key) is not None
+
+
+def redact_value(value: Any) -> Any:
+    """Recursively redact sensitive mapping values before serialization."""
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if is_secret_key(key) else redact_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_value(item) for item in value)
+    if isinstance(value, str):
+        return redact_secrets(value)[0]
+    return value
+
+
+def _redact_yaml_blocks(text: str) -> tuple[str, int]:
+    lines = text.splitlines(keepends=True)
+    output: list[str] = []
+    count = 0
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        body = line.rstrip("\r\n")
+        ending = line[len(body):]
+        match = _YAML_BLOCK.match(body)
+        if match is None:
+            output.append(line)
+            index += 1
+            continue
+        replacement = (
+            f"{match.group('prefix')}{match.group('keyquote')}{match.group('key')}"
+            f"{match.group('keyquote')}{match.group('spacing')}:"
+            f"{match.group('after')}[REDACTED]"
+        )
+        if match.group("comment"):
+            replacement += match.group("comment")
+        output.append(replacement + ending)
+        count += 1
+        base_indent = len(match.group("prefix").expandtabs(8))
+        index += 1
+        while index < len(lines):
+            candidate = lines[index].rstrip("\r\n")
+            if not candidate.strip():
+                lookahead = index + 1
+                while lookahead < len(lines) and not lines[lookahead].rstrip("\r\n").strip():
+                    lookahead += 1
+                if lookahead < len(lines):
+                    next_body = lines[lookahead].rstrip("\r\n")
+                    next_indent = len(next_body) - len(next_body.lstrip(" \t"))
+                    if next_indent > base_indent:
+                        index += 1
+                        continue
+                break
+            candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+            if candidate_indent > base_indent:
+                index += 1
+                continue
+            break
+    return "".join(output), count
 
 
 def redact_secrets(text: str) -> tuple[str, int]:
     """Redact common credential forms without changing existing markers."""
-    count = 0
+    text, count = _redact_yaml_blocks(text)
 
     def substitute(pattern: re.Pattern[str], replacement, value: str) -> str:
         nonlocal count

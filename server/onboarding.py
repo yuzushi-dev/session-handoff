@@ -45,17 +45,35 @@ def _detect_client() -> str | None:
     return detected[0]
 
 
+_DETACHED_SETUP_SCRIPT = r"""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+plugin_root = Path(sys.argv[1])
+client = sys.argv[2]
+selected = os.environ.get("SESSION_HANDOFF_HOME")
+home = (Path(selected).expanduser() if selected is not None else Path.home()).resolve()
+marker = home / ".config/session-handoff/launcher-notice-v1"
+command = [sys.executable, str(plugin_root / "bin/session-handoff"),
+           "setup", "--client", client, "--yes"]
+try:
+    result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            check=False)
+    success = result.returncode == 0
+except BaseException:
+    success = False
+if not success:
+    marker.unlink(missing_ok=True)
+sys.exit(0 if success else 1)
+"""
+
+
 def _spawn_detached_setup(plugin_root: Path, client: str) -> None:
-    command = [
-        sys.executable,
-        str(plugin_root / "bin/session-handoff"),
-        "setup",
-        "--client",
-        client,
-        "--yes",
-    ]
     subprocess.Popen(
-        command,
+        [sys.executable, "-c", _DETACHED_SETUP_SCRIPT, str(plugin_root), client],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -105,7 +123,14 @@ def launcher_notice(plugin_root: Path) -> str | None:
             "Skip setup to keep resuming handoffs manually. Telemetry is a separate choice."
         )
 
-    _spawn_detached_setup(plugin_root, client)
+    try:
+        _spawn_detached_setup(plugin_root, client)
+    except Exception:
+        try:
+            (home / ".config/session-handoff/launcher-notice-v1").unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     other = "codex" if client == "claude" else "claude"
     return (
         "session-handoff — Automatic session switching\n"

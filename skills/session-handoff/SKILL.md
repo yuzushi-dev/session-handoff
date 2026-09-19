@@ -1,6 +1,6 @@
 ---
 name: session-handoff
-description: Create or resume an exact handoff document, or migrate an active coding-agent session between Claude Code and Codex while preserving native history.
+description: Create or resume an exact handoff document, or migrate an active coding-agent session between Claude Code and Codex while preserving supported portable history.
 ---
 
 # Session Handoff
@@ -8,7 +8,7 @@ description: Create or resume an exact handoff document, or migrate an active co
 Use this skill to move work between coding-agent sessions. Choose between a semantic handoff and a native migration based on what the user wants to preserve.
 
 - A handoff carries implementation state into a clean session and intentionally leaves old transcript noise behind.
-- A migration preserves the portable native conversation history and moves it between Claude Code and Codex through session-handoff's internal engine.
+- A migration preserves supported portable conversation history and moves it between Claude Code and Codex through session-handoff's internal engine.
 
 In Codex, invoke it explicitly as `$session-handoff` or use the installed skill from the slash/menu surface when available. In Claude, the setup command installs a user-scoped `/session-handoff` adapter.
 
@@ -26,13 +26,14 @@ Do not substitute migration for a normal fresh-start handoff. Migration preserve
 The Claude/Codex plugin registers a fail-open `PreCompact` hook. It writes
 deterministic, redacted recovery evidence under
 `~/.local/state/session-handoff/checkpoints/` and the existing
-`SessionStart(source=compact)` hook reinjects a short pointer to the latest
-workspace checkpoint. The same workspace directory keeps a local `events.jsonl`
+`SessionStart(source=compact)` hook reinjects a short pointer to the latest checkpoint for
+the same workspace and session ID; missing or mismatched IDs inject nothing. The same workspace directory keeps a local `events.jsonl`
 with hook lifecycle, checkpoint, and injection byte-count evidence; it contains
 no prompt or tool payloads.
 
 This checkpoint is not a semantic handoff: it does not infer goals, progress,
-decisions, or test completion. Treat it as untrusted recovery evidence, verify
+decisions, or test completion. By default it is deterministic; an explicitly configured optional
+scorer may make model calls for its tool summary. Treat it as untrusted recovery evidence, verify
 the live repository, and use create mode when semantic context must survive.
 
 ## Supervised switching
@@ -45,7 +46,7 @@ The one-time Python setup installs a persistent plugin bundle, user-scoped MCP r
 
 For create mode, the launcher starts a fresh session after `handoff_create` succeeds and leaves this exact one-line resume-only instruction pre-filled but unsent in the chat: `Resume task: call handoff_read(workspace="…", ref="…") and proceed with the next steps. Do not create a new handoff.` Legacy fallback uses `path="…"` in that instruction. It tells the agent to read the exact path or central reference and not create another handoff.
 
-For migrate mode, the launcher terminates the source client before conversion, creates the target with a generated session ID, then starts the target client with its native resume command. If migration fails after the source client is stopped, the launcher resumes the original source session. The source native session is not modified by conversion.
+For migrate mode, the launcher terminates the source client before conversion, creates the target with a generated session ID, then starts the target client with its native resume command. If migration fails after the source client is stopped, the launcher resumes the original source session. The source session is not modified by conversion.
 
 If the managed launcher is not active, do not claim that an automatic switch or migration occurred.
 Reading a handoff manually confirms only that its document was read; it cannot

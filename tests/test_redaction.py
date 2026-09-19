@@ -101,3 +101,38 @@ def test_redact_unterminated_quoted_backslashes_in_isolated_process():
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == ['TOKEN="[REDACTED]', 1]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "password: |\n  " + "blocked-" + "value\nnext: keep\n",
+        "password: |-\n  " + "blocked-" + "value\nnext: keep\n",
+        "password: |+\n  " + "blocked-" + "value\nnext: keep\n",
+        "password: >\n  " + "blocked-" + "value\nnext: keep\n",
+        "'api_token': >-\n  " + "blocked-" + "value\nnext: keep\n",
+        '"credential": |2- # preserve comment\n    ' + "blocked-" + "value\nnext: keep\n",
+    ],
+)
+def test_redact_yaml_secret_blocks_preserves_siblings_and_is_idempotent(source):
+    redacted, count = redact_secrets(source)
+
+    assert count == 1
+    assert "blocked-value" not in redacted
+    assert "next: keep" in redacted
+    assert redact_secrets(redacted) == (redacted, 0)
+
+
+def test_redact_yaml_secret_block_inside_sequence_preserves_sibling():
+    source = (
+        "accounts:\n"
+        "  - password: |-\n"
+        "      " + "synthetic-" + "canary\n"
+        "    user: alice\n"
+    )
+
+    redacted, count = redact_secrets(source)
+
+    assert count == 1
+    assert "synthetic-canary" not in redacted
+    assert "    user: alice" in redacted

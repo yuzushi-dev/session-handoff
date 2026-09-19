@@ -121,6 +121,8 @@ class PaginatedMigrationError(RuntimeError):
 class PaginatedProjection:
     source_rollout: Path
     rollout_path: Path
+    history_item_count: int
+    history_items_sha256: str
     dropped: dict[str, int]
     normalized_fields: dict[str, list[str]]
     warnings: tuple[dict[str, str], ...]
@@ -144,7 +146,7 @@ def project_paginated_codex(
     history_db = home / "thread_history_1.sqlite"
     if not history_db.is_file():
         raise PaginatedMigrationError(f"Codex thread history database not found: {history_db}")
-    items = _read_items(history_db, session_id)
+    items, selected_items_sha256 = _read_items(history_db, session_id)
     if not items:
         raise PaginatedMigrationError("Codex paginated thread has no canonical history items")
     if _sha256(source_rollout) != before_hash:
@@ -165,6 +167,8 @@ def project_paginated_codex(
     return PaginatedProjection(
         source_rollout=source_rollout,
         rollout_path=rollout_path,
+        history_item_count=len(items),
+        history_items_sha256=selected_items_sha256,
         dropped=dict(sorted(dropped.items())),
         normalized_fields={
             key: sorted(values) for key, values in sorted(normalized_fields.items())
@@ -231,7 +235,7 @@ def _read_metadata(path: Path, session_id: str) -> dict[str, Any]:
     return payload
 
 
-def _read_items(path: Path, session_id: str) -> list[tuple[int, int | None, dict[str, Any]]]:
+def _read_items(path: Path, session_id: str) -> tuple[list[tuple[int, int | None, dict[str, Any]]], str]:
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -253,6 +257,7 @@ def _read_items(path: Path, session_id: str) -> list[tuple[int, int | None, dict
         raise PaginatedMigrationError("Codex paginated thread exceeds the item limit")
 
     items: list[tuple[int, int | None, dict[str, Any]]] = []
+    selected_digest = hashlib.sha256()
     for item_id, ordinal, created_at_ms, raw in rows:
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_ITEM_BYTES:
             raise PaginatedMigrationError("Codex paginated item exceeds the size limit")
@@ -262,8 +267,16 @@ def _read_items(path: Path, session_id: str) -> list[tuple[int, int | None, dict
             raise PaginatedMigrationError("Codex paginated item is invalid JSON") from exc
         if not isinstance(item, dict):
             raise PaginatedMigrationError("Codex paginated item is not an object")
+        selected_digest.update(
+            json.dumps(
+                [item_id, ordinal, created_at_ms, raw],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        selected_digest.update(b"\n")
         items.append((int(ordinal), created_at_ms, item))
-    return items
+    return items, selected_digest.hexdigest()
 
 
 def _legacy_records(

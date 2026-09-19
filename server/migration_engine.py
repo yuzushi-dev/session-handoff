@@ -35,6 +35,7 @@ def convert_native_session(
     target_session_id: str,
     workspace: Path,
     target_home: Path,
+    source_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_bytes = source_path.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
@@ -70,17 +71,20 @@ def convert_native_session(
     target_bytes = _encode_jsonl(target_records)
     target_sha256 = hashlib.sha256(target_bytes).hexdigest()
     manifest_path = target_home / "session-handoff/manifests" / f"{target_session_id}.json"
+    source = {
+        "format": source_client,
+        "path": str(source_path.resolve()),
+        "sha256": source_sha256,
+        "session_id": source_session_id,
+        "cli_version": metadata.get("cli_version"),
+        "records": len(records),
+    }
+    if source_provenance:
+        source.update(source_provenance)
     manifest = {
         "schema_version": 2,
         "migration_version": "0.5.4",
-        "source": {
-            "format": source_client,
-            "path": str(source_path.resolve()),
-            "sha256": source_sha256,
-            "session_id": source_session_id,
-            "cli_version": metadata.get("cli_version"),
-            "records": len(records),
-        },
+        "source": source,
         "target": {
             "format": target_client,
             "path": str(output.resolve()),
@@ -99,7 +103,13 @@ def convert_native_session(
         manifest_path,
         (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
     )
-    if hashlib.sha256(source_path.read_bytes()).hexdigest() != source_sha256:
+    source_changed = hashlib.sha256(source_path.read_bytes()).hexdigest() != source_sha256
+    if source_provenance:
+        native_path = source_provenance.get("path")
+        native_sha256 = source_provenance.get("sha256")
+        if isinstance(native_path, str) and isinstance(native_sha256, str):
+            source_changed = source_changed or hashlib.sha256(Path(native_path).read_bytes()).hexdigest() != native_sha256
+    if source_changed:
         _unlink_created(output)
         _unlink_created(manifest_path)
         raise EngineError("source session changed during conversion")
