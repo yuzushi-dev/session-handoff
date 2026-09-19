@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +31,7 @@ def _central_list_limit(value: str) -> int:
     return limit
 
 from server.session_switch import SessionSupervisor, _python_cli_command, _telemetry_notice
-from server.setup import SetupError, clear_installation_id, ensure_installation_id, install_setup, lifecycle_registered, mark_lifecycle_registered, render_plan, restore_setup, setup_plan
+from server.setup import SetupError, clear_installation_id, ensure_installation_id, install_setup, lifecycle_registered, mark_lifecycle_registered, mark_status_observed, render_plan, restore_setup, setup_plan, status_observation_due
 from server.command_matrix import main as doctor_main
 from server import checkpoint, handoff_store
 import server.telemetry as telemetry
@@ -44,16 +45,18 @@ def _enroll_lifecycle(home: Path) -> bool:
     if telemetry.do_not_track_enabled():
         return False
     config = telemetry.load_config(home)
-    if config is None or not config.get("enabled") or config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
+    if config is None or not config.get("enabled") or config.get("consent_version", 1) < telemetry.LIFECYCLE_CONSENT_VERSION:
         return False
-    if lifecycle_registered(home):
-        return False
+    if config.get("consent_version", 1) >= telemetry.STATUS_CONSENT_VERSION:
+        return telemetry.observe_installation(home)
     installation_id = ensure_installation_id(home)
     if installation_id is None:
         return False
+    if lifecycle_registered(home):
+        return False
     event = telemetry.installation_lifecycle_event(installation_id, "registered")
     queued = telemetry.record_installation_lifecycle(event, home)
-    if queued or lifecycle_registered(home):
+    if queued:
         mark_lifecycle_registered(home, event["day_utc"], installation_id)
     return queued
 
@@ -104,14 +107,14 @@ def _telemetry(argv: list[str]) -> int:
                 if config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
                     telemetry.upgrade_consent(home)
                     _enroll_lifecycle(home)
-                    print("Anonymous telemetry remains enabled; pseudonymous installation lifecycle telemetry is now enabled.")
+                    print("Anonymous telemetry remains enabled; pseudonymous installation registry telemetry (registration, daily/version observations, and managed install/uninstall) is now enabled.")
                 else:
                     _enroll_lifecycle(home)
                     print("Telemetry is already enabled.")
                 return 0
             if telemetry.consent_state(config) == "declined":
                 if telemetry.enable_consent(home):
-                    print("Telemetry enabled.")
+                    print("Telemetry enabled: anonymous aggregates plus pseudonymous installation registry observations and lifecycle counts.")
                 else:
                     print("Telemetry remains disabled.")
                 return 0
@@ -128,18 +131,18 @@ def _telemetry(argv: list[str]) -> int:
                 return 2
             telemetry.request_consent(home, interactive=True, input_fn=input)
             _enroll_lifecycle(home)
-            print("Telemetry consent recorded. This enables anonymous operation aggregates and, with consent v2, pseudonymous installation lifecycle counts.")
+            print("Telemetry consent recorded. This enables anonymous operation aggregates and, with explicit consent v3, pseudonymous installation registry observations and lifecycle counts.")
             return 0
         if args.command == "yes":
             if config is not None and config["enabled"] and config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
                 telemetry.upgrade_consent(home)
                 _enroll_lifecycle(home)
-                print("Anonymous telemetry remains enabled; pseudonymous installation lifecycle telemetry is now enabled.")
+                print("Anonymous telemetry remains enabled; pseudonymous installation registry telemetry (registration, daily/version observations, and managed install/uninstall) is now enabled.")
             elif config is not None and config["enabled"]:
                 print("Telemetry is already enabled.")
             elif telemetry.enable_consent(home):
                 _enroll_lifecycle(home)
-                print("Telemetry enabled.")
+                print("Telemetry enabled: anonymous aggregates plus pseudonymous installation registry observations and lifecycle counts.")
             else:
                 print("Telemetry remains disabled.")
             return 0
@@ -386,9 +389,13 @@ def _uninstall(argv: list[str]) -> int:
         try:
             config = telemetry.load_config(home)
             installation_id = result.get("installation_id")
-            if installation_id and config and config.get("consent_version", 1) >= telemetry.CONSENT_VERSION:
-                event = telemetry.installation_lifecycle_event(installation_id, "uninstalled")
-                telemetry.record_installation_lifecycle(event, home)
+            if installation_id and config and config.get("consent_version", 1) >= telemetry.LIFECYCLE_CONSENT_VERSION:
+                if config.get("consent_version", 1) >= telemetry.STATUS_CONSENT_VERSION:
+                    event = telemetry.installation_status_event(installation_id, "uninstalled")
+                    telemetry.record_installation_status(event, home)
+                else:
+                    event = telemetry.installation_lifecycle_event(installation_id, "uninstalled")
+                    telemetry.record_installation_lifecycle(event, home)
                 telemetry.flush_queue(home)
         except (telemetry.TelemetryConfigError, OSError, ValueError):
             pass

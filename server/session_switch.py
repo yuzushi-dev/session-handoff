@@ -764,7 +764,7 @@ def _telemetry_notice(client: str, stream: Any = None) -> None:
         no = _python_cli_command("telemetry", "no")
         print(
             "session-handoff telemetry is off by default. Run "
-            f"`{yes}` to enable anonymous aggregate telemetry plus a random per-home installation ID used only for install/uninstall counts, or `{no}` to decline. "
+            f"`{yes}` to enable anonymous aggregate telemetry plus a random per-home installation ID used for registration, daily/version status observations, and managed install/uninstall counts, or `{no}` to decline. "
             f"Details: {telemetry.TELEMETRY_DETAILS_URL}",
             file=stream,
         )

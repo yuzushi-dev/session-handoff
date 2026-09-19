@@ -91,7 +91,7 @@ def lifecycle_rows(home):
 
 def test_real_setup_preserves_identity_until_successful_uninstall(lifecycle_cli):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     installation = lifecycle_state(home)["installation_id"]
     assert len(installation) == 32
@@ -117,13 +117,13 @@ def test_old_consent_setup_does_not_enroll_until_explicit_yes(lifecycle_cli):
     assert not lifecycle_rows(home)
     assert t.load_config(home)["consent_version"] == 1
     assert cli["_telemetry"](["yes"]) == 0
-    assert t.load_config(home)["consent_version"] == 2
-    assert len(lifecycle_rows(home)) == 1
+    assert t.load_config(home)["consent_version"] == 3
+    assert len([row for row in t.load_batch(home) if row["event"] in {"installation_lifecycle", "installation_status"}]) == 1
 
 
 def test_dnt_prevents_identity_creation_even_with_saved_v2_consent(lifecycle_cli, monkeypatch):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     monkeypatch.setenv("DO_NOT_TRACK", "1")
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     assert "installation_id" not in lifecycle_state(home)
@@ -132,7 +132,7 @@ def test_dnt_prevents_identity_creation_even_with_saved_v2_consent(lifecycle_cli
 
 def test_externally_changed_launcher_uninstall_does_not_report_removal(lifecycle_cli):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     (home / ".local/bin/codex").write_text("#!/bin/sh\n# externally replaced\nexit 0\n")
     assert cli["_uninstall"](["--yes"]) != 0
@@ -141,7 +141,7 @@ def test_externally_changed_launcher_uninstall_does_not_report_removal(lifecycle
 
 def test_purge_then_explicit_yes_creates_new_identity(lifecycle_cli):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     old = lifecycle_state(home)["installation_id"]
     assert cli["_telemetry"](["disable", "--purge"]) == 0
@@ -150,12 +150,12 @@ def test_purge_then_explicit_yes_creates_new_identity(lifecycle_cli):
     assert not lifecycle_rows(home)
     assert cli["_telemetry"](["yes"]) == 0
     assert lifecycle_state(home)["installation_id"] != old
-    assert len(lifecycle_rows(home)) == 1
+    assert len([row for row in t.load_batch(home) if row["event"] in {"installation_lifecycle", "installation_status"}]) == 1
 
 
 def test_corrupt_telemetry_config_does_not_fail_successful_uninstall(lifecycle_cli):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     (home / t.CONFIG_PATH).write_text("invalid config")
     assert cli["_uninstall"](["--yes"]) == 0
@@ -165,7 +165,7 @@ def test_corrupt_telemetry_config_does_not_fail_successful_uninstall(lifecycle_c
 
 def test_cancelled_uninstall_does_not_report_removal(lifecycle_cli, monkeypatch):
     home, cli = lifecycle_cli
-    t.write_config(home, t.enabled_config())
+    t.write_config(home, t.enabled_config(consent_version=2))
     assert cli["_setup"](["--client", "codex", "--yes"]) == 0
     monkeypatch.setattr("builtins.input", lambda _: "n")
     assert cli["_uninstall"]([]) == 0

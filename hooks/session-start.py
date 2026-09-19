@@ -51,6 +51,7 @@ def main() -> int:
             return 0
         config = telemetry.load_config()
         if telemetry.consent_state(config) == "enabled":
+            telemetry.observe_installation()
             telemetry.session_start_flush()
             _output(context=context, system_message=notice)
             return 0
@@ -63,7 +64,7 @@ def main() -> int:
             system_message=((notice + "\n\n") if notice else "") + (
                 "session-handoff — Telemetry (optional)\n"
                 "Telemetry is off by default. Reply with exactly one of: "
-                "`session-handoff telemetry yes` to enable anonymous aggregate telemetry plus a random per-home installation ID used only for install/uninstall counts, or "
+                "`session-handoff telemetry yes` to enable anonymous aggregate telemetry plus a random per-home installation ID used for registration, daily/version status observations, and managed install/uninstall counts, or "
                 "`session-handoff telemetry no` to decline. "
                 f"Details: {telemetry.TELEMETRY_DETAILS_URL}"
             ),

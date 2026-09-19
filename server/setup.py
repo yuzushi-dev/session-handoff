@@ -453,7 +453,7 @@ def install_setup(
                 "targets": {client: str(targets[client]) for client in all_clients},
                 "skill_hashes": {client: _digest(skill_content) for client in all_clients},
             }
-            for key in ("installation_id", "lifecycle_registration_day_utc", "lifecycle_registered"):
+            for key in ("installation_id", "lifecycle_registration_day_utc", "lifecycle_registered", "status_observed_day_utc", "status_observed_version"):
                 if key in state:
                     new_state[key] = state[key]
             _write_json(state_path, new_state)
@@ -571,6 +571,27 @@ def ensure_installation_id(home: Path) -> str | None:
         return value
 
 
+def status_observation_due(home: Path, plugin_version: str, day_utc: str) -> bool:
+    state_path = home / STATE_PATH
+    if not state_path.is_file():
+        return False
+    state = _load_state(state_path)
+    return state.get("status_observed_day_utc") != day_utc or state.get("status_observed_version") != plugin_version
+
+
+def mark_status_observed(home: Path, day_utc: str, plugin_version: str, installation_id: str) -> None:
+    with _setup_lock(home):
+        state_path = home / STATE_PATH
+        if not state_path.is_file():
+            return
+        state = _load_state(state_path)
+        if state.get("installation_id") != installation_id:
+            return
+        state["status_observed_day_utc"] = day_utc
+        state["status_observed_version"] = plugin_version
+        _write_json(state_path, state)
+
+
 def lifecycle_registered(home: Path) -> bool:
     state_path = home / STATE_PATH
     if not state_path.is_file():
@@ -600,10 +621,14 @@ def clear_installation_id(home: Path) -> None:
         had_id = "installation_id" in state
         had_day = "lifecycle_registration_day_utc" in state
         had_marker = "lifecycle_registered" in state
+        had_status_day = "status_observed_day_utc" in state
+        had_status_version = "status_observed_version" in state
         state.pop("installation_id", None)
         state.pop("lifecycle_registration_day_utc", None)
         state.pop("lifecycle_registered", None)
-        if had_id or had_day or had_marker:
+        state.pop("status_observed_day_utc", None)
+        state.pop("status_observed_version", None)
+        if had_id or had_day or had_marker or had_status_day or had_status_version:
             _write_json(state_path, state)
 
 

@@ -125,9 +125,11 @@ handoff, on top of the model being told never to copy secrets into one.
 central-store readiness without starting a model session.
 - **Telemetry off until you say yes.** No collection happens without an explicit choice; see
 [docs/telemetry.md](docs/telemetry.md) for the full inventory and controls.
-  New consent v2 includes a random per-home ID for installation registrations
-  and successful managed uninstalls only. Existing v1 consent remains
-  anonymous-aggregate-only until explicitly renewed.
+  Explicit consent v3 includes a random per-home ID for registration, daily/version
+  observations, and successful managed uninstalls; the registry retains first/last
+  observation and last version while the service operates. Existing v1/v2 consent
+  remains scoped to anonymous aggregates or lifecycle counts until explicitly renewed.
+  Local purge stops future updates but cannot erase records already received by the server.
 
 ## Architecture in brief
 
