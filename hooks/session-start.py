@@ -63,7 +63,7 @@ def main() -> int:
             system_message=((notice + "\n\n") if notice else "") + (
                 "session-handoff — Telemetry (optional)\n"
                 "Telemetry is off by default. Reply with exactly one of: "
-                "`session-handoff telemetry yes` to enable anonymous aggregate telemetry, or "
+                "`session-handoff telemetry yes` to enable anonymous aggregate telemetry plus a random per-home installation ID used only for install/uninstall counts, or "
                 "`session-handoff telemetry no` to decline. "
                 f"Details: {telemetry.TELEMETRY_DETAILS_URL}"
             ),

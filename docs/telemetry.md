@@ -6,8 +6,10 @@ advice.
 
 ## What's collected
 
-When enabled, the client records daily aggregates and one `active_day` marker.
-It never uploads an individual operation or a partial current-day counter.
+With consent version 1 or 2, the client records anonymous daily aggregates
+and one `active_day` marker. It never uploads an individual operation or a
+partial current-day counter. Explicit consent version 2 additionally enables
+the pseudonymous installation lifecycle records described below.
 
 An operation aggregate contains only:
 
@@ -36,35 +38,78 @@ that sum to a cell, privately. There is no public query or export API beyond
 private Grafana. A trusted operator with private Loki/Grafana access can query
 raw allowlisted aggregate rows, including rows below 5; the threshold is not a
 universal authorization policy for every private query. This threshold protects
-small aggregate cells; it is not k-anonymity and does not count users. No stable
-identifier exists and no unique-user denominator is computed; no stable identifier
-is ever sent.
+small aggregate cells; it is not k-anonymity and does not count people.
+Lifecycle panels apply the same threshold after counting distinct installation
+IDs, not submitted rows. No unique-user denominator is computed. Operation,
+activity and feedback rows never contain a stable identifier.
 
 Structured context feedback contains one closed category
 (`constraint`, `decision`, `path`, `progress`, or `rejected_attempt`) and one
 severity (`recoverable` or `blocked`). It is recorded only through the
 explicit `telemetry report` command. Redaction counts stay local.
 
+### Installation registrations and managed uninstalls (consent v2)
+
+After new explicit consent and successful setup, the client generates a random
+installation ID for that local home. Codex and Claude configured in the same
+home share it. Reconciliation, upgrades and adding the second client retain it.
+It is not derived from a username, hostname, device, account, repository or
+session, and it is never attached to operation, activity or feedback records.
+
+Each lifecycle row has exactly seven fields:
+
+- `schema_version`: integer `3`;
+- `event`: `installation_lifecycle`;
+- `day_utc`: event day in UTC;
+- `plugin_version`: installed package version;
+- `origin`: `real` or `benchmark`;
+- `installation_id`: 32 cryptographically random lowercase hexadecimal characters;
+- `lifecycle_action`: `registered` or `uninstalled`.
+
+Its OTLP body is `session_handoff.installation_lifecycle`. The identifier links
+lifecycle records with each other: these records are pseudonymous, not anonymous.
+Loki stores the ID as structured metadata, never as an indexed stream label.
+Private operators can inspect it; dashboard queries return distinct counts only.
+
+An already configured installation registers when its user grants v2 consent;
+the event day is the enrollment day, not a recovered historical installation
+date. Only successful `session-handoff uninstall` emits a removal. Failed,
+cancelled and no-op removals do not. Delivery is bounded and best effort:
+offline removal, package-manager or marketplace removal, and manual deletion
+may never be observed. Inactivity is never treated as an uninstall.
+
+Successful managed uninstall ends that identity. Reinstall or local identity
+purge may create a new one; cloning a home can copy an ID. These metrics describe
+observed consenting configured local profiles, not people, downloads, all
+installations, or a current installed population. The public write endpoint
+does not independently attest the installation. Counts cover events received
+within the selected time window and backend retention, not permanent all-time
+totals. Version/route operation metrics cannot be joined to individual IDs.
+
 The local configuration and state contain the consent state, consent timestamp,
-fixed endpoint, aggregate counters, queue, and last-operation summary. The
-consent timestamp is never uploaded.
+fixed endpoint, aggregate counters, queue, and last-operation summary. With v2
+consent, local setup state also retains the random lifecycle ID and registration
+marker. The consent timestamp is never uploaded.
 
 ## What's never collected
 
 Transcript, prompt, handoff text, tool trace, command, diff, file path, session
-ID, installation ID, device ID, account ID, hostname, username, IP address,
+ID, device ID, account ID, hostname, username, IP address,
 user agent, locale, repository name, model name, arbitrary metadata, exception
 text, stack trace, free text, credentials, tokens, cookies, or authorization
-headers. There is no installation identifier and no pseudonymous user ID. Each
-OTLP batch request also carries an `Idempotency-Key`, derived from that request
-body for retry-safe batch deduplication; it is not a user or installation ID
-and is not a telemetry attribute.
+headers. The only installation-ID exception is the explicitly consented
+lifecycle schema above. Each OTLP batch request also carries an
+`Idempotency-Key` derived from that request body; it is not an installation ID
+or a telemetry attribute. The current backend does not enforce request-level
+deduplication, so aggregate retransmissions can repeat. Lifecycle panels count
+distinct IDs per action and receipt window, avoiding retransmission inflation.
 
 ## Purpose and limits
 
 The purpose is to measure aggregate usage/performance and mechanical continuity
-outcomes, plus voluntary structured context-loss feedback. This is not user analytics,
-profiling, a heartbeat, content inspection, or a population failure rate. It
+outcomes, voluntary structured context-loss feedback, and observed installation
+registrations and managed removals. This is not user profiling, a heartbeat,
+content inspection, or a population failure rate. It
 is an opt-in sample with no unique-user denominator.
 
 ## Where it goes and how it is processed
@@ -81,7 +126,8 @@ The public write path uses the Cloudflare Tunnel `sando-telemetry` on the
 `yuzushi.party` Free Website zone, with origin `http://gateway:4318`. A
 read-only inventory found no account/zone Logpush job. Cloudflare is a global
 edge/tunnel processor alongside the private self-hosted origin in Italy/UE.
-The application payload does not contain IP addresses or stable identifiers.
+The application payload contains no IP addresses. Only the new-consent
+lifecycle records contain a stable random installation ID.
 Local nginx has `access_log off`, and cloudflared has no access-log sink or
 persistent access-log volume in this repository. Cloudflare may nevertheless
 process peer IP and edge metadata and produce aggregate analytics, including
@@ -124,20 +170,28 @@ the telemetry payload or an identifier.
 | Data | Retention | Control |
 | --- | --- | --- |
 | Local counters and queue | 30 days maximum, 256 rows maximum | `session-handoff telemetry disable --purge` immediately |
+| Local lifecycle identity | Until successful managed uninstall or local purge | No automatic remote deletion |
 | Collector batch memory | Up to the configured 5-second batch timeout | Process expiry |
-| Loki aggregate rows | 13 months (`11232h`) | Operator storage retention and purge |
+| Loki aggregate and lifecycle rows | 13 months (`11232h`) | Operator storage retention and purge |
 | Backups | no backups exist for this self-hosted backend | No backup purge is applicable; any future backup requires a new review |
 | Proxy access logs | access logs are disabled (`access_log off`) | Static config and disposable exercise |
 | Cloudflare edge/tunnel metadata and analytics | owner acceptance recorded 2026-09-03; provider retention period not asserted | Owner acceptance and read-only tunnel inventory |
 
-No contributor or installation identifier is stored, so an individual backend
-row cannot be located or deleted. Disabling stops new collection. Purging
-removes local counters, queue, summaries, and consent metadata; it cannot
-remove rows already uploaded, which expire under the backend retention rule.
+Disabling stops new collection and upload. Purging removes local counters,
+queue, summaries, lifecycle identity and consent metadata. Anonymous aggregates
+cannot be attributed to a contributor; lifecycle rows can be located privately
+by their random ID. There is no automated client-side remote deletion endpoint.
+Local purge cannot remove rows already uploaded, which expire under backend
+retention or an operator purge.
 
 ## Consent and controls
 
-Telemetry stays off until an explicit answer. The local state is one of:
+Telemetry stays off until an explicit answer. Existing v1 consent continues
+to authorize only anonymous schema-2 rows. Setup, hooks, postinstall and upgrades
+never silently change it to v2. An explicit `telemetry enable` or `telemetry yes`
+accepts the disclosed v2 scope and enrolls an existing configured home.
+
+The local state is one of:
 
 `unasked → asked → enabled`
 

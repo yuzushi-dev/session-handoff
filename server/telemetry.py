@@ -32,12 +32,14 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
 
-EVENTS = frozenset({"operation_summary", "context_feedback", "active_day"})
+EVENTS = frozenset({"operation_summary", "context_feedback", "active_day", "installation_lifecycle"})
 OPERATIONS = frozenset({"handoff", "migrate"})
 CLIENTS = frozenset({"claude", "codex"})
 CLIENT_ROUTES = frozenset(f"{source}_to_{target}" for source in CLIENTS for target in CLIENTS)
 ORIGINS = frozenset({"real", "benchmark"})
 EVENT_SCHEMA_VERSION = 2
+LIFECYCLE_SCHEMA_VERSION = 3
+_LIFECYCLE_FIELDS = frozenset({"schema_version", "event", "day_utc", "plugin_version", "origin", "installation_id", "lifecycle_action"})
 RESULTS = frozenset({"success", "failure", "fallback"})
 FAILURE_STAGES = frozenset(
     {"none", "validation", "content_form", "state_schema", "size_limit", "missing_sections", "path_exists", "control", "source_stop", "conversion", "target_resume", "source_resume", "unknown"}
@@ -99,10 +101,10 @@ CONFIG_PATH = Path(".config/session-handoff/telemetry.json")
 STATE_PATH = Path(".local/state/session-handoff")
 # Canary deployment details and release gates are documented in docs/telemetry.md.
 ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
-CONSENT_VERSION = 1
+CONSENT_VERSION = 2
 TELEMETRY_DETAILS_URL = "https://github.com/yuzushi-dev/session-handoff/blob/main/docs/telemetry.md"
 CONSENT_STATES = frozenset({"unasked", "asked", "enabled", "declined"})
-CONSENT_PROMPT = f"Enable anonymous telemetry? Full details at: {TELEMETRY_DETAILS_URL} [y/yes/n/no] "
+CONSENT_PROMPT = f"Enable anonymous aggregate telemetry? A separate explicit consent enables a random per-home installation ID for install/uninstall counts. Details: {TELEMETRY_DETAILS_URL} [y/yes/n/no] "
 
 
 class TelemetryConfigError(ValueError):
@@ -139,14 +141,14 @@ def disabled_config():
     return {"schema_version": 1, "enabled": False, "consent_state": "declined"}
 
 
-def enabled_config(consented_at=None):
+def enabled_config(consented_at=None, *, consent_version=CONSENT_VERSION):
     if consented_at is None:
         consented_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "schema_version": 1,
         "enabled": True,
         "consent_state": "enabled",
-        "consent_version": CONSENT_VERSION,
+        "consent_version": consent_version,
         "consented_at": consented_at,
         "endpoint": ENDPOINT,
     }
@@ -170,7 +172,7 @@ def _validate_config(config):
             }
             if set(config) != expected:
                 raise TelemetryConfigError("invalid enabled telemetry config fields")
-            if type(config["consent_version"]) is not int or config["consent_version"] != CONSENT_VERSION:
+            if type(config["consent_version"]) is not int or config["consent_version"] not in {1, CONSENT_VERSION}:
                 raise TelemetryConfigError("invalid telemetry consent version")
             if not isinstance(config["consented_at"], str):
                 raise TelemetryConfigError("invalid telemetry consent timestamp")
@@ -203,7 +205,7 @@ def _validate_config(config):
     }:
         raise TelemetryConfigError("invalid enabled telemetry config fields")
     if any(
-        type(config[field]) is not int or config[field] != CONSENT_VERSION
+        type(config[field]) is not int or config[field] not in {1, CONSENT_VERSION}
         for field in ("prompted_consent_version", "consent_version")
     ):
         raise TelemetryConfigError("invalid telemetry consent version")
@@ -217,7 +219,7 @@ def _validate_config(config):
         raise TelemetryConfigError("invalid telemetry consent timestamp")
     if config["endpoint"] != ENDPOINT:
         raise TelemetryConfigError("invalid telemetry endpoint")
-    return enabled_config(config["consented_at"])
+    return enabled_config(config["consented_at"], consent_version=config["consent_version"])
 
 
 def _require_secure_filesystem():
@@ -693,6 +695,26 @@ def enable_consent(home=None):
     return _transition_consent(home, "enabled", allow_declined=True)
 
 
+def upgrade_consent(home=None):
+    """Explicitly extend existing anonymous consent to lifecycle telemetry."""
+    if do_not_track_enabled():
+        return False
+    root = _home(home)
+    directory, directory_fd = _open_secure_directory(root, CONFIG_PATH.parent, create=True)
+    try:
+        with _config_directory_lock(directory, directory_fd) as lock_fd:
+            current = _read_config_locked(directory, directory_fd)
+            if current is None or not current.get("enabled") or current.get("consent_version") >= CONSENT_VERSION:
+                return False
+            generation = _read_generation_locked(directory, directory_fd)
+            _bump_lock_marker(lock_fd, directory)
+            _write_config_locked(directory, directory_fd, enabled_config(current["consented_at"]))
+            _write_generation_locked(directory, directory_fd, generation + 1)
+            return True
+    finally:
+        os.close(directory_fd)
+
+
 def request_consent(home, *, interactive, input_fn=None):
     if do_not_track_enabled():
         return None
@@ -952,12 +974,37 @@ def bucket_handoff_bytes(size):
 def validate_event(payload):
     if not isinstance(payload, dict) or any(not isinstance(key, str) for key in payload):
         raise ValueError("event must be a JSON object")
+    if not isinstance(payload.get("event"), str) or payload["event"] not in EVENTS:
+        raise ValueError("invalid event")
+    if payload["event"] == "installation_lifecycle":
+        if set(payload) != _LIFECYCLE_FIELDS:
+            raise ValueError("wrong lifecycle event shape")
+        if type(payload["schema_version"]) is not int or payload["schema_version"] != LIFECYCLE_SCHEMA_VERSION:
+            raise ValueError("invalid lifecycle schema version")
+        if not isinstance(payload["installation_id"], str) or len(payload["installation_id"]) > 32 or not re.fullmatch(r"[0-9a-f]{32}", payload["installation_id"]):
+            raise ValueError("invalid installation id")
+        if not isinstance(payload["lifecycle_action"], str) or len(payload["lifecycle_action"]) > 32 or payload["lifecycle_action"] not in {"registered", "uninstalled"}:
+            raise ValueError("invalid lifecycle action")
+        if not isinstance(payload["day_utc"], str) or len(payload["day_utc"]) > 32 or not _DAY.fullmatch(payload["day_utc"]):
+            raise ValueError("invalid UTC day")
+        try:
+            date.fromisoformat(payload["day_utc"])
+        except ValueError as exc:
+            raise ValueError("invalid UTC day") from exc
+        if (
+            not isinstance(payload["plugin_version"], str)
+            or len(payload["plugin_version"]) > 32
+            or not _VERSION.fullmatch(payload["plugin_version"])
+            or not isinstance(payload["origin"], str)
+            or len(payload["origin"]) > 32
+            or payload["origin"] not in ORIGINS
+        ):
+            raise ValueError("invalid lifecycle metadata")
+        return payload
     if set(payload) & DENYLIST:
         raise ValueError("privacy-sensitive field")
     if not set(payload) <= (_OPERATION_FIELDS | _FEEDBACK_FIELDS | _ACTIVE_DAY_FIELDS):
         raise ValueError("unknown field")
-    if not isinstance(payload.get("event"), str) or payload["event"] not in EVENTS:
-        raise ValueError("invalid event")
 
     if payload["event"] == "active_day":
         fields = _ACTIVE_DAY_FIELDS
@@ -1292,6 +1339,44 @@ def increment_counter(event, home=None, now=None):
         return next(entry["count"] for entry in entries if entry["key"] == key)
 
 
+def installation_lifecycle_event(installation_id, action, now=None):
+    if not isinstance(installation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", installation_id):
+        raise ValueError("invalid installation id")
+    if action not in {"registered", "uninstalled"}:
+        raise ValueError("invalid lifecycle action")
+    day = _as_datetime(now).date().isoformat()
+    return {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "event": "installation_lifecycle",
+        "day_utc": day,
+        "plugin_version": PACKAGE_VERSION,
+        "origin": "real",
+        "installation_id": installation_id,
+        "lifecycle_action": action,
+    }
+
+
+def record_installation_lifecycle(event, home=None):
+    """Queue one consent-v2 lifecycle row with exact-row deduplication."""
+    validate_event(event)
+    if event["event"] != "installation_lifecycle":
+        raise ValueError("expected installation lifecycle event")
+    if event["plugin_version"] != PACKAGE_VERSION:
+        raise ValueError("plugin version must match installed package")
+    if do_not_track_enabled():
+        return False
+    with _state_lock(home) as (config_directory, config_fd, state_directory, state_fd):
+        config = _locked_config(config_directory, config_fd)
+        if config is None or not config["enabled"] or config.get("consent_version", 1) < CONSENT_VERSION:
+            return False
+        queued = _read_queue_locked(state_directory, state_fd)
+        if any(row == event for row in queued):
+            return False
+        queued.append(dict(event))
+        _store_queue_locked(state_directory, state_fd, queued)
+        return True
+
+
 def load_last_operation_summary(home=None, now=None):
     missing = object()
     with _state_lock(home) as (_config_directory, _config_fd, state_directory, state_fd):
@@ -1359,6 +1444,9 @@ def _aggregate_row(event, count):
 
 
 def _validate_aggregate(row):
+    if isinstance(row, dict) and row.get("event") == "installation_lifecycle":
+        validate_event(row)
+        return row
     row = _normalize_legacy_event(row)
     if not isinstance(row, dict) or type(row.get("schema_version")) is not int or row["schema_version"] != EVENT_SCHEMA_VERSION:
         raise ValueError("invalid aggregate row")
@@ -1764,9 +1852,24 @@ def _ack_batch_locked(state_directory, state_fd, batch, accepted, digest):
         if lease is None or lease["token"] != batch.queue_token or lease["digest"] != _rows_content_digest(batch):
             raise TelemetryConfigError("telemetry queue batch lease is stale")
     rows = _read_queue_locked(state_directory, state_fd)
-    if _batch_digest(rows[:len(batch)], batch.queue_token) != digest:
-        raise TelemetryConfigError("telemetry queue batch is stale")
-    _store_queue_locked(state_directory, state_fd, rows[accepted:])
+    indices = getattr(batch, "_queue_indices", None)
+    if indices is None:
+        if _batch_digest(rows[:len(batch)], batch.queue_token) != digest:
+            raise TelemetryConfigError("telemetry queue batch is stale")
+        _store_queue_locked(state_directory, state_fd, rows[accepted:])
+    else:
+        if (
+            not isinstance(getattr(batch, "_queue_rows_digest", None), str)
+            or _rows_content_digest(rows) != batch._queue_rows_digest
+            or len(indices) != len(batch)
+            or len(set(indices)) != len(indices)
+            or any(type(index) is not int or not 0 <= index < len(rows) for index in indices)
+            or [rows[index] for index in indices] != list(batch)
+            or digest != _batch_digest(batch, batch.queue_token)
+        ):
+            raise TelemetryConfigError("telemetry queue batch is stale")
+        remove = set(indices[:accepted])
+        _store_queue_locked(state_directory, state_fd, [row for index, row in enumerate(rows) if index not in remove])
     if getattr(batch, "_lease_claimed", False):
         _remove_state(state_directory, state_fd, _LEASE_NAME)
     batch.consumed = True
@@ -1805,7 +1908,10 @@ def to_otlp_logs(rows):
             {"key": key, "value": _otlp_value(row[key])}
             for key in sorted(row)
         ]
-        body = "session_handoff.active_day" if row["event"] == "active_day" else "session_handoff.daily_aggregate"
+        if row["event"] == "installation_lifecycle":
+            body = "session_handoff.installation_lifecycle"
+        else:
+            body = "session_handoff.active_day" if row["event"] == "active_day" else "session_handoff.daily_aggregate"
         records.append({"body": {"stringValue": body}, "attributes": attributes})
     return {
         "resourceLogs": [{
@@ -1982,8 +2088,19 @@ def flush_queue(home=None, opener=None, now=None):
                     return sent
                 retry = _read_json_state(state_directory, state_fd, _RETRY_NAME, {}, MAX_FLUSH_ERROR_BYTES)
                 rows = _read_queue_locked(state_directory, state_fd)
-                eligible = [row for row in rows if _retry_allowed(row, retry, now)][:MAX_UPLOAD_ROWS]
-                batch = _TelemetryBatch(eligible)
+                eligible_indices = [
+                    index for index, row in enumerate(rows)
+                    if _retry_allowed(row, retry, now)
+                    and (
+                        row.get("event") != "installation_lifecycle"
+                        or config.get("consent_version", 1) >= CONSENT_VERSION
+                    )
+                ]
+                eligible_indices.sort(key=lambda index: 0 if rows[index].get("event") == "installation_lifecycle" else 1)
+                eligible_indices = eligible_indices[:MAX_UPLOAD_ROWS]
+                batch = _TelemetryBatch([rows[index] for index in eligible_indices])
+                batch._queue_indices = eligible_indices
+                batch._queue_rows_digest = _rows_content_digest(rows)
                 batch._queue_snapshot_token = _queue_token_locked(state_directory, state_fd)
                 if not _claim_batch_lease_locked(state_directory, state_fd, batch):
                     return sent

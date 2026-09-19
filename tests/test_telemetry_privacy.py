@@ -73,7 +73,9 @@ def test_server_threshold_is_not_distinct_user_anonymity():
     privacy = PUBLIC_NOTICE.read_text(encoding="utf-8")
     assert "aggregate threshold of 5" in privacy
     assert "aggregate_count" in privacy
-    assert "no stable identifier" in privacy
+    assert "never contain a stable identifier" in privacy
+    assert "counting distinct installation" in privacy
+    assert "pseudonymous, not anonymous" in privacy
     assert "not k-anonymity" in privacy
 
 

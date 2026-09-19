@@ -30,7 +30,7 @@ def _central_list_limit(value: str) -> int:
     return limit
 
 from server.session_switch import SessionSupervisor, _python_cli_command, _telemetry_notice
-from server.setup import SetupError, install_setup, render_plan, restore_setup, setup_plan
+from server.setup import SetupError, clear_installation_id, ensure_installation_id, install_setup, lifecycle_registered, mark_lifecycle_registered, render_plan, restore_setup, setup_plan
 from server.command_matrix import main as doctor_main
 from server import checkpoint, handoff_store
 import server.telemetry as telemetry
@@ -38,6 +38,24 @@ import server.telemetry as telemetry
 
 def _home() -> Path:
     return Path(os.environ.get("SESSION_HANDOFF_HOME", str(Path.home()))).expanduser()
+
+
+def _enroll_lifecycle(home: Path) -> bool:
+    if telemetry.do_not_track_enabled():
+        return False
+    config = telemetry.load_config(home)
+    if config is None or not config.get("enabled") or config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
+        return False
+    if lifecycle_registered(home):
+        return False
+    installation_id = ensure_installation_id(home)
+    if installation_id is None:
+        return False
+    event = telemetry.installation_lifecycle_event(installation_id, "registered")
+    queued = telemetry.record_installation_lifecycle(event, home)
+    if queued or lifecycle_registered(home):
+        mark_lifecycle_registered(home, event["day_utc"], installation_id)
+    return queued
 
 
 def _telemetry(argv: list[str]) -> int:
@@ -83,7 +101,13 @@ def _telemetry(argv: list[str]) -> int:
             return 0
         if args.command == "enable":
             if config is not None and config["enabled"]:
-                print("Telemetry is already enabled.")
+                if config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
+                    telemetry.upgrade_consent(home)
+                    _enroll_lifecycle(home)
+                    print("Anonymous telemetry remains enabled; pseudonymous installation lifecycle telemetry is now enabled.")
+                else:
+                    _enroll_lifecycle(home)
+                    print("Telemetry is already enabled.")
                 return 0
             if telemetry.consent_state(config) == "declined":
                 if telemetry.enable_consent(home):
@@ -103,12 +127,18 @@ def _telemetry(argv: list[str]) -> int:
                 print("Telemetry enable requires an interactive terminal.", file=sys.stderr)
                 return 2
             telemetry.request_consent(home, interactive=True, input_fn=input)
-            print("Telemetry consent recorded.")
+            _enroll_lifecycle(home)
+            print("Telemetry consent recorded. This enables anonymous operation aggregates and, with consent v2, pseudonymous installation lifecycle counts.")
             return 0
         if args.command == "yes":
-            if config is not None and config["enabled"]:
+            if config is not None and config["enabled"] and config.get("consent_version", 1) < telemetry.CONSENT_VERSION:
+                telemetry.upgrade_consent(home)
+                _enroll_lifecycle(home)
+                print("Anonymous telemetry remains enabled; pseudonymous installation lifecycle telemetry is now enabled.")
+            elif config is not None and config["enabled"]:
                 print("Telemetry is already enabled.")
             elif telemetry.enable_consent(home):
+                _enroll_lifecycle(home)
                 print("Telemetry enabled.")
             else:
                 print("Telemetry remains disabled.")
@@ -144,6 +174,8 @@ def _telemetry(argv: list[str]) -> int:
             print(json.dumps(event, sort_keys=True, separators=(",", ":")))
             return 0
         telemetry.disable(home, purge=args.purge)
+        if args.purge:
+            clear_installation_id(home)
         print("Telemetry disabled." if not args.purge else "Telemetry disabled and local data purged.")
         return 0
     except telemetry.TelemetryConfigError as exc:
@@ -245,6 +277,7 @@ def _setup(argv: list[str]) -> int:
         except (telemetry.TelemetryConfigError, OSError) as exc:
             print(f"Telemetry setup failed: {exc}", file=sys.stderr)
             return 1
+    _enroll_lifecycle(home)
     if missing:
         print("Skipped unavailable client(s): " + ", ".join(missing))
     if result.get("already_configured"):
@@ -350,6 +383,15 @@ def _uninstall(argv: list[str]) -> int:
         print("No managed setup found.")
     else:
         print("Session-handoff setup removed and original launchers restored.")
+        try:
+            config = telemetry.load_config(home)
+            installation_id = result.get("installation_id")
+            if installation_id and config and config.get("consent_version", 1) >= telemetry.CONSENT_VERSION:
+                event = telemetry.installation_lifecycle_event(installation_id, "uninstalled")
+                telemetry.record_installation_lifecycle(event, home)
+                telemetry.flush_queue(home)
+        except (telemetry.TelemetryConfigError, OSError, ValueError):
+            pass
     print(f"Central data preserved: {handoff_store.data_root()}")
     print(f"Central state preserved: {handoff_store.state_root()}")
     print(f"Checkpoints preserved: {home / checkpoint.STATE_PATH}")

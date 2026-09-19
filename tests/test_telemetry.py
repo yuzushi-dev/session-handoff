@@ -52,6 +52,26 @@ FEEDBACK = {
     "feedback_severity": "recoverable",
 }
 
+LIFECYCLE = {
+    "schema_version": 3,
+    "event": "installation_lifecycle",
+    "day_utc": "2026-08-25",
+    "plugin_version": PACKAGE_VERSION,
+    "origin": "real",
+    "installation_id": "0123456789abcdef0123456789abcdef",
+    "lifecycle_action": "registered",
+}
+
+
+def test_schema3_lifecycle_row_is_strict_and_schema2_rejects_id():
+    validate_event(LIFECYCLE)
+    with pytest.raises(ValueError):
+        validate_event(LIFECYCLE | {"lifecycle_action": "other"})
+    with pytest.raises(ValueError):
+        validate_event(LIFECYCLE | {"installation_id": "not-a-token"})
+    with pytest.raises(ValueError):
+        validate_event(OPERATION | {"installation_id": LIFECYCLE["installation_id"]})
+
 
 def test_do_not_track_suppresses_consent_without_writing_config(tmp_path, monkeypatch):
     monkeypatch.setenv("DO_NOT_TRACK", "1")

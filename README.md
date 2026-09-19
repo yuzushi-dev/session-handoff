@@ -125,6 +125,9 @@ handoff, on top of the model being told never to copy secrets into one.
 central-store readiness without starting a model session.
 - **Telemetry off until you say yes.** No collection happens without an explicit choice; see
 [docs/telemetry.md](docs/telemetry.md) for the full inventory and controls.
+  New consent v2 includes a random per-home ID for installation registrations
+  and successful managed uninstalls only. Existing v1 consent remains
+  anonymous-aggregate-only until explicitly renewed.
 
 ## Architecture in brief
 

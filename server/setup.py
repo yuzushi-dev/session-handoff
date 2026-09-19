@@ -8,6 +8,7 @@ import hashlib
 import os
 import shlex
 import shutil
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -452,6 +453,9 @@ def install_setup(
                 "targets": {client: str(targets[client]) for client in all_clients},
                 "skill_hashes": {client: _digest(skill_content) for client in all_clients},
             }
+            for key in ("installation_id", "lifecycle_registration_day_utc", "lifecycle_registered"):
+                if key in state:
+                    new_state[key] = state[key]
             _write_json(state_path, new_state)
         except BaseException:
             for launcher, moved_to, snapshot in reversed(launcher_changes):
@@ -543,7 +547,64 @@ def restore_setup(
         bundle = Path(os.path.abspath(home / BUNDLE_PATH))
         _remove(bundle)
         _remove(state_path)
-        return {"restored": True, "already_clean": False, "clients": clients}
+        return {
+            "restored": True,
+            "already_clean": False,
+            "clients": clients,
+            "installation_id": state.get("installation_id"),
+        }
+
+
+def ensure_installation_id(home: Path) -> str | None:
+    """Create the per-home lifecycle ID only after explicit v2 consent."""
+    with _setup_lock(home):
+        state_path = home / STATE_PATH
+        if not state_path.is_file():
+            return None
+        state = _load_state(state_path)
+        value = state.get("installation_id")
+        if isinstance(value, str) and len(value) == 32 and all(char in "0123456789abcdef" for char in value):
+            return value
+        value = secrets.token_hex(16)
+        state["installation_id"] = value
+        _write_json(state_path, state)
+        return value
+
+
+def lifecycle_registered(home: Path) -> bool:
+    state_path = home / STATE_PATH
+    if not state_path.is_file():
+        return False
+    return _load_state(state_path).get("lifecycle_registered") is True
+
+
+def mark_lifecycle_registered(home: Path, day_utc: str, installation_id: str) -> None:
+    with _setup_lock(home):
+        state_path = home / STATE_PATH
+        if not state_path.is_file():
+            return
+        state = _load_state(state_path)
+        if state.get("installation_id") != installation_id:
+            return
+        state["lifecycle_registered"] = True
+        state["lifecycle_registration_day_utc"] = day_utc
+        _write_json(state_path, state)
+
+
+def clear_installation_id(home: Path) -> None:
+    with _setup_lock(home):
+        state_path = home / STATE_PATH
+        if not state_path.is_file():
+            return
+        state = _load_state(state_path)
+        had_id = "installation_id" in state
+        had_day = "lifecycle_registration_day_utc" in state
+        had_marker = "lifecycle_registered" in state
+        state.pop("installation_id", None)
+        state.pop("lifecycle_registration_day_utc", None)
+        state.pop("lifecycle_registered", None)
+        if had_id or had_day or had_marker:
+            _write_json(state_path, state)
 
 
 def render_plan(plan: dict[str, object]) -> str:
