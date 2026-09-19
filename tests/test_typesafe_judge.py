@@ -171,7 +171,7 @@ def test_judge_study_processes_all_and_collects_failures(monkeypatch):
 
 
 def test_live_http_payload_redacts_nested_sensitive_values(monkeypatch):
-    client = TypeSafeClient(api_key="configured")
+    client = TypeSafeClient(api_key="test-api-key")
     sent = {}
 
     class Response:
