@@ -6,10 +6,9 @@ advice.
 
 ## What's collected
 
-With consent version 1 or 2, the client records anonymous daily aggregates
+With consent version 1, 2, or 3, the client records anonymous daily aggregates
 and one `active_day` marker. It never uploads an individual operation or a
-partial current-day counter. Explicit consent version 2 additionally enables
-the pseudonymous installation lifecycle records described below.
+partial current-day counter. Explicit consent version 2 additionally enables schema3 pseudonymous lifecycle records; explicit consent version 3 additionally enables schema4 installation registry status records.
 
 An operation aggregate contains only:
 
@@ -108,8 +107,7 @@ distinct IDs per action and receipt window, avoiding retransmission inflation.
 
 The purpose is to measure aggregate usage/performance and mechanical continuity
 outcomes, voluntary structured context-loss feedback, and observed installation
-registrations and managed removals. This is not user profiling, a heartbeat,
-content inspection, or a population failure rate. It
+registrations and managed removals. This is not user profiling or an autonomous daemon; v3 observations occur only at setup/reconciliation and SessionStart, not a heartbeat. It is not content inspection, or a population failure rate. It
 is an opt-in sample with no unique-user denominator.
 
 ## Where it goes and how it is processed
@@ -172,24 +170,21 @@ the telemetry payload or an identifier.
 | Local counters and queue | 30 days maximum, 256 rows maximum | `session-handoff telemetry disable --purge` immediately |
 | Local lifecycle identity | Until successful managed uninstall or local purge | No automatic remote deletion |
 | Collector batch memory | Up to the configured 5-second batch timeout | Process expiry |
-| Loki aggregate and lifecycle rows | 13 months (`11232h`) | Operator storage retention and purge |
+| Loki schema2 aggregates and schema3/schema4 event rows | 13 months (`11232h`) | Operator storage retention and purge |
+| Installation registry state | While the service operates; minimal first/last observation, last version, and removal state | Separate operator registry policy and purge |
 | Backups | no backups exist for this self-hosted backend | No backup purge is applicable; any future backup requires a new review |
 | Proxy access logs | access logs are disabled (`access_log off`) | Static config and disposable exercise |
 | Cloudflare edge/tunnel metadata and analytics | owner acceptance recorded 2026-09-03; provider retention period not asserted | Owner acceptance and read-only tunnel inventory |
 
-Disabling stops new collection and upload. Purging removes local counters,
+Disabling stops new collection and upload. It does not emit uninstall. Purging removes local counters,
 queue, summaries, lifecycle identity and consent metadata. Anonymous aggregates
 cannot be attributed to a contributor; lifecycle rows can be located privately
 by their random ID. There is no automated client-side remote deletion endpoint.
-Local purge cannot remove rows already uploaded, which expire under backend
-retention or an operator purge.
+Local purge cannot remove rows already uploaded. Raw schema2/schema3/schema4 rows follow backend retention; the durable registry follows its separate operator policy and is not erased by local purge.
 
 ## Consent and controls
 
-Telemetry stays off until an explicit answer. Existing v1 consent continues
-to authorize only anonymous schema-2 rows. Setup, hooks, postinstall and upgrades
-never silently change it to v2. An explicit `telemetry enable` or `telemetry yes`
-accepts the disclosed v2 scope and enrolls an existing configured home.
+Telemetry stays off until an explicit answer. Existing v1 consent continues to authorize only anonymous schema2 rows. Existing v2 consent continues to authorize schema3 lifecycle rows. Setup, hooks, postinstall and upgrades never silently change either scope to v3. An explicit telemetry enable or telemetry yes accepts the disclosed v3 scope and enrolls an existing configured home.
 
 The local state is one of:
 
@@ -200,8 +195,7 @@ The local state is one of:
 The plugin's SessionStart hook asks in chat on Claude and Codex versions with
 plugin hook support. The managed Codex launcher provides a terminal fallback
 after the client exits if no notice was recorded. Both atomically record `asked`
-before showing the notice. It is shown once; it never asks again after `asked`, `enabled`, or
-`declined`, including after an upgrade or consent-version change. Setup and
+before showing the notice. It is shown once per consent scope. Existing v1/v2 consent is never silently upgraded to v3 by setup, startup hooks, upgrades, or postinstall. Setup and
 reinstall do not change a declined choice. An explicit `session-handoff telemetry enable` command may later opt in
 after a decline without showing the prompt again. Blank, interrupted, or
 unrecognized terminal input leaves telemetry off and records `asked`, not
@@ -269,6 +263,6 @@ Consent version 3 additionally permits schema4 installation status rows. Each ro
 
 Existing v1 and v2 consent is never silently upgraded by setup, startup hooks, upgrades, or postinstall. `telemetry enable` or exact `telemetry yes` is required for each higher consent scope.
 
-With v3, a configured home emits one `registered` status, then at most one `observed` status per UTC day or when the installed version changes. Observations run during setup/reconciliation and SessionStart; there is no daemon and no inference of uninstall from inactivity. A successful managed removal emits `uninstalled`. The registry retains only minimal first/last observation, last version, and uninstall state while the service operates. This registry retention is separate from the 13-month retention for raw schema2/schema3 telemetry rows.
+With v3, a newly enrolled configured home emits one `registered` status; a v2 home upgraded to v3 may first emit `observed` for its existing identity. It then emits at most one `observed` status per UTC day or when the installed version changes. Observations run during setup/reconciliation and SessionStart; there is no daemon and no inference of uninstall from inactivity. A successful managed removal emits `uninstalled`. The registry retains only minimal first/last observation, last version, and uninstall state while the service operates. This registry retention is separate from the 13-month retention for raw schema2/schema3/schema4 telemetry rows.
 
 These measurements cover consenting configured homes and observed managed removals. They do not count downloads, people, all package-manager removals, offline uninstallations, or complete churn. One person may have multiple homes, and a shared home may represent multiple people. Disabling stops future updates; local purge removes the local ID and queue but cannot erase records already received by the server.
