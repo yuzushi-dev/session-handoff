@@ -1,0 +1,156 @@
+name: Publish package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to validate and publish, for example v0.7.4-jev.3
+        required: true
+        type: string
+      dry-run:
+        description: Run npm publish in dry-run mode
+        required: true
+        default: true
+        type: boolean
+      dist-tag:
+        description: npm distribution tag
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_DRY_RUN: ${{ inputs.dry-run }}
+      NPM_DIST_TAG: ${{ inputs.dist-tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Validate release
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::tag must be a v-prefixed release tag"; exit 1 ;;
+          esac
+          if ! [[ "$NPM_DIST_TAG" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::invalid npm dist-tag"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          tag_commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$(git rev-parse HEAD)" = "$tag_commit" ||
+            { echo "::error::checked out commit is not the requested tag"; exit 1; }
+          main_commit="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" "$main_commit" ||
+            { echo "::error::release tag is not an ancestor of origin/main"; exit 1; }
+          package_version="$(node - <<'NODE'
+          const fs = require("fs");
+          const packageData = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const manifests = [
+            packageData.version,
+            lock.version,
+            lock.packages?.[""]?.version,
+            JSON.parse(fs.readFileSync(".codex-plugin/plugin.json", "utf8")).version,
+            JSON.parse(fs.readFileSync(".claude-plugin/plugin.json", "utf8")).version,
+            JSON.parse(fs.readFileSync("docs/portable/plugin.json", "utf8")).version,
+          ];
+          if (packageData.name !== "session-handoff" || manifests.some((v) => v !== packageData.version)) {
+            console.error("package name or version sources disagree");
+            process.exit(1);
+          }
+          process.stdout.write(packageData.version);
+          NODE
+          )"
+          test "$RELEASE_TAG" = "v$package_version" ||
+            { echo "::error::tag does not match package.version"; exit 1; }
+          release_tag="$(gh release view "$RELEASE_TAG" --json tagName --jq .tagName)"
+          test "$release_tag" = "$RELEASE_TAG" ||
+            { echo "::error::published GitHub release does not match tag"; exit 1; }
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false ||
+            { echo "::error::GitHub release is still a draft"; exit 1; }
+          npm_version="$(npm --version)"
+          node - "$npm_version" <<'NODE'
+          const [major, minor] = process.argv[2].split(".").map(Number);
+          if (major < 11 || (major === 11 && minor < 15)) {
+            console.error("npm >= 11.15 is required; found " + process.argv[2]);
+            process.exit(1);
+          }
+          NODE
+          repository_url="$(node - <<'NODE'
+          const value = require("./package.json").repository;
+          process.stdout.write(typeof value === "string" ? value : (value?.url || ""));
+          NODE
+          )"
+          if [ "$repository_url" != "https://github.com/yuzushi-dev/session-handoff.git" ]; then
+            if [ "$RELEASE_DRY_RUN" = "true" ]; then
+              echo "::warning::tag predates the required package.repository.url; dry-run is allowed, but a future publish must include it"
+            else
+              echo "::error::package.repository.url must exactly match the GitHub repository"
+              exit 1
+            fi
+          fi
+          npm_version_state="$(node - "$package_version" <<'NODE'
+          const version = process.argv[2];
+          const url = "https://registry.npmjs.org/session-handoff/" + encodeURIComponent(version);
+          (async () => {
+            const response = await fetch(url, { redirect: "error" });
+            if (response.status === 200) process.stdout.write("exists");
+            else if (response.status === 404) process.stdout.write("absent");
+            else throw new Error("npm registry returned HTTP " + response.status);
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(2);
+          });
+          NODE
+          )"
+          if [ "$npm_version_state" = "exists" ]; then
+            if [ "$RELEASE_DRY_RUN" = "true" ]; then
+              echo "::warning::version $package_version already exists on npm; dry-run only"
+            else
+              echo "::error::version $package_version already exists on npm"
+              exit 1
+            fi
+          fi
+
+      - name: Inspect package
+        run: npm pack --dry-run --ignore-scripts
+
+      - name: Publish package
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--provenance --access public --ignore-scripts --tag "$NPM_DIST_TAG")
+          if [ "$RELEASE_DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          npm publish "${args[@]}"

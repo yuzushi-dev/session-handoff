@@ -36,5 +36,9 @@
   "os": [
     "linux",
     "darwin"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuzushi-dev/session-handoff.git"
+  }
 }
