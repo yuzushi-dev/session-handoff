@@ -260,3 +260,15 @@ require owner evidence before treating the endpoint as release-ready.
 - Technical processor/operator: `privacy@yuzushi.party`
 - Origin hosting and region: private infrastructure, self-hosted in Italy/UE
 - Public edge/tunnel processor: Cloudflare global network (Free Website plan)
+
+## Installation registry and consent versions
+
+Consent version 1 records only anonymous schema2 daily aggregates.
+Consent version 2 additionally permits schema3 lifecycle rows. Each row has exactly seven fields: `schema_version`, `event=installation_lifecycle`, `day_utc`, `plugin_version`, `origin`, `installation_id` (32 lowercase hexadecimal characters), and `lifecycle_action` (`registered` or `uninstalled`).
+Consent version 3 additionally permits schema4 installation status rows. Each row has exactly eight fields: `schema_version=4`, `event=installation_status`, `day_utc`, `plugin_version`, `origin`, `installation_id`, `lifecycle_action` (`registered`, `observed`, or `uninstalled`), and `observed_at` (UTC RFC3339 seconds matching `day_utc`).
+
+Existing v1 and v2 consent is never silently upgraded by setup, startup hooks, upgrades, or postinstall. `telemetry enable` or exact `telemetry yes` is required for each higher consent scope.
+
+With v3, a configured home emits one `registered` status, then at most one `observed` status per UTC day or when the installed version changes. Observations run during setup/reconciliation and SessionStart; there is no daemon and no inference of uninstall from inactivity. A successful managed removal emits `uninstalled`. The registry retains only minimal first/last observation, last version, and uninstall state while the service operates. This registry retention is separate from the 13-month retention for raw schema2/schema3 telemetry rows.
+
+These measurements cover consenting configured homes and observed managed removals. They do not count downloads, people, all package-manager removals, offline uninstallations, or complete churn. One person may have multiple homes, and a shared home may represent multiple people. Disabling stops future updates; local purge removes the local ID and queue but cannot erase records already received by the server.
