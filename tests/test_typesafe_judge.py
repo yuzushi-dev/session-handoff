@@ -171,7 +171,7 @@ def test_judge_study_processes_all_and_collects_failures(monkeypatch):
 
 
 def test_live_http_payload_redacts_nested_sensitive_values(monkeypatch):
-    client = TypeSafeClient(api_key="test-api-key")
+    client = TypeSafeClient(api_key="example-api-key")
     sent = {}
 
     class Response:
@@ -189,7 +189,7 @@ def test_live_http_payload_redacts_nested_sensitive_values(monkeypatch):
         return Response()
 
     monkeypatch.setattr("urllib.request.urlopen", intercept)
-    secret = "structured-" + "credential"
+    secret = "example-credential"
     state = {
         "input": {
             "password": secret,
