@@ -108,7 +108,7 @@ ENDPOINT = "https://telemetry.yuzushi.party/v1/logs"
 CONSENT_VERSION = 3
 TELEMETRY_DETAILS_URL = "https://github.com/yuzushi-dev/session-handoff/blob/main/docs/telemetry.md"
 CONSENT_STATES = frozenset({"unasked", "asked", "enabled", "declined"})
-CONSENT_PROMPT = f"Enable anonymous aggregate telemetry? A separate explicit consent enables a random per-home installation ID for registration, daily/version status observations, and managed install/uninstall counts. The registry retains first/last observation and last version while the service operates. Details: {TELEMETRY_DETAILS_URL} [y/yes/n/no] "
+CONSENT_PROMPT = f"Enable optional telemetry: anonymous aggregate telemetry plus a random per-home ID for registration, daily/version observations, and managed uninstalls? The registry retains the ID, first/last observation, last version, and uninstall state while the service operates. Details: {TELEMETRY_DETAILS_URL} [y/yes/n/no] "
 
 
 class TelemetryConfigError(ValueError):

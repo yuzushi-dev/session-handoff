@@ -9,7 +9,6 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +30,7 @@ def _central_list_limit(value: str) -> int:
     return limit
 
 from server.session_switch import SessionSupervisor, _python_cli_command, _telemetry_notice
-from server.setup import SetupError, clear_installation_id, ensure_installation_id, install_setup, lifecycle_registered, mark_lifecycle_registered, mark_status_observed, render_plan, restore_setup, setup_plan, status_observation_due
+from server.setup import SetupError, clear_installation_id, ensure_installation_id, install_setup, lifecycle_registered, mark_lifecycle_registered, render_plan, restore_setup, setup_plan
 from server.command_matrix import main as doctor_main
 from server import checkpoint, handoff_store
 import server.telemetry as telemetry
