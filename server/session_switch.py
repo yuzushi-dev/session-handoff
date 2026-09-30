@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import hmac
 import json
 import math
@@ -42,6 +43,15 @@ CONTROL_PROTOCOL_VERSION = "2"
 CLIENT_ENV = "SESSION_HANDOFF_CLIENT"
 REQUEST_LIMIT = 64 * 1024
 SUPPORTED_CLIENTS = {"codex", "claude"}
+INCOMPLETE_SWITCH_PHASES = {
+    "claimed",
+    "source_stopped",
+    "target_launching",
+    "target_started",
+    "converting",
+    "source_fallback_launching",
+    "source_fallback_started",
+}
 TELEMETRY_PLUGIN_VERSION = PACKAGE_VERSION
 TELEMETRY_SUMMARY_FIELDS = frozenset(
     {"handoff_bytes", "redacted_count", "dropped_events", "normalized_fields", "duration_seconds"}
@@ -162,6 +172,11 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
             temporary.flush()
             os.fsync(temporary.fileno())
         os.replace(temporary_name, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if temporary_name:
             Path(temporary_name).unlink(missing_ok=True)
@@ -204,6 +219,7 @@ def write_switch_request(
     if handoff_ref is not None and os.environ.get(CONTROL_PROTOCOL_ENV) != CONTROL_PROTOCOL_VERSION:
         raise ValueError("central handoff switching requires restart of the session-handoff launcher")
     payload = {"token": token, "workspace": str(Path(workspace).expanduser().resolve())}
+    payload["request_id"] = secrets.token_hex(16)
     if handoff_ref is not None:
         try:
             from . import handoff_store
@@ -248,6 +264,7 @@ def write_migration_request(
         control,
         {
             "token": token,
+            "request_id": secrets.token_hex(16),
             "mode": "migrate",
             "workspace": str(root),
             "source_client": source_client,
@@ -267,67 +284,235 @@ def _read_switch_request(control: Path, token: str) -> dict[str, Any] | None:
 
     if not control.exists():
         return None
-    try:
-        raw = control.read_text(encoding="utf-8")
-        if len(raw.encode("utf-8")) > REQUEST_LIMIT:
-            raise HandoffError("session switch request is too large")
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise HandoffError("session switch request must be an object")
-        request_token = payload.get("token")
-        if not isinstance(request_token, str) or not hmac.compare_digest(request_token, token):
-            raise HandoffError("invalid session switch request")
+    raw = control.read_text(encoding="utf-8")
+    if len(raw.encode("utf-8")) > REQUEST_LIMIT:
+        raise HandoffError("session switch request is too large")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise HandoffError("session switch request must be an object")
+    request_token = payload.get("token")
+    if not isinstance(request_token, str) or not hmac.compare_digest(request_token, token):
+        raise HandoffError("invalid session switch request")
 
-        mode = payload.get("mode", "handoff")
-        workspace = payload.get("workspace")
-        if not isinstance(workspace, str):
+    mode = payload.get("mode", "handoff")
+    workspace = payload.get("workspace")
+    if not isinstance(workspace, str):
+        raise HandoffError("session switch request is incomplete")
+
+    if mode == "handoff":
+        path = payload.get("path")
+        ref = payload.get("ref")
+        if (path is None) == (ref is None):
             raise HandoffError("session switch request is incomplete")
+        root = _workspace_root(workspace)
+        request: dict[str, Any] = {
+            "request_id": _switch_request_id(payload),
+            "mode": "handoff",
+            "workspace": str(root),
+        }
+        if ref is not None:
+            if not isinstance(ref, str): raise HandoffError("session switch request is incomplete")
+            try: handoff_store.read_record(ref, str(root))
+            except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
+            request["ref"] = ref
+        else:
+            if not isinstance(path, str): raise HandoffError("session switch request is incomplete")
+            _, handoff = _safe_path(workspace, path, must_exist=True)
+            request["path"] = handoff.relative_to(root).as_posix()
+        if "telemetry" in payload:
+            request["telemetry"] = _safe_numeric_summary(payload["telemetry"])
+        return request
 
-        if mode == "handoff":
-            path = payload.get("path")
-            ref = payload.get("ref")
-            if (path is None) == (ref is None):
-                raise HandoffError("session switch request is incomplete")
-            root = _workspace_root(workspace)
-            request: dict[str, Any] = {
-                "mode": "handoff",
-                "workspace": str(root),
-            }
-            if ref is not None:
-                if not isinstance(ref, str): raise HandoffError("session switch request is incomplete")
-                try: handoff_store.read_record(ref, str(root))
-                except handoff_store.HandoffStoreError as exc: raise HandoffError(str(exc)) from exc
-                request["ref"] = ref
-            else:
-                if not isinstance(path, str): raise HandoffError("session switch request is incomplete")
-                _, handoff = _safe_path(workspace, path, must_exist=True)
-                request["path"] = handoff.relative_to(root).as_posix()
-            if "telemetry" in payload:
-                request["telemetry"] = _safe_numeric_summary(payload["telemetry"])
-            return request
+    if mode == "migrate":
+        root = _workspace_root(workspace)
+        source_client = payload.get("source_client")
+        target_client = payload.get("target_client")
+        source_session_id = payload.get("source_session_id")
+        if source_client not in SUPPORTED_CLIENTS or target_client not in SUPPORTED_CLIENTS:
+            raise HandoffError("invalid migration client")
+        if source_client == target_client:
+            raise HandoffError("migration target must differ from source")
+        if not isinstance(source_session_id, str) or not source_session_id.strip():
+            raise HandoffError("migration request is missing source session id")
+        return {
+            "request_id": _switch_request_id(payload),
+            "mode": "migrate",
+            "workspace": str(root),
+            "source_client": source_client,
+            "target_client": target_client,
+            "source_session_id": source_session_id.strip(),
+        }
 
-        if mode == "migrate":
-            root = _workspace_root(workspace)
-            source_client = payload.get("source_client")
-            target_client = payload.get("target_client")
-            source_session_id = payload.get("source_session_id")
-            if source_client not in SUPPORTED_CLIENTS or target_client not in SUPPORTED_CLIENTS:
-                raise HandoffError("invalid migration client")
-            if source_client == target_client:
-                raise HandoffError("migration target must differ from source")
-            if not isinstance(source_session_id, str) or not source_session_id.strip():
-                raise HandoffError("migration request is missing source session id")
-            return {
-                "mode": "migrate",
-                "workspace": str(root),
-                "source_client": source_client,
-                "target_client": target_client,
-                "source_session_id": source_session_id.strip(),
-            }
+    raise HandoffError(f"unknown session switch mode: {mode}")
 
-        raise HandoffError(f"unknown session switch mode: {mode}")
-    finally:
-        control.unlink(missing_ok=True)
+
+def _switch_request_id(payload: dict[str, Any]) -> str:
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
+        raise ValueError("invalid or missing session switch request id")
+    return request_id
+
+
+def _consume_switch_request(control: Path, request_id: str) -> None:
+    try:
+        payload = json.loads(control.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and _switch_request_id(payload) == request_id:
+            control.unlink(missing_ok=True)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return
+
+
+def _transition_path(control_dir: Path) -> Path:
+    return control_dir / "transition.json"
+
+
+def _load_transition(control_dir: Path) -> dict[str, Any] | None:
+    try:
+        state = json.loads(_transition_path(control_dir).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid durable switch state: {exc}") from exc
+    if not isinstance(state, dict) or not isinstance(state.get("request_id"), str):
+        raise RuntimeError("invalid durable switch state")
+    return state
+
+
+def _write_transition(control_dir: Path, state: dict[str, Any], phase: str) -> dict[str, Any]:
+    updated = {**state, "phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()}
+    _atomic_json_write(_transition_path(control_dir), updated)
+    return updated
+
+
+def _supervisor_state_root() -> Path:
+    configured = os.environ.get("XDG_STATE_HOME")
+    base = Path(configured).expanduser() if configured else Path.home() / ".local/state"
+    return base.resolve() / "session-handoff" / "supervisors"
+
+
+def _supervisor_scope(client: str, executable: str | None, host_args: list[str]) -> str:
+    material = {
+        "client": client,
+        "executable": executable,
+        "host_args": host_args,
+        "cwd": str(Path.cwd().resolve()),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def _process_start(pid: int) -> str | None:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+    except (OSError, UnicodeError):
+        return None
+    return fields[21] if len(fields) > 21 else None
+
+
+def _owner_is_live(metadata: dict[str, Any]) -> bool:
+    if metadata.get("active") is not True:
+        return False
+    pid = metadata.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    expected_start = metadata.get("process_start")
+    actual_start = _process_start(pid)
+    if isinstance(expected_start, str) and actual_start is not None:
+        return hmac.compare_digest(expected_start, actual_start)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _stale_incomplete_transitions(root: Path, scope: str) -> list[Path]:
+    try:
+        candidates = sorted(root.iterdir())
+    except FileNotFoundError:
+        return []
+    stale: list[Path] = []
+    for candidate in candidates:
+        metadata = _read_json_object(candidate / "supervisor.json")
+        if metadata is None or metadata.get("scope") != scope or _owner_is_live(metadata):
+            continue
+        transition_path = candidate / "transition.json"
+        transition = _read_json_object(transition_path)
+        if transition_path.exists() and (
+            transition is None or transition.get("phase") in INCOMPLETE_SWITCH_PHASES
+        ):
+            stale.append(transition_path)
+    return stale
+
+
+def _allocate_supervisor_directory(root: Path, scope: str) -> tuple[Path, dict[str, Any]]:
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    directory = Path(tempfile.mkdtemp(prefix=f"{scope}-", dir=root))
+    os.chmod(directory, 0o700)
+    metadata = {
+        "schema_version": 1,
+        "scope": scope,
+        "pid": os.getpid(),
+        "process_start": _process_start(os.getpid()),
+        "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_json_write(directory / "supervisor.json", metadata)
+    return directory, metadata
+
+
+def _active_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **metadata,
+        "pid": os.getpid(),
+        "process_start": _process_start(os.getpid()),
+        "active": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _finalize_supervisor_directory(directory: Path, metadata: dict[str, Any]) -> None:
+    try:
+        _atomic_json_write(
+            directory / "supervisor.json",
+            {
+                **metadata,
+                "active": False,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    except OSError:
+        return
+    transition_path = directory / "transition.json"
+    transition = _read_json_object(transition_path)
+    for name in ("token", "switch.json"):
+        try:
+            (directory / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if transition_path.exists() and (
+        transition is None or transition.get("phase") in INCOMPLETE_SWITCH_PHASES
+    ):
+        return
+    for name in ("transition.json", "supervisor.json"):
+        try:
+            (directory / name).unlink(missing_ok=True)
+        except OSError:
+            return
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
 
 
 def _prompt_quote(value: str) -> str:
@@ -840,6 +1025,21 @@ class SessionSupervisor:
         env[CONTROL_PROTOCOL_ENV] = CONTROL_PROTOCOL_VERSION
         env.pop(CONTROL_TOKEN_ENV, None)
 
+        try:
+            transition = _load_transition(control_dir)
+        except RuntimeError as exc:
+            print(f"session-handoff: {exc}", file=sys.stderr)
+            return 1
+        if transition is not None and transition.get("phase") in (
+            INCOMPLETE_SWITCH_PHASES - {"source_stopped"}
+        ):
+            print(
+                "session-handoff: incomplete durable switch state requires recovery; "
+                f"destination was {transition.get('phase')}",
+                file=sys.stderr,
+            )
+            return 1
+
         current_client = self.client
         current_executable = self._client_executable(current_client) or current_client
         managed_launcher = _managed_launcher(current_executable, current_client)
@@ -850,9 +1050,79 @@ class SessionSupervisor:
             except (OSError, UnicodeDecodeError):
                 original_launcher = None
         current_args = _with_control_path(current_client, self.host_args, control)
-        process = self._launch(current_client, current_executable, current_args, env)
         pending_summary: dict[str, Any] | None = None
         pending_started: float | None = None
+
+        if transition is not None and transition.get("phase") == "source_stopped":
+            request = transition.get("request")
+            fresh_args = transition.get("fresh_args")
+            source_client = transition.get("source_client")
+            source_executable = transition.get("source_executable")
+            if (
+                transition.get("mode") != "handoff"
+                or not isinstance(request, dict)
+                or request.get("mode") != "handoff"
+                or source_client not in SUPPORTED_CLIENTS
+                or not isinstance(source_executable, str)
+                or not source_executable
+                or not isinstance(fresh_args, list)
+                or any(not isinstance(item, str) for item in fresh_args)
+            ):
+                print(
+                    "session-handoff: incomplete durable switch state cannot be recovered safely",
+                    file=sys.stderr,
+                )
+                return 1
+            current_client = source_client
+            current_executable = source_executable
+            current_args = list(fresh_args)
+            pending_started = time.monotonic()
+            transition = _write_transition(control_dir, transition, "target_launching")
+            try:
+                if self.draft:
+                    process = _DraftProcess(
+                        [current_executable, *current_args],
+                        self._launch_environment(current_client, env),
+                        request["workspace"],
+                        handoff_prompt(
+                            request["workspace"], request.get("path"), request.get("ref")
+                        ),
+                    )
+                else:
+                    process = self._launch(
+                        current_client,
+                        current_executable,
+                        [
+                            *current_args,
+                            handoff_prompt(
+                                request["workspace"], request.get("path"), request.get("ref")
+                            ),
+                        ],
+                        env,
+                        cwd=request["workspace"],
+                    )
+            except (KeyError, OSError, subprocess.SubprocessError):
+                print(
+                    "session-handoff: recovered target launch outcome is unknown; "
+                    "refusing a blind retry",
+                    file=sys.stderr,
+                )
+                return 1
+            transition = _write_transition(control_dir, transition, "target_started")
+            pending_summary = {
+                "operation": "handoff",
+                "source_client": current_client,
+                "target_client": current_client,
+                "result": "success",
+                "failure_stage": "none",
+                "handoff_bytes": 0,
+                "redacted_count": 0,
+                "dropped_events": 0,
+                "normalized_fields": 0,
+                **request.get("telemetry", {}),
+            }
+        else:
+            process = self._launch(current_client, current_executable, current_args, env)
 
         rollback_source: dict[str, str] | None = None
 
@@ -914,6 +1184,15 @@ class SessionSupervisor:
                     request = _read_switch_request(control, token)
                 except (ValueError, OSError) as exc:
                     print(f"session-handoff: ignored invalid switch request: {exc}", file=sys.stderr)
+                    control.unlink(missing_ok=True)
+                    request = None
+
+                if (
+                    request is not None
+                    and transition is not None
+                    and request["request_id"] == transition.get("request_id")
+                ):
+                    _consume_switch_request(control, request["request_id"])
                     request = None
 
                 if request and request["mode"] == "handoff":
@@ -926,13 +1205,25 @@ class SessionSupervisor:
                         )
                         pending_summary = None
                         pending_started = None
-                    self._terminate(process)
-                    rollback_source = None
                     fresh_args = _fresh_session_args(
                         current_client,
                         current_args,
                         interactive=self.draft,
                     )
+                    transition = _write_transition(control_dir, {
+                        "schema_version": 1,
+                        "request_id": request["request_id"],
+                        "mode": "handoff",
+                        "request": request,
+                        "source_client": current_client,
+                        "source_executable": current_executable,
+                        "fresh_args": fresh_args,
+                    }, "claimed")
+                    _consume_switch_request(control, request["request_id"])
+                    self._terminate(process)
+                    transition = _write_transition(control_dir, transition, "source_stopped")
+                    rollback_source = None
+                    transition = _write_transition(control_dir, transition, "target_launching")
                     if self.draft:
                         try:
                             process = _DraftProcess(
@@ -971,6 +1262,7 @@ class SessionSupervisor:
                                 "duration_seconds": max(0.0, time.monotonic() - started),
                             })
                             return 1
+                    transition = _write_transition(control_dir, transition, "target_started")
                     pending_summary = {
                         "operation": "handoff",
                         "source_client": current_client,
@@ -1012,6 +1304,7 @@ class SessionSupervisor:
                             "target_client": target_client, "result": "failure",
                             "failure_stage": "validation",
                         })
+                        _consume_switch_request(control, request["request_id"])
                         continue
                     target_executable = self._client_executable(target_client)
                     if not target_executable:
@@ -1024,10 +1317,22 @@ class SessionSupervisor:
                             "target_client": target_client, "result": "failure",
                             "failure_stage": "control",
                         })
+                        _consume_switch_request(control, request["request_id"])
                         continue
+                    transition = _write_transition(control_dir, {
+                        "schema_version": 1,
+                        "request_id": request["request_id"],
+                        "mode": "migrate",
+                        "request": request,
+                        "source_client": source_client,
+                        "source_executable": current_executable,
+                    }, "claimed")
+                    _consume_switch_request(control, request["request_id"])
                     self._terminate(process)
+                    transition = _write_transition(control_dir, transition, "source_stopped")
                     source_executable = current_executable
                     started = time.monotonic()
+                    transition = _write_transition(control_dir, transition, "converting")
                     try:
                         migration = self.migrate(
                             source_client,
@@ -1056,6 +1361,9 @@ class SessionSupervisor:
                             "duration_seconds": 0,
                         }
                         try:
+                            transition = _write_transition(
+                                control_dir, transition, "source_fallback_launching"
+                            )
                             process = self._launch(
                                 source_client,
                                 current_executable,
@@ -1071,6 +1379,9 @@ class SessionSupervisor:
                                 "duration_seconds": max(0.0, time.monotonic() - started),
                             })
                             return 1
+                        transition = _write_transition(
+                            control_dir, transition, "source_fallback_started"
+                        )
                         pending_summary = fallback_summary
                         pending_started = started
                         current_args = rollback_args
@@ -1111,6 +1422,7 @@ class SessionSupervisor:
                         "session_id": source_session_id,
                         "workspace": workspace,
                     }
+                    transition = _write_transition(control_dir, transition, "target_launching")
                     try:
                         process = self._launch(
                             current_client,
@@ -1128,6 +1440,8 @@ class SessionSupervisor:
                         )
                         if process is None:
                             return 1
+                    if current_client == target_client:
+                        transition = _write_transition(control_dir, transition, "target_started")
                     continue
 
                 status = process.poll()
@@ -1155,6 +1469,12 @@ class SessionSupervisor:
                             terminal["result"] = "failure"
                             terminal["failure_stage"] = "source_resume"
                         record_terminal_outcome(terminal)
+                        if transition is not None:
+                            transition = _write_transition(
+                                control_dir,
+                                transition,
+                                "completed" if status == 0 else "failed",
+                            )
                     _repair_launcher(current_executable, current_client, original_launcher)
                     if current_client == "claude":
                         _reconcile_claude_target(
@@ -1180,5 +1500,82 @@ class SessionSupervisor:
     def run(self) -> int:
         if self.temp_dir is not None:
             return self._run(self.temp_dir)
-        with tempfile.TemporaryDirectory(prefix="session-handoff-") as directory:
-            return self._run(Path(directory))
+        root = _supervisor_state_root()
+        scope = _supervisor_scope(
+            self.client,
+            self.client_executables.get(self.client),
+            self.host_args,
+        )
+        stale = _stale_incomplete_transitions(root, scope)
+        if stale:
+            if len(stale) != 1:
+                print(
+                    "session-handoff: multiple interrupted switches require manual recovery: "
+                    + ", ".join(str(path) for path in stale),
+                    file=sys.stderr,
+                )
+                return 1
+            transition_path = stale[0]
+            transition = _read_json_object(transition_path)
+            metadata_path = transition_path.parent / "supervisor.json"
+            metadata = _read_json_object(metadata_path)
+            if (
+                transition is not None
+                and transition.get("phase") == "source_stopped"
+                and transition.get("mode") == "handoff"
+                and metadata is not None
+            ):
+                lock_path = transition_path.parent / "recovery.lock"
+                try:
+                    lock_descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                except OSError:
+                    return 1
+                acquired = False
+                try:
+                    try:
+                        fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                    except BlockingIOError:
+                        print(
+                            "session-handoff: interrupted switch recovery is already active",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    transition = _read_json_object(transition_path)
+                    metadata = _read_json_object(metadata_path)
+                    if (
+                        transition is None
+                        or transition.get("phase") != "source_stopped"
+                        or transition.get("mode") != "handoff"
+                        or metadata is None
+                        or metadata.get("scope") != scope
+                        or _owner_is_live(metadata)
+                    ):
+                        return 1
+                    metadata = _active_metadata(metadata)
+                    _atomic_json_write(metadata_path, metadata)
+                    try:
+                        return self._run(transition_path.parent)
+                    finally:
+                        _finalize_supervisor_directory(transition_path.parent, metadata)
+                finally:
+                    if acquired:
+                        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+                    os.close(lock_descriptor)
+                    if acquired and not transition_path.exists() and not metadata_path.exists():
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                            transition_path.parent.rmdir()
+                        except OSError:
+                            pass
+            print(
+                "session-handoff: an interrupted switch has durable state at "
+                f"{transition_path}; inspect the recorded phase before manual recovery",
+                file=sys.stderr,
+            )
+            return 1
+        directory, metadata = _allocate_supervisor_directory(root, scope)
+        try:
+            return self._run(directory)
+        finally:
+            _finalize_supervisor_directory(directory, metadata)

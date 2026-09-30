@@ -123,6 +123,7 @@ class PaginatedProjection:
     rollout_path: Path
     history_item_count: int
     history_items_sha256: str
+    history_database_sha256: str
     dropped: dict[str, int]
     normalized_fields: dict[str, list[str]]
     warnings: tuple[dict[str, str], ...]
@@ -146,6 +147,7 @@ def project_paginated_codex(
     history_db = home / "thread_history_1.sqlite"
     if not history_db.is_file():
         raise PaginatedMigrationError(f"Codex thread history database not found: {history_db}")
+    history_before_hash = _sha256(history_db)
     items, selected_items_sha256 = _read_items(history_db, session_id)
     if not items:
         raise PaginatedMigrationError("Codex paginated thread has no canonical history items")
@@ -162,13 +164,27 @@ def project_paginated_codex(
         / "01"
         / f"rollout-projected-{session_id}.jsonl"
     )
+    try:
+        rollout_path = rollout_path.resolve()
+        rollout_path.relative_to(destination)
+    except ValueError as exc:
+        raise PaginatedMigrationError("projection output is outside the output root") from exc
     rollout_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _write_private(rollout_path, records)
+    ownership = _write_private(rollout_path, records)
+    try:
+        source_changed = _sha256(source_rollout) != before_hash or _sha256(history_db) != history_before_hash
+    except OSError as exc:
+        _unlink_owned(rollout_path, ownership)
+        raise PaginatedMigrationError("Codex source could not be verified after projection") from exc
+    if source_changed:
+        _unlink_owned(rollout_path, ownership)
+        raise PaginatedMigrationError("Codex source changed during projection")
     return PaginatedProjection(
         source_rollout=source_rollout,
         rollout_path=rollout_path,
         history_item_count=len(items),
         history_items_sha256=selected_items_sha256,
+        history_database_sha256=history_before_hash,
         dropped=dict(sorted(dropped.items())),
         normalized_fields={
             key: sorted(values) for key, values in sorted(normalized_fields.items())
@@ -275,8 +291,16 @@ def _read_items(path: Path, session_id: str) -> tuple[list[tuple[int, int | None
             ).encode("utf-8")
         )
         selected_digest.update(b"\n")
-        items.append((int(ordinal), created_at_ms, item))
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+            raise PaginatedMigrationError("Codex paginated item ordinal is invalid")
+        items.append((ordinal, created_at_ms, item))
     return items, selected_digest.hexdigest()
+
+
+def paginated_history_state(path: str | Path, session_id: str) -> tuple[int, str]:
+    """Return the selected row count and digest used for source verification."""
+    items, digest = _read_items(Path(path), session_id)
+    return len(items), digest
 
 
 def _legacy_records(
@@ -304,8 +328,14 @@ def _legacy_records(
     ]
     dropped: Counter[str] = Counter()
     normalized_fields: dict[str, set[str]] = {}
+    tool_ids: set[str] = set()
     for ordinal, created_at_ms, item in items:
         item_type = item.get("type")
+        if item_type in {"commandExecution", "webSearch", *PORTABLE_TOOL_ITEMS}:
+            call_id = _item_id(item, ordinal)
+            if call_id in tool_ids:
+                raise PaginatedMigrationError("Codex paginated tool item ID is duplicated")
+            tool_ids.add(call_id)
         _collect_normalized_fields(normalized_fields, item_type, item)
         timestamp = _timestamp_from_ms(created_at_ms) or fallback_timestamp
         if item_type == "userMessage":
@@ -510,7 +540,9 @@ def _tool_records(
 
 def _item_id(item: dict[str, Any], ordinal: int) -> str:
     value = item.get("id")
-    return value if isinstance(value, str) and value else f"paginated-item-{ordinal}"
+    if not isinstance(value, str) or not value:
+        raise PaginatedMigrationError("Codex paginated tool item ID is missing or invalid")
+    return value
 
 
 def _timestamp(value: Any) -> str:
@@ -536,15 +568,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_private(path: Path, records: list[dict[str, Any]]) -> None:
+def _write_private(path: Path, records: list[dict[str, Any]]) -> tuple[int, int, str]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     descriptor = os.open(path, flags, 0o600)
+    stat = os.fstat(descriptor)
+    digest = hashlib.sha256()
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             descriptor = -1
             for record in records:
-                handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-                handle.write("\n")
+                line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                handle.write(line)
+                digest.update(line.encode("utf-8"))
     finally:
         if descriptor != -1:
             os.close(descriptor)
+    return stat.st_dev, stat.st_ino, digest.hexdigest()
+
+
+def _unlink_owned(path: Path, token: tuple[int, int, str]) -> None:
+    device, inode, expected_sha256 = token
+    try:
+        stat = path.lstat()
+        if (stat.st_dev, stat.st_ino) != (device, inode):
+            return
+        if _sha256(path) != expected_sha256:
+            return
+        path.unlink()
+    except FileNotFoundError:
+        pass

@@ -364,12 +364,19 @@ def _uninstall(argv: list[str]) -> int:
         prog="session-handoff uninstall",
         description="Restore client launchers and remove the managed setup.",
     )
+    parser.add_argument(
+        "--client",
+        action="append",
+        choices=("codex", "claude"),
+        help="Remove only this client; repeat to remove both.",
+    )
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
     args = parser.parse_args(argv)
     home = _home()
     if not args.yes:
         try:
-            answer = input("Restore original launchers and remove session-handoff setup? [y/N] ").strip().lower()
+            scope = ", ".join(dict.fromkeys(args.client)) if args.client else "all clients"
+            answer = input(f"Restore original launchers and remove session-handoff for {scope}? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("Uninstall cancelled.")
             return 0
@@ -377,14 +384,20 @@ def _uninstall(argv: list[str]) -> int:
             print("Uninstall cancelled.")
             return 0
     try:
-        result = restore_setup(home)
+        requested = list(dict.fromkeys(args.client)) if args.client else None
+        result = restore_setup(home, clients=requested) if requested else restore_setup(home)
     except (SetupError, OSError, subprocess.CalledProcessError) as exc:
         print(f"Uninstall failed: {exc}", file=sys.stderr)
         return 1
     if result.get("already_clean"):
         print("No managed setup found.")
     else:
-        print("Session-handoff setup removed and original launchers restored.")
+        remaining = result.get("remaining_clients", [])
+        if remaining:
+            removed = ", ".join(result.get("clients", []))
+            print(f"{removed} removed; shared setup preserved for {', '.join(remaining)}.")
+        else:
+            print("Session-handoff setup removed and original launchers restored.")
         try:
             config = telemetry.load_config(home)
             installation_id = result.get("installation_id")

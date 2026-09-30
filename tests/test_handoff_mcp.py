@@ -617,6 +617,8 @@ def test_state_create_preserves_auto_switch_numeric_telemetry(tmp_path):
     content = (tmp_path / "handoffs" / "state-switch.md").read_text(encoding="utf-8")
     request = json.loads(control_path.read_text(encoding="utf-8"))
     assert result["auto_switch_requested"] is True
+    request_id = request.pop("request_id")
+    assert len(request_id) == 32 and int(request_id, 16) >= 0
     assert request == {
         "token": token,
         "workspace": str(tmp_path),
@@ -1012,6 +1014,8 @@ Continue the feature.
     result = tool_result(responses[1])
     assert result["auto_switch_requested"] is True
     request = json.loads(control_path.read_text(encoding="utf-8"))
+    request_id = request.pop("request_id")
+    assert len(request_id) == 32 and int(request_id, 16) >= 0
     assert request == {
         "token": token,
         "workspace": str(tmp_path),
@@ -1125,7 +1129,10 @@ def test_migrate_requests_supervised_native_switch(tmp_path):
 
     result = tool_result(responses[1])
     assert result["auto_switch_requested"] is True
-    assert json.loads(control_path.read_text(encoding="utf-8")) == {
+    request = json.loads(control_path.read_text(encoding="utf-8"))
+    request_id = request.pop("request_id")
+    assert len(request_id) == 32 and int(request_id, 16) >= 0
+    assert request == {
         "token": token,
         "mode": "migrate",
         "workspace": str(tmp_path),

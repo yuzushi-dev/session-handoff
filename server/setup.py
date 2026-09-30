@@ -30,10 +30,18 @@ BUNDLE_ENTRIES = (
     "README.md",
     "hooks",
     "docs/telemetry.md",
+    "docs/CHANGELOG-0.7.4.md",
+    "docs/compatibility.md",
     "bin",
     "commands",
     "server",
     "skills",
+    "scripts",
+    "tests/compat/fixtures",
+    "assets",
+    "LICENSE",
+    "SECURITY.md",
+    "TERMS.md",
 )
 EXTERNAL_LAUNCHER_DIRS = (Path("/usr/bin"), Path("/usr/local/bin"))
 
@@ -499,9 +507,10 @@ def install_setup(
 def restore_setup(
     home: Path,
     *,
+    clients: list[str] | None = None,
     runner: Callable[[list[str]], None] = _run_default,
 ) -> dict[str, object]:
-    """Restore launchers created by setup and remove its managed files."""
+    """Restore selected launchers, preserving shared files while clients remain."""
 
     with _setup_lock(home):
 
@@ -509,18 +518,23 @@ def restore_setup(
         if not state_path.is_file():
             return {"restored": False, "already_clean": True}
         state = _load_state(state_path)
-        clients = state.get("clients", [])
+        managed_clients = state.get("clients", [])
         skill_hashes = state.get("skill_hashes", {})
         if (
-            not isinstance(clients, list)
-            or any(client not in CLIENTS for client in clients)
+            not isinstance(managed_clients, list)
+            or any(client not in CLIENTS for client in managed_clients)
             or not isinstance(skill_hashes, dict)
         ):
             raise SetupError(f"invalid session-handoff state: {state_path}")
+        selected = list(managed_clients) if clients is None else _validate_clients(clients)
+        unmanaged = [client for client in selected if client not in managed_clients]
+        if unmanaged:
+            raise SetupError("client is not managed: " + ", ".join(unmanaged))
+        remaining = [client for client in managed_clients if client not in selected]
 
-        launchers, backups, targets = _validate_state_paths(home, clients, state)
+        launchers, backups, targets = _validate_state_paths(home, managed_clients, state)
         restore_plan: list[tuple[str, Path, Path, Path]] = []
-        for client in clients:
+        for client in selected:
             launcher, backup, target = launchers[client], backups[client], targets[client]
             if not _is_wrapper(launcher, client):
                 raise SetupError(f"managed launcher changed externally: {launcher}")
@@ -540,18 +554,30 @@ def restore_setup(
             if target != backup:
                 _remove(backup)
 
-        for client in clients:
+        for client in selected:
             skill = _skill_path(home, client)
             if skill.is_file() and skill_hashes.get(client) == _digest(skill.read_text(encoding="utf-8")):
                 _remove(skill)
-        bundle = Path(os.path.abspath(home / BUNDLE_PATH))
-        _remove(bundle)
-        _remove(state_path)
+        if remaining:
+            state["clients"] = remaining
+            for key in ("launchers", "backups", "targets", "skill_hashes"):
+                mapping = state.get(key, {})
+                state[key] = {
+                    client: mapping[client]
+                    for client in remaining
+                    if isinstance(mapping, dict) and client in mapping
+                }
+            _write_json(state_path, state)
+        else:
+            bundle = Path(os.path.abspath(home / BUNDLE_PATH))
+            _remove(bundle)
+            _remove(state_path)
         return {
             "restored": True,
             "already_clean": False,
-            "clients": clients,
-            "installation_id": state.get("installation_id"),
+            "clients": selected,
+            "remaining_clients": remaining,
+            "installation_id": None if remaining else state.get("installation_id"),
         }
 
 

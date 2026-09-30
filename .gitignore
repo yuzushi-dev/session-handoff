@@ -10,6 +10,7 @@ handoffs/
 # Never tracked; public docs live in docs/ and benchmark/ (harness only).
 .internal/
 .sando/
+.orca/
 
 # Local git worktrees for isolated feature work.
 .worktrees/

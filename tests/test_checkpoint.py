@@ -199,6 +199,31 @@ def test_compact_context_returns_short_pointer_for_matching_session(tmp_path):
     assert len(context) < 1000
 
 
+def test_compact_context_consumes_each_checkpoint_once(tmp_path):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    capture_checkpoint(event(repo), home=home)
+    payload = {"cwd": str(repo), "source": "compact", "session_id": "session-123"}
+
+    assert compact_context(payload, home=home) is not None
+    assert compact_context(payload, home=home) is None
+
+
+def test_distinct_same_time_checkpoints_have_distinct_injection_ids(tmp_path):
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    payload = event(repo)
+    now = checkpoint.datetime(2026, 9, 30, tzinfo=checkpoint.timezone.utc)
+    first = capture_checkpoint(payload, home=home, now=now)
+    compact_payload = {"cwd": str(repo), "source": "compact", "session_id": "session-123"}
+
+    assert compact_context(compact_payload, home=home) is not None
+    second = capture_checkpoint(payload, home=home, now=now)
+
+    assert first["checkpoint_id"] != second["checkpoint_id"]
+    assert compact_context(compact_payload, home=home) is not None
+
+
 def test_compact_context_does_not_fallback_to_another_session(tmp_path):
     repo = make_repo(tmp_path)
     home = tmp_path / "home"

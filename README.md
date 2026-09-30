@@ -209,6 +209,9 @@ python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" doctor -
 The default doctor output is machine-readable JSON. `--human` adds a compact read-only summary
 of client readiness plus central data/state/catalog health; an absent store is reported
 separately from an unsafe or corrupt one. Doctor does not create or repair the store.
+Local readiness and compatibility evidence are separate: an installed client with no matching
+live evidence remains unverified. See the [compatibility matrix](docs/compatibility.md) for
+tested combinations, receipt generation, and remaining checks.
 
 </details>
 
@@ -220,6 +223,12 @@ it when Codex exits and keeps the updated executable as its target. Claude versi
 reconciled to the newest validated executable in its native versions directory. An installer run
 outside a supervised session cannot be repaired automatically; rerun setup afterward for the
 affected client.
+
+Interrupted switches retain their phase under `$XDG_STATE_HOME/session-handoff/supervisors`
+(or `~/.local/state/session-handoff/supervisors`). The launcher reports the journal path
+when a destination may already have started. Inspect the recorded phase and session reference,
+then resume manually with the saved original client executable; the launcher preserves the
+handoff and diagnoses an uncertain launch instead of opening another destination.
 
 Run the setup command for the client you want to configure, or both commands for both clients.
 The client executable must already be on `PATH`. Setup installs a persistent user-scoped bundle,
@@ -235,6 +244,9 @@ To remove the managed setup:
 ```bash
 python3 "$HOME/.local/share/session-handoff/plugin/bin/session-handoff" uninstall
 ```
+
+Use `uninstall --client codex` or `uninstall --client claude` to remove one client. The shared
+bundle and registrations for the other managed client remain available.
 
 This restores the saved client launchers and removes the managed bundle and registrations.
 Central projects and records under XDG data, bindings under XDG state, checkpoints, and saved

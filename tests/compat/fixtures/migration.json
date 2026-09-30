@@ -1,0 +1,1 @@
+{"schema":"session-handoff.contract-fixture/v1","client":"claude-to-codex","client_version":"2.1.263/0.159.2","event":"migration","provenance":{"kind":"synthetic","captured":false,"source":"contract authoring"},"anonymization":{"transformations":["messages and tool results generated for this fixture"]},"payload":{"events":["message","tool-use","tool-result","unknown"]}}

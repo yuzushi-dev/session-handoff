@@ -25,7 +25,7 @@ To configure the npm side (once, with npm account proof of presence), run:
 
 To exercise validation from the main branch:
 
-    gh workflow run publish.yml --ref main -f tag=v0.7.4-jev.3 -f dry-run=true -f dist-tag=latest
+    gh workflow run publish.yml --ref main -f tag=v0.7.4-jev.4 -f dry-run=true -f dist-tag=latest
 
 The dry run validates and packs the release but does not exercise the OIDC
 publish exchange. The first real publish requires the npm trusted-publisher

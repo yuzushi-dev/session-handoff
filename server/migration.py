@@ -225,7 +225,12 @@ def _find_source(home: Path, client: str, session_id: str) -> Path:
         raise MigrationError(f"no {client} session found for UUID in the selected source home")
     if len(matches) != 1:
         raise MigrationError(f"multiple {client} sessions matched the UUID")
-    return matches[0]
+    source = matches[0].resolve()
+    try:
+        source.relative_to(home.resolve())
+    except ValueError as exc:
+        raise MigrationError("migration source is outside the source home") from exc
+    return source
 
 
 def _migrate_path(
@@ -239,27 +244,8 @@ def _migrate_path(
     projection: PaginatedProjection | None = None,
     source_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    try:
-        result = convert_native_session(
-            source_path,
-            source_client,
-            target_client,
-            source_session_id,
-            target_id,
-            root,
-            target_root,
-            source_provenance=source_provenance,
-        )
-    except MigrationError:
-        raise
-    except (OSError, ValueError, RuntimeError, EngineError) as exc:
-        raise MigrationError(str(exc)) from exc
-
     warnings = list(projection.warnings) if projection else []
-    warnings.extend(result["warnings"])
     dropped = dict(projection.dropped) if projection else {}
-    for key, value in result["dropped_events"].items():
-        dropped[key] = dropped.get(key, 0) + value
     normalized_fields = dict(projection.normalized_fields) if projection else {}
     if target_client == "codex":
         warnings.append(
@@ -270,12 +256,25 @@ def _migrate_path(
             }
         )
         normalized_fields["codexTarget"] = ["deduplicated_user_events"]
-    result["warnings"] = warnings
-    result["dropped_events"] = dropped
-    result["context_loss"] = {
-        "dropped_events": dropped,
-        "normalized_fields": normalized_fields,
-    }
+    try:
+        result = convert_native_session(
+            source_path,
+            source_client,
+            target_client,
+            source_session_id,
+            target_id,
+            root,
+            target_root,
+            source_provenance=source_provenance,
+            source_dropped=dropped,
+            source_warnings=warnings,
+            normalized_fields=normalized_fields,
+        )
+    except MigrationError:
+        raise
+    except (OSError, ValueError, RuntimeError, EngineError) as exc:
+        raise MigrationError(str(exc)) from exc
+
     return result
 
 
@@ -304,7 +303,9 @@ def migrate_session(
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
         raise MigrationError(f"workspace is not a directory: {workspace}")
-    target_id = target_session_id or str(uuid.uuid4())
+    target_id = str(uuid.uuid4()) if target_session_id is None else target_session_id
+    if not isinstance(target_id, str) or not target_id:
+        raise MigrationError("target session id must be a valid UUID")
     try:
         uuid.UUID(target_id)
     except ValueError as exc:
@@ -390,6 +391,7 @@ def _paginated_source_provenance(
         "history": {
             "format": "sqlite",
             "path": str(history_db.resolve()),
+            "sha256": projection.history_database_sha256,
             "item_count": projection.history_item_count,
             "items_sha256": projection.history_items_sha256,
             "session_id": session_id,

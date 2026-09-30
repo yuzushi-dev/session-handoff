@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -287,19 +288,20 @@ def capture_checkpoint(payload: dict[str, Any], *, home: Path | None = None,
     directory = home / STATE_PATH / _workspace_key(root)
     path = directory / _checkpoint_name(event["session_id"])
     content = _render(event, root, git, created_at, deadline=effective_deadline)
+    checkpoint_id = secrets.token_hex(32)
     _atomic_write(path, content)
     checkpoint_bytes = len(content.encode("utf-8"))
     latest = directory / "latest.json"
     pointer = {"version": 1, "workspace": str(root),
                "session_id": event["session_id"], "path": str(path),
                "checkpoint_bytes": checkpoint_bytes, "created_at": created_at,
-               "trigger": event["trigger"]}
+               "trigger": event["trigger"], "checkpoint_id": checkpoint_id}
     _atomic_write(directory / _session_pointer_name(event["session_id"]),
                   json.dumps(pointer, ensure_ascii=False, indent=2) + "\n")
     _atomic_write(latest, json.dumps(pointer, ensure_ascii=False, indent=2) + "\n")
     return {"path": str(path), "latest_path": str(latest), "workspace": str(root),
             "session_id": event["session_id"] or "", "trigger": event["trigger"] or "",
-            "checkpoint_bytes": checkpoint_bytes}
+            "checkpoint_bytes": checkpoint_bytes, "checkpoint_id": checkpoint_id}
 
 
 def _workspace_directory(payload: dict[str, Any], home: Path, *,
@@ -353,9 +355,42 @@ def _latest_pointer(payload: dict[str, Any], home: Path) -> dict[str, Any] | Non
                 checkpoint_bytes = path.stat().st_size
             except OSError:
                 continue
+        checkpoint_id = pointer.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not re.fullmatch(r"[0-9a-f]{64}", checkpoint_id):
+            checkpoint_id = hashlib.sha256(
+                f"{path}\0{created_at}\0{session_id}".encode("utf-8")
+            ).hexdigest()
         return {"path": str(path), "created_at": created_at,
-                "checkpoint_bytes": checkpoint_bytes, "session_id": session_id}
+                "checkpoint_bytes": checkpoint_bytes, "session_id": session_id,
+                "checkpoint_id": checkpoint_id}
     return None
+
+
+def _claim_checkpoint_injection(pointer: dict[str, Any]) -> bool:
+    path = Path(pointer["path"])
+    marker = path.parent / f".injected-{pointer['checkpoint_id']}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        encoded = (pointer["checkpoint_id"] + "\n").encode("ascii")
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    except Exception:
+        marker.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+    directory = os.open(marker.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return True
 
 
 def lifecycle_event_path(payload: dict[str, Any], *, home: Path | None = None,
@@ -434,6 +469,11 @@ def compact_context(payload: dict[str, Any], *, home: Path | None = None) -> str
         return None
     pointer = _latest_pointer(payload, (home or Path.home()).expanduser().resolve())
     if pointer is None:
+        return None
+    try:
+        if not _claim_checkpoint_injection(pointer):
+            return None
+    except OSError:
         return None
     return ("A session-handoff recovery checkpoint was captured before this compaction. "
             "It is non-semantic evidence; verify the live state before relying on it. "

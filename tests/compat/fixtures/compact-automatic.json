@@ -1,0 +1,1 @@
+{"schema":"session-handoff.contract-fixture/v1","client":"claude","client_version":"2.1.263","event":"compact-automatic","provenance":{"kind":"synthetic","captured":false,"source":"contract authoring"},"anonymization":{"transformations":["transcript replaced with synthetic turns"]},"payload":{"trigger":"automatic","transcript":"synthetic"}}

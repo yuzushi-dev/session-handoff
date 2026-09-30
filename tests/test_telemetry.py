@@ -371,7 +371,7 @@ def test_copying_batch_gets_fresh_nonce_and_cannot_ack_replayed_batch(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     row = telemetry._aggregate_row(OPERATION, 1)
     telemetry._store_queue(tmp_path, [row])
-    batch = telemetry.load_batch(tmp_path)
+    batch = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
     replay = copy.copy(batch)
 
     assert replay.queue_token != batch.queue_token
@@ -795,13 +795,13 @@ def test_mutated_batch_is_rejected_before_digest_validation(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     row = telemetry._aggregate_row(OPERATION, 1)
     telemetry._store_queue(tmp_path, [row])
-    batch = telemetry.load_batch(tmp_path)
+    batch = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
     digest = telemetry._batch_digest(batch)
     batch.append(row)
 
     with pytest.raises(telemetry.TelemetryConfigError):
         telemetry.ack_batch(tmp_path, batch, accepted=1, digest=digest)
-    assert telemetry.load_batch(tmp_path) == [row]
+    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z") == [row]
 
 
 def test_empty_batch_is_rejected_before_digest_validation(tmp_path):
@@ -1091,8 +1091,8 @@ def test_batch_nonce_is_unique_and_not_sent(tmp_path):
     row = telemetry._aggregate_row(OPERATION, 1)
     telemetry._store_queue(tmp_path, [row])
 
-    first = telemetry.load_batch(tmp_path)
-    second = telemetry.load_batch(tmp_path)
+    first = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
+    second = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
     request = telemetry.build_request(telemetry.ENDPOINT, first)
 
     assert first.queue_token != second.queue_token
@@ -1120,8 +1120,12 @@ def test_flush_rejects_same_origin_redirect(tmp_path):
         def close(self):
             return None
 
-    assert telemetry.flush_queue(tmp_path, opener=lambda *_args, **_kwargs: Response()) == 0
-    assert telemetry.load_batch(tmp_path)
+    assert telemetry.flush_queue(
+        tmp_path,
+        opener=lambda *_args, **_kwargs: Response(),
+        now="2026-08-26T00:00:00Z",
+    ) == 0
+    assert telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
 
 
 def test_flush_rejects_response_host_change(tmp_path):
@@ -1228,11 +1232,11 @@ def test_flush_queue_retries_next_invocation_and_timeout_is_bounded(tmp_path):
         telemetry.write_config(tmp_path, config)
         started = datetime.now(timezone.utc)
         try:
-            assert telemetry.flush_queue(tmp_path) == 0
+            assert telemetry.flush_queue(tmp_path, now="2026-08-26T00:00:00Z") == 0
         finally:
             telemetry.ENDPOINT = original_endpoint
         assert (datetime.now(timezone.utc) - started).total_seconds() < 4
-        assert telemetry.load_batch(tmp_path, limit=1)
+        assert telemetry.load_batch(tmp_path, limit=1, now="2026-08-26T00:00:00Z")
     finally:
         block.set()
         _TelemetryHandler.block = None

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from server import setup as _setup_impl
+from server.compatibility import content_hash
 from server.setup import SetupError, install_setup, restore_setup, setup_plan
 
 
@@ -73,13 +74,17 @@ def test_setup_installs_skill_mcp_registration_and_launcher(tmp_path):
 def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
     package = tmp_path / "package"
     bundle = tmp_path / "bundle"
-    for name in ("bin", "commands", "server", "skills", "hooks", "docs", ".claude-plugin", ".codex-plugin"):
+    for name in ("bin", "commands", "server", "skills", "hooks", "docs", "scripts", "assets", ".claude-plugin", ".codex-plugin"):
         path = package / name
         path.mkdir(parents=True)
         (path / "kept.txt").write_text("kept", encoding="utf-8")
-    for name in (".mcp.json", "mcp.json", "plugin.json", "package.json", "README.md"):
+    for name in (".mcp.json", "mcp.json", "plugin.json", "package.json", "README.md", "LICENSE", "SECURITY.md", "TERMS.md"):
         (package / name).write_text("kept", encoding="utf-8")
     (package / "docs/telemetry.md").write_text("kept", encoding="utf-8")
+    (package / "docs/compatibility.md").write_text("kept", encoding="utf-8")
+    fixtures = package / "tests/compat/fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "kept.json").write_text("{}", encoding="utf-8")
     for name in ("benchmark/results", "benchmark/generated", ".sando", "notes"):
         path = package / name
         path.mkdir(parents=True)
@@ -88,6 +93,10 @@ def test_stage_bundle_only_copies_runtime_package_files(tmp_path):
     staging = _setup_impl._stage_bundle(package, bundle)
 
     assert (staging / "server/kept.txt").is_file()
+    assert (staging / "scripts/kept.txt").is_file()
+    assert (staging / "assets/kept.txt").is_file()
+    assert (staging / "LICENSE").is_file()
+    assert (staging / "tests/compat/fixtures/kept.json").is_file()
     assert (staging / "package.json").is_file()
     assert not (staging / "plugin.json").exists()
     assert not (staging / "benchmark").exists()
@@ -225,6 +234,25 @@ def test_setup_refreshes_the_persistent_bundle_on_reinstall(tmp_path):
     assert calls[2][0].endswith("codex.session-handoff-original")
     assert calls[2][1:4] == ["mcp", "add", "session-handoff"]
     assert calls[2][4:6] == ["--env", "SESSION_HANDOFF_CLIENT=codex"]
+
+
+def test_setup_bundle_preserves_the_distributed_package_identity(tmp_path):
+    package = Path(__file__).parents[1]
+    home = tmp_path / "home"
+    executable = home / ".local/bin/codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    install_setup(
+        package,
+        home,
+        ["codex"],
+        executable_paths={"codex": executable},
+        runner=lambda _argv: None,
+    )
+
+    assert content_hash(home / ".local/share/session-handoff/plugin") == content_hash(package)
 
 
 def test_setup_rolls_back_all_changes_when_mcp_registration_fails(tmp_path):
@@ -512,6 +540,54 @@ def test_restore_setup_returns_the_original_launcher_and_removes_managed_files(t
     assert not (home / ".local/share/session-handoff/plugin").exists()
     assert not (home / ".codex/skills/session-handoff/SKILL.md").exists()
     assert calls[-1] == [str(launcher.with_name("codex.session-handoff-original")), "mcp", "remove", "session-handoff"]
+
+
+def test_restore_setup_removes_only_requested_client_and_preserves_shared_setup(tmp_path):
+    package = Path(__file__).parents[1]
+    home = tmp_path / "home"
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    executables = {}
+    for client in ("codex", "claude"):
+        executable = bin_dir / client
+        executable.write_text(f"{client}-original", encoding="utf-8")
+        executable.chmod(0o755)
+        executables[client] = executable
+
+    install_setup(
+        package,
+        home,
+        ["codex", "claude"],
+        executable_paths=executables,
+        runner=lambda _argv: None,
+    )
+    state_path = home / ".config/session-handoff/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["installation_id"] = "a" * 32
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    calls = []
+
+    result = restore_setup(home, clients=["codex"], runner=calls.append)
+
+    assert result == {
+        "restored": True,
+        "already_clean": False,
+        "clients": ["codex"],
+        "remaining_clients": ["claude"],
+        "installation_id": None,
+    }
+    assert executables["codex"].read_text(encoding="utf-8") == "codex-original"
+    assert "run claude" in executables["claude"].read_text(encoding="utf-8")
+    assert not (home / ".codex/skills/session-handoff/SKILL.md").exists()
+    assert (home / ".claude/skills/session-handoff/SKILL.md").is_file()
+    assert (home / ".local/share/session-handoff/plugin").is_dir()
+    remaining = json.loads(state_path.read_text(encoding="utf-8"))
+    assert remaining["clients"] == ["claude"]
+    assert remaining["installation_id"] == "a" * 32
+    assert set(remaining["launchers"]) == {"claude"}
+    assert calls == [
+        [str(bin_dir / "codex.session-handoff-original"), "mcp", "remove", "session-handoff"]
+    ]
 
 
 def test_concurrent_install_setup_for_two_clients_does_not_clobber_state(tmp_path):

@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.4-jev.3",
+  "version": "0.7.4-jev.4",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "homepage": "https://github.com/yuzushi-dev/session-handoff",
   "repository": "https://github.com/yuzushi-dev/session-handoff",
@@ -10,7 +10,14 @@
     "url": "https://github.com/yuzushi-dev"
   },
   "license": "MIT",
-  "keywords": ["handoff", "session", "migration", "context", "codex", "claude"],
+  "keywords": [
+    "handoff",
+    "session",
+    "migration",
+    "context",
+    "codex",
+    "claude"
+  ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
   "interface": {
@@ -19,19 +26,29 @@
     "longDescription": "Session Handoff creates validated, secret-safe handoff documents or migrates an active native session between Codex and Claude Code with its internal migration engine.",
     "developerName": "yuzushi-dev",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://github.com/yuzushi-dev/session-handoff",
     "privacyPolicyURL": "https://github.com/yuzushi-dev/session-handoff/blob/main/docs/telemetry.md",
     "termsOfServiceURL": "https://github.com/yuzushi-dev/session-handoff/blob/main/TERMS.md",
     "composerIcon": "./assets/session-handoff-mark.png",
     "logo": "./assets/session-handoff-mark.png",
-    "screenshots": ["./assets/screenshot-terminal.png"],
-    "defaultPrompt": ["Create a handoff for this session."]
+    "screenshots": [
+      "./assets/screenshot-terminal.png"
+    ],
+    "defaultPrompt": [
+      "Create a handoff for this session."
+    ]
   },
   "mcpServers": {
     "session-handoff": {
       "command": "python3",
-      "args": ["server/handoff_mcp.py"],
+      "args": [
+        "server/handoff_mcp.py"
+      ],
       "cwd": ".",
       "env": {
         "SESSION_HANDOFF_CLIENT": "codex"

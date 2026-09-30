@@ -36,6 +36,9 @@ def convert_native_session(
     workspace: Path,
     target_home: Path,
     source_provenance: dict[str, Any] | None = None,
+    source_dropped: dict[str, int] | None = None,
+    source_warnings: list[dict[str, Any]] | None = None,
+    normalized_fields: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     source_bytes = source_path.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
@@ -47,6 +50,7 @@ def convert_native_session(
     )
     if not events:
         raise EngineError("source session has no portable conversation history")
+    _validate_tool_relations(events)
 
     timestamp = _timestamp(metadata.get("timestamp"))
     if target_client == "claude":
@@ -67,10 +71,14 @@ def convert_native_session(
             / date.strftime("%Y/%m/%d")
             / f"rollout-{filename_time}-{target_session_id}.jsonl"
         )
+    output = _confined_path(output, target_home, "target output")
     dropped.update(converted_dropped)
+    if source_dropped:
+        dropped.update(source_dropped)
     target_bytes = _encode_jsonl(target_records)
     target_sha256 = hashlib.sha256(target_bytes).hexdigest()
     manifest_path = target_home / "session-handoff/manifests" / f"{target_session_id}.json"
+    manifest_path = _confined_path(manifest_path, target_home, "migration manifest")
     source = {
         "format": source_client,
         "path": str(source_path.resolve()),
@@ -81,6 +89,11 @@ def convert_native_session(
     }
     if source_provenance:
         source.update(source_provenance)
+    warnings = [*(source_warnings or []), *_warnings(dropped)]
+    context_loss = {
+        "dropped_events": dict(sorted(dropped.items())),
+        "normalized_fields": normalized_fields or {},
+    }
     manifest = {
         "schema_version": 2,
         "migration_version": "0.5.4",
@@ -94,24 +107,53 @@ def convert_native_session(
             "timestamp": timestamp,
             "records": len(target_records),
         },
-        "dropped_events": dict(sorted(dropped.items())),
-        "warnings": _warnings(dropped),
+        "dropped_events": context_loss["dropped_events"],
+        "warnings": warnings,
+        "context_loss": context_loss,
     }
-    _write_pair(
+    ownership = _write_pair(
         output,
         target_bytes,
         manifest_path,
         (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
     )
-    source_changed = hashlib.sha256(source_path.read_bytes()).hexdigest() != source_sha256
-    if source_provenance:
-        native_path = source_provenance.get("path")
-        native_sha256 = source_provenance.get("sha256")
-        if isinstance(native_path, str) and isinstance(native_sha256, str):
-            source_changed = source_changed or hashlib.sha256(Path(native_path).read_bytes()).hexdigest() != native_sha256
+    try:
+        source_changed = hashlib.sha256(source_path.read_bytes()).hexdigest() != source_sha256
+        if source_provenance:
+            native_path = source_provenance.get("path")
+            native_sha256 = source_provenance.get("sha256")
+            if isinstance(native_path, str) and isinstance(native_sha256, str):
+                source_changed = source_changed or hashlib.sha256(Path(native_path).read_bytes()).hexdigest() != native_sha256
+            history = source_provenance.get("history")
+            if isinstance(history, dict):
+                history_path = history.get("path")
+                history_sha256 = history.get("sha256")
+                if isinstance(history_path, str) and isinstance(history_sha256, str):
+                    source_changed = source_changed or hashlib.sha256(Path(history_path).read_bytes()).hexdigest() != history_sha256
+                history_session_id = history.get("session_id")
+                expected_count = history.get("item_count")
+                expected_items_sha256 = history.get("items_sha256")
+                if (
+                    isinstance(history_path, str)
+                    and isinstance(history_session_id, str)
+                    and isinstance(expected_count, int)
+                    and isinstance(expected_items_sha256, str)
+                ):
+                    try:
+                        from .paginated_migration import paginated_history_state
+                    except ImportError:
+                        from paginated_migration import paginated_history_state
+                    actual_count, actual_items_sha256 = paginated_history_state(history_path, history_session_id)
+                    source_changed = source_changed or (
+                        actual_count != expected_count or actual_items_sha256 != expected_items_sha256
+                    )
+    except (OSError, RuntimeError) as exc:
+        for path, token in ownership.items():
+            _unlink_owned(path, token)
+        raise EngineError("source session could not be verified after conversion") from exc
     if source_changed:
-        _unlink_created(output)
-        _unlink_created(manifest_path)
+        for path, token in ownership.items():
+            _unlink_owned(path, token)
         raise EngineError("source session changed during conversion")
     return {
         "source_format": source_client,
@@ -123,6 +165,7 @@ def convert_native_session(
         "sha256": target_sha256,
         "warnings": manifest["warnings"],
         "dropped_events": manifest["dropped_events"],
+        "context_loss": manifest["context_loss"],
     }
 
 
@@ -147,6 +190,32 @@ def _read_jsonl(data: bytes) -> list[dict[str, Any]]:
     return records
 
 
+def _validate_tool_relations(events: list[dict[str, Any]]) -> None:
+    calls: set[str] = set()
+    results: set[str] = set()
+    for event in events:
+        kind = event.get("kind")
+        if kind == "tool_call":
+            call_id = event.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                raise EngineError("tool call ID is missing or invalid")
+            if call_id in calls:
+                raise EngineError("tool call ID is duplicated")
+            name = event.get("name")
+            if not isinstance(name, str) or not name:
+                raise EngineError("tool call name is missing or invalid")
+            calls.add(call_id)
+        elif kind == "tool_result":
+            call_id = event.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                raise EngineError("tool result ID is missing or invalid")
+            if call_id not in calls:
+                raise EngineError("tool result references an unknown tool call ID")
+            if call_id in results:
+                raise EngineError("tool result ID is duplicated")
+            results.add(call_id)
+
+
 def _parse_claude(
     records: list[dict[str, Any]], session_id: str
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Counter[str]]:
@@ -154,6 +223,15 @@ def _parse_claude(
     events: list[dict[str, Any]] = []
     dropped: Counter[str] = Counter()
     metadata: dict[str, Any] = {}
+    selected_records = {id(record) for record in selected}
+    for record in records:
+        record_session_id = record.get("sessionId")
+        if isinstance(record_session_id, str) and record_session_id != session_id:
+            raise EngineError("Claude session metadata does not match the requested UUID")
+        if id(record) in selected_records:
+            continue
+        record_type = str(record.get("type") or "record")
+        dropped["inactive_branch" if record_type in {"user", "assistant"} else record_type] += 1
     for record in selected:
         if record.get("sessionId") != session_id:
             raise EngineError("Claude session metadata does not match the requested UUID")
@@ -181,6 +259,8 @@ def _claude_active_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
         and record.get("isMeta") is not True
         and record.get("isSidechain") is not True
     ]
+    if any(not isinstance(record.get("uuid"), str) or not record.get("uuid") for record in candidates):
+        raise EngineError("Claude message record UUID is missing or invalid")
     by_uuid: dict[str, dict[str, Any]] = {}
     for record in records:
         record_id = record.get("uuid")
@@ -189,16 +269,14 @@ def _claude_active_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
         if record_id in by_uuid:
             raise EngineError("Claude transcript contains a duplicate record UUID")
         by_uuid[record_id] = record
-    leaf = next(
-        (
-            record.get("leafUuid")
-            for record in reversed(records)
-            if record.get("type") == "last-prompt"
-            and isinstance(record.get("leafUuid"), str)
-        ),
-        candidates[-1].get("uuid") if candidates else None,
-    )
-    if not isinstance(leaf, str) or leaf not in by_uuid:
+    last_prompt = next((record for record in reversed(records) if record.get("type") == "last-prompt"), None)
+    if last_prompt is not None:
+        leaf = last_prompt.get("leafUuid")
+        if not isinstance(leaf, str) or not leaf or leaf not in by_uuid:
+            raise EngineError("Claude last-prompt leaf UUID is missing or invalid")
+    else:
+        leaf = candidates[-1].get("uuid") if candidates else None
+    if leaf is None:
         return candidates
     chain: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -211,7 +289,12 @@ def _claude_active_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
             raise EngineError("Claude active graph references a missing parent UUID")
         chain.append(record)
         parent = record.get("parentUuid")
-        leaf = parent if isinstance(parent, str) and parent else None
+        if parent in (None, ""):
+            leaf = None
+        elif isinstance(parent, str):
+            leaf = parent
+        else:
+            raise EngineError("Claude parent UUID is invalid")
     return list(reversed(chain))
 
 
@@ -275,6 +358,13 @@ def _parse_codex(
     events: list[dict[str, Any]] = []
     fallback: list[dict[str, Any]] = []
     dropped: Counter[str] = Counter()
+    portable_metadata = {
+        "id", "session_id", "timestamp", "cwd", "originator", "cli_version",
+        "source", "model_provider", "history_mode",
+    }
+    for field in metadata:
+        if field not in portable_metadata:
+            dropped[f"session_meta:{field}"] += 1
     response_messages = 0
     for record in records[1:]:
         payload = record.get("payload")
@@ -293,6 +383,8 @@ def _parse_codex(
                     "text": text,
                     "timestamp": timestamp,
                 })
+        elif record.get("type") == "event_msg":
+            dropped[f"event_msg:{payload.get('type') or 'missing'}"] += 1
         elif record.get("type") == "compacted":
             text = payload.get("message")
             if isinstance(text, str) and text:
@@ -605,33 +697,73 @@ def _warnings(dropped: Counter[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _write_pair(output: Path, data: bytes, manifest: Path, manifest_data: bytes) -> None:
+def _confined_path(path: Path, root: Path, label: str) -> Path:
+    resolved_root = root.expanduser().resolve()
+    resolved_path = path.expanduser().resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise EngineError(f"{label} is outside the target home") from exc
+    return resolved_path
+
+
+def _write_pair(
+    output: Path, data: bytes, manifest: Path, manifest_data: bytes
+) -> dict[Path, tuple[int, int, str]]:
     collisions = [path for path in (output, manifest) if os.path.lexists(path)]
     if collisions:
         raise EngineError("refusing to overwrite existing target(s): " + ", ".join(map(str, collisions)))
-    written: list[Path] = []
+    written: list[tuple[Path, int, int]] = []
+    ownership: dict[Path, tuple[int, int, str]] = {}
     try:
         for path, content in ((output, data), (manifest, manifest_data)):
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            written.append(path)
+            stat = os.fstat(descriptor)
+            written.append((path, stat.st_dev, stat.st_ino))
             try:
                 with os.fdopen(descriptor, "wb") as handle:
                     handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             except BaseException:
                 try:
                     os.close(descriptor)
                 except OSError:
                     pass
                 raise
+            ownership[path] = (stat.st_dev, stat.st_ino, hashlib.sha256(content).hexdigest())
+        for parent in dict.fromkeys(path.parent for path in (output, manifest)):
+            directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except BaseException:
-        for path in written:
-            _unlink_created(path)
+        for path, device, inode in written:
+            _unlink_identity(path, device, inode)
         raise
+    return ownership
 
 
-def _unlink_created(path: Path) -> None:
+def _unlink_identity(path: Path, device: int, inode: int) -> None:
     try:
+        stat = path.lstat()
+        if (stat.st_dev, stat.st_ino) != (device, inode):
+            return
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _unlink_owned(path: Path, token: tuple[int, int, str]) -> None:
+    device, inode, expected_sha256 = token
+    try:
+        stat = path.lstat()
+        if (stat.st_dev, stat.st_ino) != (device, inode):
+            return
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+            return
         path.unlink()
     except FileNotFoundError:
         pass

@@ -267,14 +267,27 @@ def test_session_start_hook_reinjects_checkpoint_after_compact(tmp_path):
     assert checkpoint["path"] in context
     assert "non-semantic" in context
 
+    repeated = run_hook(
+        home,
+        {
+            "cwd": str(workspace),
+            "hook_event_name": "SessionStart",
+            "source": "compact",
+            "session_id": "session-123",
+        },
+    )
+    assert "additionalContext" not in json.loads(repeated.stdout).get("hookSpecificOutput", {})
+
     events = next((home / ".local/state/session-handoff/checkpoints").iterdir()) / "events.jsonl"
-    record = json.loads(events.read_text(encoding="utf-8").splitlines()[-1])
+    records = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+    record = records[-2]
     assert record["event"] == "session_start"
     assert record["trigger"] == "compact"
     assert record["checkpoint_path"] == checkpoint["path"]
     assert record["checkpoint_bytes"] == Path(checkpoint["path"]).stat().st_size
     assert record["injected"] is True
     assert record["injected_bytes"] > 0
+    assert records[-1]["injected"] is False
 
 
 def test_session_start_hook_records_non_compact_without_injection(tmp_path):

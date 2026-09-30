@@ -1,4 +1,5 @@
 import json
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 import server.command_matrix as command_matrix
 from server.command_matrix import probe_command_matrix
 from server import handoff_store
+from server.compatibility import content_hash
 from server.setup import install_setup
 
 
@@ -41,6 +43,27 @@ def successful_runner(argv, **_kwargs):
     return SimpleNamespace(returncode=0, stdout="configured\n", stderr="")
 
 
+def _compatibility_report(cases, versions):
+    return {
+        "schema": "session-handoff.compatibility-report/v1",
+        "build": {
+            "package_version": json.loads((ROOT / "package.json").read_text())["version"],
+            "source_kind": "checkout",
+            "content_sha256": content_hash(ROOT),
+        },
+        "environment": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+        "clients": {
+            client: {"present": True, "version": version}
+            for client, version in versions.items()
+        },
+        "cases": cases,
+    }
+
+
 def test_command_matrix_proves_all_four_provider_free_flows(tmp_path):
     home = install_fixture(tmp_path)
 
@@ -63,6 +86,449 @@ def test_command_matrix_proves_all_four_provider_free_flows(tmp_path):
         },
     }
     assert str(tmp_path) not in json.dumps(result)
+
+
+def test_doctor_separates_local_readiness_from_unverified_capacity(tmp_path):
+    home = install_fixture(tmp_path)
+
+    result = probe_command_matrix(home, runner=successful_runner)
+
+    assert result["local_readiness"]["ready"] is True
+    assert result["certification"] == {
+        "status": "unverified",
+        "reason": "no matching compatibility evidence",
+        "capabilities": {
+            "installation": "not-run",
+            "handoff": "not-run",
+            "migration_format": "not-run",
+            "compaction": "not-run",
+        },
+        "tested_cases": [],
+    }
+    for client in ("codex", "claude"):
+        status = result["clients"][client]
+        assert status["version"] == "1.0"
+        assert status["version_output"] == "test-client 1.0"
+        assert status["installation_type"] == "path"
+        assert status["executable_origin"] == "managed_target"
+        assert status["launcher_status"] == "managed"
+        assert status["certification"] == "unverified"
+
+
+def test_doctor_reports_an_unmanaged_path_client_without_marking_it_ready(tmp_path, monkeypatch):
+    executable = tmp_path / "bin/codex"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(
+        command_matrix.shutil,
+        "which",
+        lambda name: str(executable) if name == "codex" else None,
+    )
+
+    result = probe_command_matrix(tmp_path / "home", runner=successful_runner)
+
+    codex = result["clients"]["codex"]
+    assert codex["managed"] is False
+    assert codex["ready"] is False
+    assert codex["version"] == "1.0"
+    assert codex["installation_type"] == "path"
+    assert codex["executable_origin"] == "path"
+    assert codex["launcher_status"] == "unmanaged"
+
+
+def test_doctor_client_probes_cannot_write_to_the_caller_home_or_xdg(tmp_path):
+    home = install_fixture(tmp_path)
+    codex_config = home / ".codex/config.toml"
+    codex_config.parent.mkdir(parents=True, exist_ok=True)
+    codex_config.write_text("[mcp_servers.session-handoff]\ncommand = 'python3'\n", encoding="utf-8")
+    claude_config = home / ".claude.json"
+    claude_config.write_text('{"mcpServers":{"session-handoff":{}}}\n', encoding="utf-8")
+    before = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+    probe_homes = set()
+
+    def mutating_runner(argv, **kwargs):
+        env = kwargs["env"]
+        probe_home = Path(env["HOME"])
+        first_probe = probe_home not in probe_homes
+        probe_homes.add(probe_home)
+        assert probe_home != home
+        assert env["XDG_CONFIG_HOME"].startswith(str(probe_home))
+        assert env["XDG_STATE_HOME"].startswith(str(probe_home))
+        if first_probe:
+            assert (probe_home / ".codex/config.toml").read_text() == codex_config.read_text()
+            assert (probe_home / ".claude.json").read_text() == claude_config.read_text()
+        (probe_home / ".claude/backups").mkdir(parents=True, exist_ok=True)
+        (probe_home / ".claude.json").write_text("mutated", encoding="utf-8")
+        state = Path(env["XDG_STATE_HOME"]) / "client-state"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("created", encoding="utf-8")
+        stdout = "codex-cli 0.159.2\n" if "--version" in argv else "configured\n"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    probe_command_matrix(home, runner=mutating_runner)
+
+    after = {
+        path.relative_to(home): path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert probe_homes
+    assert all(not probe_home.exists() for probe_home in probe_homes)
+
+
+def test_doctor_resolves_a_managed_path_wrapper_without_executing_it(tmp_path, monkeypatch):
+    native = tmp_path / "bin/codex-native"
+    native.parent.mkdir()
+    native.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    native.chmod(0o755)
+    wrapper = tmp_path / "bin/codex"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f'exec python3 /plugin/bin/session-handoff run codex --executable {native} "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    wrapper_before = wrapper.read_bytes()
+    sibling = tmp_path / "bin/codex.session-handoff-original"
+    sibling.write_text("preserve", encoding="utf-8")
+    monkeypatch.setattr(
+        command_matrix.shutil,
+        "which",
+        lambda name: str(wrapper) if name == "codex" else None,
+    )
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if Path(argv[0]) == wrapper:
+            sibling.write_text("wrapper executed", encoding="utf-8")
+            raise AssertionError("doctor must not execute a managed wrapper")
+        stdout = "codex-cli 0.159.2\n" if "--version" in argv else "configured\n"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    result = probe_command_matrix(tmp_path / "empty-home", runner=runner)
+
+    assert result["clients"]["codex"]["version"] == "0.159.2"
+    assert calls and all(Path(argv[0]) == native for argv in calls)
+    assert wrapper.read_bytes() == wrapper_before
+    assert sibling.read_text(encoding="utf-8") == "preserve"
+
+
+def test_doctor_fails_closed_on_a_malformed_managed_path_wrapper(tmp_path, monkeypatch):
+    wrapper = tmp_path / "bin/codex"
+    wrapper.parent.mkdir()
+    wrapper.write_text(
+        "#!/bin/sh\nexec python3 /plugin/bin/session-handoff run codex --executable\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(
+        command_matrix.shutil,
+        "which",
+        lambda name: str(wrapper) if name == "codex" else None,
+    )
+    calls = []
+
+    result = probe_command_matrix(
+        tmp_path / "empty-home",
+        runner=lambda argv, **kwargs: calls.append(argv),
+    )
+
+    assert result["clients"]["codex"]["executable"] is False
+    assert calls == []
+
+
+def test_probe_sandbox_is_removed_when_config_copy_fails(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    config = home / ".codex/config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("config", encoding="utf-8")
+    created = []
+    real_temporary_directory = command_matrix.tempfile.TemporaryDirectory
+
+    def temporary_directory(*args, **kwargs):
+        value = real_temporary_directory(*args, **kwargs)
+        created.append(Path(value.name))
+        return value
+
+    monkeypatch.setattr(command_matrix.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setattr(
+        command_matrix.shutil,
+        "copy2",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("copy failed")),
+    )
+
+    with pytest.raises(OSError, match="copy failed"):
+        command_matrix._isolated_probe_environment(home)
+
+    assert created and all(not path.exists() for path in created)
+
+
+def test_unknown_client_version_is_unverified_not_incompatible(tmp_path):
+    home = install_fixture(tmp_path)
+
+    def runner(argv, **kwargs):
+        if "--version" in argv:
+            return SimpleNamespace(returncode=0, stdout="codex 999.0.0\n", stderr="")
+        return successful_runner(argv, **kwargs)
+
+    result = probe_command_matrix(home, runner=runner)
+
+    assert result["clients"]["codex"]["certification"] == "unverified"
+    assert "incompatible" not in json.dumps(result)
+
+
+def test_doctor_certifies_only_live_cases_for_exact_client_versions(tmp_path):
+    home = install_fixture(tmp_path)
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "session-handoff.compatibility-report/v1",
+                "build": {
+                    "package_version": json.loads((ROOT / "package.json").read_text())["version"],
+                    "source_kind": "checkout",
+                    "content_sha256": content_hash(ROOT),
+                },
+                "environment": {
+                    "system": platform.system(),
+                    "release": platform.release(),
+                    "machine": platform.machine(),
+                },
+                "clients": {
+                    "codex": {"present": True, "version": "1.0"},
+                    "claude": {"present": True, "version": "1.0"},
+                },
+                "cases": [
+                    {
+                        "id": "codex-handoff-live",
+                        "capability": "handoff",
+                        "proof_level": "live",
+                        "clients": ["codex"],
+                        "client_versions": {"codex": "1.0"},
+                        "status": "passed",
+                    },
+                    {
+                        "id": "migration-live",
+                        "capability": "migration_format",
+                        "proof_level": "live",
+                        "clients": ["codex", "claude"],
+                        "client_versions": {"codex": "1.0", "claude": "1.0"},
+                        "status": "passed",
+                    },
+                    {
+                        "id": "ignored-offline",
+                        "capability": "handoff",
+                        "proof_level": "deterministic",
+                        "clients": ["claude"],
+                        "status": "failed",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = probe_command_matrix(
+        home,
+        runner=successful_runner,
+        compatibility_report=report,
+    )
+
+    assert result["certification"]["status"] == "unverified"
+    assert result["certification"]["reason"] == "required live compatibility matrix is incomplete"
+    assert result["certification"]["capabilities"] == {
+        "installation": "not-run",
+        "handoff": "passed",
+        "migration_format": "passed",
+        "compaction": "not-run",
+    }
+    assert result["clients"]["codex"]["certification"] == "unverified"
+    assert result["clients"]["claude"]["certification"] == "unverified"
+
+
+def test_failed_live_case_dominates_client_certification_regardless_of_order(tmp_path):
+    home = install_fixture(tmp_path)
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "session-handoff.compatibility-report/v1",
+                "build": {
+                    "package_version": json.loads((ROOT / "package.json").read_text())["version"],
+                    "source_kind": "checkout",
+                    "content_sha256": content_hash(ROOT),
+                },
+                "environment": {
+                    "system": platform.system(),
+                    "release": platform.release(),
+                    "machine": platform.machine(),
+                },
+                "clients": {
+                    "codex": {"present": True, "version": "1.0"},
+                    "claude": {"present": True, "version": "1.0"},
+                },
+                "cases": [
+                    {"id": "codex-to-claude-migration", "capability": "migration", "proof_level": "live", "clients": ["codex", "claude"], "client_versions": {"codex": "1.0", "claude": "1.0"}, "status": "failed"},
+                    {"id": "codex-handoff", "capability": "handoff", "proof_level": "live", "clients": ["codex"], "client_versions": {"codex": "1.0"}, "status": "passed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = probe_command_matrix(home, runner=successful_runner, compatibility_report=report)
+
+    assert result["certification"]["status"] == "failed"
+    assert result["clients"]["codex"]["certification"] == "failed"
+    assert result["clients"]["claude"]["certification"] == "failed"
+
+
+def test_doctor_rejects_live_evidence_for_a_different_build(tmp_path):
+    home = install_fixture(tmp_path)
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "session-handoff.compatibility-report/v1",
+                "build": {
+                    "package_version": json.loads((ROOT / "package.json").read_text())["version"],
+                    "source_kind": "checkout",
+                    "content_sha256": "0" * 64,
+                },
+                "environment": {
+                    "system": platform.system(),
+                    "release": platform.release(),
+                    "machine": platform.machine(),
+                },
+                "clients": {
+                    "codex": {"present": True, "version": "1.0"},
+                    "claude": {"present": True, "version": "1.0"},
+                },
+                "cases": [
+                    {"capability": "handoff", "proof_level": "live", "clients": ["codex"], "status": "passed"},
+                    {"capability": "migration", "proof_level": "live", "clients": ["codex", "claude"], "status": "passed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = probe_command_matrix(home, runner=successful_runner, compatibility_report=report)
+
+    assert result["certification"]["status"] == "unverified"
+    assert result["certification"]["reason"] == "compatibility evidence is for a different build or platform"
+
+
+def test_doctor_verifies_only_the_complete_required_live_matrix(tmp_path):
+    home = install_fixture(tmp_path)
+    versions = {"codex": "1.0", "claude": "1.0"}
+    cases = []
+    for case_id, (capability, required_clients) in command_matrix.REQUIRED_LIVE_CASES.items():
+        clients = [client for client in ("codex", "claude") if client in required_clients]
+        cases.append(
+            {
+                "id": case_id,
+                "capability": "migration" if capability == "migration_format" else capability,
+                "proof_level": "live",
+                "clients": clients,
+                "client_versions": {client: versions[client] for client in clients},
+                "status": "passed",
+            }
+        )
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "session-handoff.compatibility-report/v1",
+                "build": {
+                    "package_version": json.loads((ROOT / "package.json").read_text())["version"],
+                    "source_kind": "checkout",
+                    "content_sha256": content_hash(ROOT),
+                },
+                "environment": {
+                    "system": platform.system(),
+                    "release": platform.release(),
+                    "machine": platform.machine(),
+                },
+                "clients": {
+                    client: {"present": True, "version": version}
+                    for client, version in versions.items()
+                },
+                "cases": cases,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = probe_command_matrix(home, runner=successful_runner, compatibility_report=report)
+
+    assert result["certification"]["status"] == "verified"
+    assert len(result["certification"]["tested_cases"]) == len(command_matrix.REQUIRED_LIVE_CASES)
+    assert result["clients"]["codex"]["certification"] == "verified"
+    assert result["clients"]["claude"]["certification"] == "verified"
+
+
+def test_failed_extra_live_case_blocks_an_otherwise_complete_matrix(tmp_path):
+    home = install_fixture(tmp_path)
+    versions = {"codex": "1.0", "claude": "1.0"}
+    cases = [
+        {
+            "id": case_id,
+            "capability": "migration" if capability == "migration_format" else capability,
+            "proof_level": "live",
+            "clients": [client for client in ("codex", "claude") if client in required_clients],
+            "client_versions": {
+                client: versions[client]
+                for client in ("codex", "claude")
+                if client in required_clients
+            },
+            "status": "passed",
+        }
+        for case_id, (capability, required_clients) in command_matrix.REQUIRED_LIVE_CASES.items()
+    ]
+    cases.append(
+        {
+            "id": "handoff-retry",
+            "capability": "handoff",
+            "proof_level": "live",
+            "clients": ["codex"],
+            "client_versions": {"codex": "1.0"},
+            "status": "failed",
+        }
+    )
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(json.dumps(_compatibility_report(cases, versions)), encoding="utf-8")
+
+    result = probe_command_matrix(home, runner=successful_runner, compatibility_report=report)
+
+    assert result["certification"]["status"] == "failed"
+
+
+def test_duplicate_live_case_ids_make_certification_unverified(tmp_path):
+    home = install_fixture(tmp_path)
+    versions = {"codex": "1.0", "claude": "1.0"}
+    case = {
+        "id": "codex-handoff",
+        "capability": "handoff",
+        "proof_level": "live",
+        "clients": ["codex"],
+        "client_versions": {"codex": "1.0"},
+        "status": "passed",
+    }
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(json.dumps(_compatibility_report([case, case], versions)), encoding="utf-8")
+
+    result = probe_command_matrix(home, runner=successful_runner, compatibility_report=report)
+
+    assert result["certification"]["status"] == "unverified"
+    assert result["certification"]["reason"] == "invalid compatibility evidence"
 
 
 def test_command_matrix_fails_closed_when_one_mcp_registration_is_missing(tmp_path):

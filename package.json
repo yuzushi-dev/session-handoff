@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.4-jev.3",
+  "version": "0.7.4-jev.4",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
@@ -27,7 +27,11 @@
     "hooks/hooks.json",
     "hooks/session-start.py",
     "hooks/user-prompt-submit.py",
-    "docs/telemetry.md"
+    "docs/telemetry.md",
+    "docs/CHANGELOG-0.7.4.md",
+    "docs/compatibility.md",
+    "scripts/verify_client_compat.py",
+    "tests/compat/fixtures/"
   ],
   "engines": {
     "node": ">=18",

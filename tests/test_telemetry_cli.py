@@ -363,6 +363,29 @@ def test_uninstall_reports_preserved_storage_locations(tmp_path, capsys, monkeyp
     assert f"Checkpoints preserved: {home / '.local/state/session-handoff/checkpoints'}" in output
 
 
+def test_uninstall_client_preserves_shared_installation(tmp_path, capsys, monkeypatch):
+    cli = load_cli()
+    monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path / "home"))
+    calls = []
+
+    def restore(home, *, clients=None):
+        calls.append((home, clients))
+        return {
+            "restored": True,
+            "already_clean": False,
+            "clients": ["codex"],
+            "remaining_clients": ["claude"],
+            "installation_id": None,
+        }
+
+    monkeypatch.setattr(cli, "restore_setup", restore)
+
+    assert cli._uninstall(["--client", "codex", "--yes"]) == 0
+
+    assert calls == [(tmp_path / "home", ["codex"])]
+    assert "codex removed; shared setup preserved for claude" in capsys.readouterr().out
+
+
 def test_setup_yes_flag_never_enables_telemetry(tmp_path, monkeypatch):
     cli = load_cli()
     fake_setup(monkeypatch, cli, tmp_path, [], interactive=True)
@@ -1323,6 +1346,7 @@ def test_replace_uses_dir_fd_rename_api(tmp_path, monkeypatch):
 
 def test_telemetry_preview_renders_otlp_without_upload(tmp_path, capsys, monkeypatch):
     cli = load_cli()
+    monkeypatch.setattr(telemetry, "_as_day", lambda _now=None: telemetry.date(2026, 8, 26))
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(
@@ -1358,6 +1382,7 @@ def test_telemetry_preview_renders_otlp_without_upload(tmp_path, capsys, monkeyp
 
 def test_telemetry_preview_uses_exact_upload_request_bytes_and_headers(tmp_path, capsys, monkeypatch):
     cli = load_cli()
+    monkeypatch.setattr(telemetry, "_as_day", lambda _now=None: telemetry.date(2026, 8, 26))
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry.increment_counter(
@@ -1395,6 +1420,7 @@ def test_telemetry_preview_uses_exact_upload_request_bytes_and_headers(tmp_path,
 
 def test_telemetry_preview_with_disabled_config_does_not_leak_endpoint(tmp_path, capsys, monkeypatch):
     cli = load_cli()
+    monkeypatch.setattr(telemetry, "_as_day", lambda _now=None: telemetry.date(2026, 8, 26))
     monkeypatch.setenv("SESSION_HANDOFF_HOME", str(tmp_path))
     telemetry.write_config(tmp_path, telemetry.disabled_config())
     event = {

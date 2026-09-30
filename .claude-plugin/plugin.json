@@ -1,12 +1,19 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-handoff",
-  "version": "0.7.4-jev.3",
+  "version": "0.7.4-jev.4",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "author": {
     "name": "yuzushi-dev",
     "email": "support@yuzushi.party"
   },
   "license": "MIT",
-  "keywords": ["handoff", "session", "migration", "context", "codex", "claude"]
+  "keywords": [
+    "handoff",
+    "session",
+    "migration",
+    "context",
+    "codex",
+    "claude"
+  ]
 }

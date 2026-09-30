@@ -141,7 +141,7 @@ def test_oversized_upload_batch_fails_before_request_creation():
 def test_replayed_batch_is_rejected_and_idempotency_key_is_body_bound(tmp_path):
     telemetry.write_config(tmp_path, telemetry.enabled_config())
     telemetry._store_queue(tmp_path, [_row()])
-    batch = telemetry.load_batch(tmp_path)
+    batch = telemetry.load_batch(tmp_path, now="2026-08-26T00:00:00Z")
     replay = copy.copy(batch)
     request = telemetry.build_request(telemetry.ENDPOINT, batch)
 

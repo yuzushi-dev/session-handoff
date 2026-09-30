@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -536,6 +537,406 @@ def test_supervisor_records_handoff_success_after_target_terminal_state(monkeypa
     assert summaries[0]["duration_seconds"] >= 0
 
 
+def test_supervisor_consumes_repeated_switch_request_once(tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    calls = []
+    request_text = None
+
+    class Process:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 143
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 137
+
+    def fake_popen(argv, **kwargs):
+        nonlocal request_text
+        calls.append(argv)
+        control = Path(kwargs["env"][CONTROL_PATH_ENV])
+        if len(calls) == 1:
+            write_switch_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                handoff.name,
+            )
+            request_text = control.read_text(encoding="utf-8")
+            return Process()
+        if len(calls) == 2:
+            assert request_text is not None
+            control.write_text(request_text, encoding="utf-8")
+        return Process(0)
+
+    supervisor = SessionSupervisor(
+        "codex",
+        [],
+        popen=fake_popen,
+        sleep=lambda _: None,
+        temp_dir=tmp_path / "control",
+        executable="codex",
+        draft=False,
+    )
+
+    assert supervisor.run() == 0
+    assert len(calls) == 2
+
+
+def test_supervisor_does_not_repeat_an_ambiguous_target_launch(tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    control_dir = tmp_path / "control"
+    calls = []
+
+    class SourceProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 143
+
+        def kill(self):
+            pass
+
+    def first_popen(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_switch_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                handoff.name,
+            )
+            return SourceProcess()
+        raise OSError("launch outcome is unknown")
+
+    first = SessionSupervisor(
+        "codex",
+        [],
+        popen=first_popen,
+        sleep=lambda _: None,
+        temp_dir=control_dir,
+        executable="codex",
+        draft=False,
+    )
+
+    assert first.run() == 1
+    transition = json.loads((control_dir / "transition.json").read_text(encoding="utf-8"))
+    assert transition["phase"] == "target_launching"
+
+    restarted_calls = []
+    restarted = SessionSupervisor(
+        "codex",
+        [],
+        popen=lambda *args, **kwargs: restarted_calls.append(args) or SourceProcess(),
+        sleep=lambda _: None,
+        temp_dir=control_dir,
+        executable="codex",
+        draft=False,
+    )
+
+    assert restarted.run() == 1
+    assert restarted_calls == []
+
+
+def test_default_supervisor_uses_state_root_and_cleans_terminal_state(monkeypatch, tmp_path):
+    state_home = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    monkeypatch.chdir(workspace)
+    controls = []
+
+    class Process:
+        def poll(self):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        controls.append(Path(kwargs["env"][CONTROL_PATH_ENV]))
+        return Process()
+
+    supervisor = SessionSupervisor("codex", [], popen=fake_popen, executable="codex")
+
+    assert supervisor.run() == 0
+    assert controls[0].parent.parent == state_home / "session-handoff" / "supervisors"
+    assert not controls[0].parent.exists()
+
+
+def test_durable_supervisor_scope_does_not_depend_on_terminal(monkeypatch):
+    monkeypatch.setattr(session_switch.sys, "stdin", type("Input", (), {"fileno": lambda self: 0})())
+    monkeypatch.setattr(session_switch.os, "ttyname", lambda _fd: "/dev/pts/10")
+    first = session_switch._supervisor_scope("codex", "codex", ["--model", "test"])
+    monkeypatch.setattr(session_switch.os, "ttyname", lambda _fd: "/dev/pts/11")
+
+    assert session_switch._supervisor_scope(
+        "codex", "codex", ["--model", "test"]
+    ) == first
+
+
+def test_default_supervisor_refuses_dead_incomplete_switch(monkeypatch, tmp_path):
+    state_home = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    monkeypatch.chdir(tmp_path)
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    launches = []
+
+    class Process:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 143
+
+        def kill(self):
+            pass
+
+    def first_popen(argv, **kwargs):
+        launches.append(argv)
+        if len(launches) == 1:
+            control = Path(kwargs["env"][CONTROL_PATH_ENV])
+            write_switch_request(
+                str(control),
+                control.with_name("token").read_text(encoding="utf-8"),
+                str(tmp_path),
+                handoff.name,
+            )
+            return Process()
+        raise OSError("target launch outcome unknown")
+
+    first = SessionSupervisor(
+        "codex", [], popen=first_popen, sleep=lambda _: None,
+        executable="codex", draft=False,
+    )
+    assert first.run() == 1
+
+    supervisors = state_home / "session-handoff" / "supervisors"
+    ambiguous = next(supervisors.iterdir())
+    second_stale = supervisors / "000-source-stopped"
+    second_stale.mkdir()
+    session_switch._atomic_json_write(
+        second_stale / "supervisor.json",
+        json.loads((ambiguous / "supervisor.json").read_text(encoding="utf-8")),
+    )
+    source_stopped = json.loads((ambiguous / "transition.json").read_text(encoding="utf-8"))
+    source_stopped["phase"] = "source_stopped"
+    session_switch._atomic_json_write(second_stale / "transition.json", source_stopped)
+
+    restarted_calls = []
+    restarted = SessionSupervisor(
+        "codex", [],
+        popen=lambda *args, **kwargs: restarted_calls.append(args) or Process(),
+        sleep=lambda _: None, executable="codex", draft=False,
+    )
+
+    assert restarted.run() == 1
+    assert restarted_calls == []
+
+
+def test_default_supervisor_preserves_and_blocks_on_corrupt_journal(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.chdir(tmp_path)
+    root = session_switch._supervisor_state_root()
+    root.mkdir(parents=True)
+    scope = session_switch._supervisor_scope("codex", "codex", [])
+    directory = root / "interrupted"
+    directory.mkdir()
+    session_switch._atomic_json_write(directory / "supervisor.json", {
+        "scope": scope,
+        "pid": 999_999_999,
+        "active": False,
+    })
+    transition = directory / "transition.json"
+    transition.write_text("{", encoding="utf-8")
+    launches = []
+    supervisor = SessionSupervisor(
+        "codex", [], popen=lambda *args, **kwargs: launches.append(args), executable="codex"
+    )
+
+    assert supervisor.run() == 1
+    assert launches == []
+    assert transition.read_text(encoding="utf-8") == "{"
+
+
+def test_read_switch_request_rejects_legacy_payload_without_one_shot_id(tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    control = tmp_path / "switch.json"
+    control.write_text(json.dumps({
+        "token": "secret-token",
+        "workspace": str(tmp_path),
+        "path": handoff.name,
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="request id"):
+        _read_switch_request(control, "secret-token")
+
+
+def test_supervisor_recovers_switch_after_durable_source_stop(monkeypatch, tmp_path):
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.chdir(tmp_path)
+    control_dirs = []
+
+    class Process:
+        def __init__(self, returncode=None):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 143
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 137
+
+    def first_popen(argv, **kwargs):
+        control = Path(kwargs["env"][CONTROL_PATH_ENV])
+        control_dirs.append(control.parent)
+        write_switch_request(
+            str(control),
+            control.with_name("token").read_text(encoding="utf-8"),
+            str(tmp_path),
+            handoff.name,
+        )
+        return Process()
+
+    original_write = session_switch._write_transition
+
+    def interrupt_after_write(control, state, phase):
+        result = original_write(control, state, phase)
+        if phase == "source_stopped":
+            raise RuntimeError("supervisor interrupted")
+        return result
+
+    monkeypatch.setattr(session_switch, "_write_transition", interrupt_after_write)
+    first = SessionSupervisor(
+        "codex", [], popen=first_popen, sleep=lambda _: None,
+        executable="codex", draft=False,
+    )
+    with pytest.raises(RuntimeError, match="interrupted"):
+        first.run()
+
+    assert json.loads((control_dirs[0] / "transition.json").read_text())["phase"] == "source_stopped"
+
+    monkeypatch.setattr(session_switch, "_write_transition", original_write)
+    recovered_calls = []
+
+    def recovered_popen(argv, **kwargs):
+        recovered_calls.append(argv)
+        return Process(0)
+
+    recovered = SessionSupervisor(
+        "codex", [], popen=recovered_popen, sleep=lambda _: None,
+        executable="codex", draft=False,
+    )
+
+    assert recovered.run() == 0
+    assert len(recovered_calls) == 1
+    assert recovered_calls[0][-1] == handoff_prompt(str(tmp_path), handoff.name)
+
+
+def test_concurrent_restarts_claim_source_stopped_recovery_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.chdir(tmp_path)
+    handoff = tmp_path / "handoff.md"
+    handoff.write_text("handoff", encoding="utf-8")
+    root = session_switch._supervisor_state_root()
+    root.mkdir(parents=True)
+    scope = session_switch._supervisor_scope("codex", "codex", [])
+    directory = root / "interrupted"
+    directory.mkdir()
+    session_switch._atomic_json_write(directory / "supervisor.json", {
+        "schema_version": 1,
+        "scope": scope,
+        "pid": 999_999_999,
+        "process_start": None,
+        "active": False,
+    })
+    request = {
+        "request_id": "0123456789abcdef0123456789abcdef",
+        "mode": "handoff",
+        "workspace": str(tmp_path),
+        "path": handoff.name,
+    }
+    session_switch._atomic_json_write(directory / "transition.json", {
+        "schema_version": 1,
+        "request_id": request["request_id"],
+        "mode": "handoff",
+        "request": request,
+        "source_client": "codex",
+        "source_executable": "codex",
+        "fresh_args": [],
+        "phase": "source_stopped",
+    })
+    barrier = threading.Barrier(3)
+    original_scan = session_switch._stale_incomplete_transitions
+
+    def synchronized_scan(state_root, state_scope):
+        result = original_scan(state_root, state_scope)
+        barrier.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(session_switch, "_stale_incomplete_transitions", synchronized_scan)
+    launches = []
+    results = []
+    launch_started = threading.Event()
+    release_launch = threading.Event()
+
+    class Process:
+        def poll(self):
+            return 0
+
+    def run_restarted():
+        def launch(argv, **kwargs):
+            launches.append(argv)
+            launch_started.set()
+            release_launch.wait(timeout=2)
+            return Process()
+
+        supervisor = SessionSupervisor(
+            "codex", [],
+            popen=launch,
+            sleep=lambda _: None, executable="codex", draft=False,
+        )
+        results.append(supervisor.run())
+
+    threads = [threading.Thread(target=run_restarted) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    assert launch_started.wait(timeout=2)
+    deadline = time.monotonic() + 2
+    while len(results) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    release_launch.set()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert sorted(results) == [0, 1, 1]
+    assert len(launches) == 1
+
+
 def test_operation_event_uses_package_version_and_real_origin(monkeypatch):
     monkeypatch.setattr(session_switch, "TELEMETRY_PLUGIN_VERSION", "0.0.0")
 
@@ -757,6 +1158,7 @@ if not marker.exists():
     temporary = control.with_name(control.name + ".tmp")
     temporary.write_text(json.dumps({
         "token": control.with_name("token").read_text(encoding="utf-8"),
+        "request_id": "0123456789abcdef0123456789abcdef",
         "workspace": str(root),
         "path": "handoffs/feature.md",
     }), encoding="utf-8")
@@ -901,6 +1303,7 @@ def test_supervisor_strips_resume_selectors_for_the_fresh_session(tmp_path):
             control.write_text(
                 json.dumps({
                     "token": token_file.read_text(encoding="utf-8"),
+                    "request_id": "0123456789abcdef0123456789abcdef",
                     "workspace": str(tmp_path),
                     "path": handoff.name,
                 }),
