@@ -64,7 +64,15 @@ def _compatibility_report(cases, versions):
     }
 
 
-def test_command_matrix_proves_all_four_provider_free_flows(tmp_path):
+def _isolate_central_store(monkeypatch, root):
+    monkeypatch.setenv("XDG_DATA_HOME", str(root / "data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
+
+
+def test_command_matrix_proves_all_four_provider_free_flows(
+    tmp_path, tmp_path_factory, monkeypatch
+):
+    _isolate_central_store(monkeypatch, tmp_path_factory.mktemp("matrix-xdg"))
     home = install_fixture(tmp_path)
 
     result = probe_command_matrix(
@@ -88,7 +96,8 @@ def test_command_matrix_proves_all_four_provider_free_flows(tmp_path):
     assert str(tmp_path) not in json.dumps(result)
 
 
-def test_doctor_separates_local_readiness_from_unverified_capacity(tmp_path):
+def test_doctor_separates_local_readiness_from_unverified_capacity(tmp_path, monkeypatch):
+    _isolate_central_store(monkeypatch, tmp_path / "xdg")
     home = install_fixture(tmp_path)
 
     result = probe_command_matrix(home, runner=successful_runner)
@@ -552,7 +561,10 @@ def test_command_matrix_fails_closed_when_one_mcp_registration_is_missing(tmp_pa
     assert result["flows"]["codex_to_claude"]["ready"] is False
 
 
-def test_doctor_cli_emits_the_same_content_free_matrix(tmp_path):
+def test_doctor_cli_emits_the_same_content_free_matrix(
+    tmp_path, tmp_path_factory, monkeypatch
+):
+    _isolate_central_store(monkeypatch, tmp_path_factory.mktemp("doctor-xdg"))
     home = install_fixture(tmp_path)
     result = subprocess.run(
         [

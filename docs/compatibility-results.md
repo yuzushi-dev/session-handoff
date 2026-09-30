@@ -192,6 +192,14 @@ diff checks passed.
 Release validation artifacts are local under `.orca/release-0.7.4-jev.4/`.
 The version bump does not publish the package to the npm registry.
 
+The first remote CI run exposed three doctor readiness tests inheriting
+global XDG store health. A contaminated-store reproduction failed all three;
+isolating their XDG data/state made all three pass under the same conditions.
+The full suite then passed again (1273 passed, 14 skipped). This follow-up
+changes test isolation only; the release runtime, package content and tag
+remain unchanged. Marketplace CI passed after its metadata assertions were
+aligned with the actual plugin versions.
+
 The [recovery and Sando pilot](compatibility-pilot.md) records the bounded
 6/6 recovery result, its two-compaction limitation, and the final-C
 provider-free Sando/MCP component probe. Native manual/automatic checkpoint
