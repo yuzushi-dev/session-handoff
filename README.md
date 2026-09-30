@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://raw.githubusercontent.com/yuzushi-dev/session-handoff/main/session-handoff-promo.mp4">
-    <img src="assets/screenshot-terminal.png" alt="Session Handoff demo: validated handoff and native migration" width="960">
+    <img src="session-handoff-promo.gif" alt="Session Handoff demo: validated handoff and native migration" width="960">
   </a>
 </p>
 <p align="center">
