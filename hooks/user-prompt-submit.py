@@ -12,6 +12,8 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 from server import telemetry  # noqa: E402
 
 
+# Keep in sync with MOD_ACTIVE_FIELD in server/checkpoint.py and hooks/mod.tsx.
+MOD_ACTIVE_FIELD = "session_handoff_mod"
 YES = "session-handoff telemetry yes"
 NO = "session-handoff telemetry no"
 
@@ -22,6 +24,10 @@ def main() -> int:
             print("{}")
             return 0
         payload = json.load(sys.stdin)
+        if isinstance(payload, dict) and payload.get(MOD_ACTIVE_FIELD) is True:
+            # The Claude Code mod runs this script itself.
+            print("{}")
+            return 0
         prompt = payload.get("prompt") if isinstance(payload, dict) else None
         # Normalizza solo gli spazi ai bordi: non introduce ambiguita' (la stringa
         # resta esatta) ed evita di perdere risposte genuine incollate con spazi.

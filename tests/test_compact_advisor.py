@@ -217,6 +217,35 @@ def test_main_emits_system_message_when_advise_returns_a_hint(monkeypatch, tmp_p
     assert json.loads(out) == {"systemMessage": "a hint"}
 
 
+def test_main_exits_early_when_the_claude_mod_marks_the_payload(monkeypatch, tmp_path):
+    # The mod rewrites classic.Stop with this marker and runs the advisor
+    # itself; the classic hook must then do nothing (no advise() call).
+    monkeypatch.setenv(compact_advisor.COMPACT_HINT_ENV, "typesafe")
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript)
+
+    def boom(*a, **k):
+        raise AssertionError("advise must not run when the mod owns the hint")
+
+    monkeypatch.setattr(compact_advisor, "advise", boom)
+    payload = json.dumps({
+        "transcript_path": str(transcript),
+        "session_id": "sess-1",
+        compact_advisor.MOD_ACTIVE_FIELD: True,
+    })
+    assert _run_main(payload) == "{}"
+
+
+def test_main_runs_normally_when_the_marker_is_absent_or_not_true(monkeypatch, tmp_path):
+    monkeypatch.setenv(compact_advisor.COMPACT_HINT_ENV, "typesafe")
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(transcript)
+    monkeypatch.setattr(compact_advisor, "advise", lambda *a, **k: "a hint")
+    for extra in ({}, {compact_advisor.MOD_ACTIVE_FIELD: False}, {compact_advisor.MOD_ACTIVE_FIELD: "yes"}):
+        payload = json.dumps({"transcript_path": str(transcript), "session_id": "s", **extra})
+        assert json.loads(_run_main(payload)) == {"systemMessage": "a hint"}
+
+
 def _run_main(stdin_text: str) -> str:
     import io
     stdout = io.StringIO()

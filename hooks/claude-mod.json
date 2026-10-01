@@ -1,0 +1,5 @@
+{
+  "description": "Claude Code mod (function hooks); Codex does not read this file.",
+  "hooks": {},
+  "modules": ["./mod.tsx"]
+}

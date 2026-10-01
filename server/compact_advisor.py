@@ -37,6 +37,12 @@ except ImportError:  # direct `python server/compact_advisor.py` execution
 
 COMPACT_HINT_ENV = "SESSION_HANDOFF_COMPACT_HINT"
 
+# Set to true on the classic Stop payload by the Claude Code mod
+# (hooks/mod.tsx) when it is active: the mod runs this script
+# itself on turn.complete and draws the result, so the classic Stop hook must
+# not also run (a second TypeSafe call and a duplicate systemMessage).
+MOD_ACTIVE_FIELD = "session_handoff_mod"
+
 FLOOR_MAX = 0.9
 FLOOR_MIN = 0.5
 USAGE_STRICT_UNTIL = 0.1
@@ -180,6 +186,9 @@ def main(*, stdin_text: str | None = None, stdout: TextIO | None = None, stderr:
         payload = json.loads(sys.stdin.read() if stdin_text is None else stdin_text)
         if not isinstance(payload, dict):
             raise ValueError("hook input must be an object")
+        if payload.get(MOD_ACTIVE_FIELD) is True:
+            print("{}", file=stdout)
+            return 0
         backend = os.environ.get(COMPACT_HINT_ENV, "").strip().lower()
         if backend != "typesafe":
             print("{}", file=stdout)

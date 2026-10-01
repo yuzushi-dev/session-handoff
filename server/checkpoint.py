@@ -35,6 +35,9 @@ except ImportError:  # direct `python server/checkpoint.py` execution
         score_transcript,
     )
 
+# Set to true on the classic payload by the Claude Code mod (hooks/mod.tsx):
+# it spawns this script itself, so the classic hook must not run it twice.
+MOD_ACTIVE_FIELD = "session_handoff_mod"
 CHECKPOINT_SCORER_ENV = "SESSION_HANDOFF_CHECKPOINT_SCORER"
 
 
@@ -488,6 +491,9 @@ def main(*, stdin_text: str | None = None, home: Path | None = None,
         payload = json.loads(sys.stdin.read() if stdin_text is None else stdin_text)
         if not isinstance(payload, dict):
             raise CheckpointError("hook input must be an object")
+        if payload.get(MOD_ACTIVE_FIELD) is True:
+            print("{}", file=stdout)
+            return 0
         if payload.get("hook_event_name") == "PreCompact":
             deadline = time.monotonic() + GIT_COLLECTION_BUDGET_SECONDS
             result = capture_checkpoint(payload, home=home, deadline=deadline)

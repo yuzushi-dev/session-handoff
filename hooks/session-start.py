@@ -13,6 +13,10 @@ from server import checkpoint, telemetry  # noqa: E402
 from server.onboarding import launcher_notice  # noqa: E402
 
 
+# Keep in sync with MOD_ACTIVE_FIELD in server/checkpoint.py and hooks/mod.tsx.
+MOD_ACTIVE_FIELD = "session_handoff_mod"
+
+
 def _hook_input() -> dict:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -35,6 +39,10 @@ def _output(*, context: str | None = None, system_message: str | None = None) ->
 
 def main() -> int:
     event = _hook_input()
+    if event.get(MOD_ACTIVE_FIELD) is True:
+        # The Claude Code mod runs this script itself and merges the result.
+        print("{}")
+        return 0
     try:
         context = checkpoint.compact_context(event)
         checkpoint.record_session_start(event, context)

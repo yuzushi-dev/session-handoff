@@ -15,5 +15,7 @@
     "context",
     "codex",
     "claude"
-  ]
+  ],
+  "types": "./types/index.d.ts",
+  "hooks": "./hooks/claude-mod.json"
 }

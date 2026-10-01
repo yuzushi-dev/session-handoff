@@ -98,3 +98,19 @@ def test_invalid_hook_input_fails_open(tmp_path):
     assert result.returncode == 0
     assert json.loads(result.stdout) == {}
     assert telemetry.load_config(tmp_path) is None
+
+
+def test_claude_mod_marker_makes_the_classic_hook_a_no_op(tmp_path):
+    # hooks/mod.tsx spawns this script itself with the unmarked payload.
+    telemetry.write_config(tmp_path, telemetry.asked_config())
+    env = {**os.environ, "HOME": str(tmp_path)}
+
+    result = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps({"prompt": "session-handoff telemetry yes", "session_handoff_mod": True}),
+        text=True, capture_output=True, check=False, env=env,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {}
+    assert telemetry.load_config(tmp_path) == telemetry.asked_config()

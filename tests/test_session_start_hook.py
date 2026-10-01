@@ -222,6 +222,18 @@ def test_plugin_manifest_surfaces_include_session_start_hook():
     assert "hooks/user-prompt-submit.py" in package["files"]
     assert "server/*.py" in package["files"]
 
+    # Claude Code mod (function hooks) rides beside the classic hooks.
+    assert "modules" not in hook_config  # Codex rejects it; see hooks/claude-mod.json
+    mod_config = json.loads((ROOT / "hooks/claude-mod.json").read_text(encoding="utf-8"))
+    assert mod_config["modules"] == ["./mod.tsx"]
+    assert (ROOT / "hooks/mod.tsx").is_file()
+    assert "hooks/claude-mod.json" in package["files"]
+    assert "hooks/mod.tsx" in package["files"]
+    assert "types/index.d.ts" in package["files"]
+    claude = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+    assert claude["types"] == "./types/index.d.ts"
+    assert claude["hooks"] == "./hooks/claude-mod.json"
+
 
 def test_consent_notice_links_to_the_public_details_url(tmp_path):
     """A consent request the user cannot verify is not an informed one: the notice
@@ -315,3 +327,13 @@ def test_session_start_hook_records_non_compact_without_injection(tmp_path):
     assert record["checkpoint_bytes"] == 0
     assert record["injected"] is False
     assert record["injected_bytes"] == 0
+
+
+def test_claude_mod_marker_makes_the_classic_hook_a_no_op(tmp_path):
+    # hooks/mod.tsx spawns this script itself with the unmarked payload.
+    result = run_hook(tmp_path, {"hook_event_name": "SessionStart", "source": "startup",
+                                 "session_handoff_mod": True})
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {}
+    assert list(tmp_path.iterdir()) == []  # no checkpoint, telemetry or consent state written

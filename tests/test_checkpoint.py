@@ -377,3 +377,30 @@ def test_capture_checkpoint_behavior_unchanged_when_scorer_env_is_unset(tmp_path
     content = Path(result["path"]).read_text(encoding="utf-8")
     assert "Bash" in content
     assert "pinned_recent" in content
+
+
+@pytest.mark.parametrize("hook_event", ["PreCompact", "SessionStart"])
+def test_hook_main_exits_early_when_the_claude_mod_marks_the_payload(tmp_path, capsys, hook_event, monkeypatch):
+    # hooks/mod.tsx spawns this script itself and then marks the classic payload.
+    def fail(*_a, **_k):
+        raise AssertionError("must not run when the mod owns the hook")
+
+    monkeypatch.setattr(checkpoint, "capture_checkpoint", fail)
+    monkeypatch.setattr(checkpoint, "compact_context", fail)
+    monkeypatch.setattr(checkpoint, "record_session_start", fail)
+    result = main(
+        stdin_text=json.dumps({**event(make_repo(tmp_path)), "hook_event_name": hook_event,
+                               checkpoint.MOD_ACTIVE_FIELD: True}),
+        home=tmp_path,
+    )
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {}
+    assert not (tmp_path / ".session-handoff").exists()
+
+
+def test_hook_main_ignores_a_marker_that_is_not_true(tmp_path, capsys):
+    repo = make_repo(tmp_path)
+    main(stdin_text=json.dumps({**event(repo), checkpoint.MOD_ACTIVE_FIELD: "yes"}), home=tmp_path)
+    assert json.loads(capsys.readouterr().out) == {}
+    assert list(tmp_path.rglob("*.md")), "checkpoint should still be written"

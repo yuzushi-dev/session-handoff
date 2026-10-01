@@ -27,7 +27,13 @@ def test_portable_and_native_manifests_agree():
     assert portable["name"] == codex["name"] == claude["name"] == "session-handoff"
     assert portable["version"] == codex["version"] == claude["version"] == load_json("package.json")["version"]
     assert codex["hooks"] == "./hooks/hooks.json"
-    assert "hooks" not in claude, "Claude automatically loads the standard hooks/hooks.json"
+    # Claude auto-loads hooks/hooks.json; its manifest adds only the mod file.
+    # Codex rejects unknown keys in hooks/hooks.json (verified on codex 0.159.3:
+    # "unknown field `modules`"), so the mod's "modules" key must live elsewhere.
+    assert claude["hooks"] == "./hooks/claude-mod.json"
+    assert "modules" not in load_json("hooks/hooks.json")
+    assert load_json("hooks/claude-mod.json")["modules"] == ["./mod.tsx"]
+    assert set(load_json("hooks/hooks.json")) <= {"description", "hooks"}
     assert set(portable) <= {
         "$schema",
         "name",
