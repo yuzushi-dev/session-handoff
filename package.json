@@ -7,6 +7,8 @@
     "session-handoff": "bin/session-handoff"
   },
   "scripts": {
+    "build:openai-ui": "node ui/openai/build.mjs",
+    "test:openai-ui": "node --test ui/openai/*.test.mjs",
     "preinstall": "python3 -c \"import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)\" || { echo \"session-handoff requires Python 3.10+ (python3) on PATH.\" >&2; exit 1; }",
     "postinstall": "python3 bin/session-handoff _telemetry-postinstall || true"
   },
@@ -33,6 +35,8 @@
     "docs/telemetry.md",
     "docs/CHANGELOG-0.7.4.md",
     "docs/compatibility.md",
+    "docs/compatibility-openai-mcp-apps.md",
+    "requirements-codex-app-server.txt",
     "scripts/verify_client_compat.py",
     "tests/compat/fixtures/"
   ],
@@ -47,5 +51,9 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/yuzushi-dev/session-handoff.git"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "esbuild": "0.25.11"
   }
 }

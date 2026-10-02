@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "codex_thread_status",
+    "arguments": {},
+    "_meta": {
+      "threadId": "0199c0de-0000-7000-8000-000000000001",
+      "sessionId": "0199c0de-0000-7000-8000-000000000002"
+    }
+  }
+}

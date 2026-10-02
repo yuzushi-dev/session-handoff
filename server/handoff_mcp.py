@@ -34,6 +34,13 @@ try:
     from .version import PACKAGE_VERSION
     from .onboarding import installation_commands
     from . import handoff_store
+    from .codex_context import CodexContext, parse_request_context
+    from .codex_app_server import CodexAppServerAdapter
+    from .openai_ui import (
+        list_ui_resources,
+        read_ui_resource,
+        ui_tool_meta,
+    )
 except ImportError:  # direct `python server/handoff_mcp.py` execution
     from onboarding import installation_commands
     from handoff_state import (  # type: ignore[no-redef]
@@ -52,6 +59,13 @@ except ImportError:  # direct `python server/handoff_mcp.py` execution
     )
     from version import PACKAGE_VERSION
     import handoff_store  # type: ignore[no-redef]
+    from codex_context import CodexContext, parse_request_context  # type: ignore[no-redef]
+    from codex_app_server import CodexAppServerAdapter  # type: ignore[no-redef]
+    from openai_ui import (  # type: ignore[no-redef]
+        list_ui_resources,
+        read_ui_resource,
+        ui_tool_meta,
+    )
 
 SERVER_NAME = "session-handoff"
 SERVER_VERSION = PACKAGE_VERSION
@@ -900,7 +914,90 @@ def _setup_info(arguments: dict[str, Any]) -> dict[str, Any]:
     return installation_commands(Path(__file__).resolve().parents[1])
 
 
+def _codex_thread_status(context: CodexContext) -> dict[str, Any]:
+    """Return status only for the thread attached to this individual MCP call."""
+    thread_status = "unavailable"
+    if context.thread_id is not None:
+        try:
+            thread = CodexAppServerAdapter().thread_context(context.thread_id)
+        except Exception:
+            thread = None
+        if isinstance(thread, dict) and thread.get("thread_id") == context.thread_id:
+            candidate = thread.get("status")
+            if isinstance(candidate, str) and candidate in {
+                "active", "idle", "notLoaded", "systemError"
+            }:
+                thread_status = candidate
+
+    return {
+        "schema": "session-handoff.codex-thread-status/v1",
+        "thread": {
+            "id": context.thread_id,
+            "sessionId": context.session_id,
+            "status": thread_status,
+        },
+        "context": {
+            "usedTokens": None,
+            "windowTokens": None,
+            "usedPercent": None,
+            "source": "unavailable",
+        },
+        "checkpoint": {"summary": None, "updatedAt": None},
+        "suggestion": None,
+    }
+
+
 TOOLS = [
+    {
+        "name": "codex_thread_status",
+        "description": "Show read-only status for the Codex thread attached to this call. Uses only this call's host metadata; missing thread binding stays unavailable. Never accepts a thread ID argument.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "outputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["schema", "thread", "context", "checkpoint", "suggestion"],
+            "properties": {
+                "schema": {"const": "session-handoff.codex-thread-status/v1"},
+                "thread": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["id", "sessionId", "status"],
+                    "properties": {
+                        "id": {"type": ["string", "null"]},
+                        "sessionId": {"type": ["string", "null"]},
+                        "status": {
+                            "enum": ["active", "idle", "notLoaded", "systemError", "unavailable"]
+                        },
+                    },
+                },
+                "context": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["usedTokens", "windowTokens", "usedPercent", "source"],
+                    "properties": {
+                        "usedTokens": {"type": ["number", "null"]},
+                        "windowTokens": {"type": ["number", "null"]},
+                        "usedPercent": {"type": ["number", "null"]},
+                        "source": {
+                            "enum": ["app-server", "hook", "estimate", "unavailable"]
+                        },
+                    },
+                },
+                "checkpoint": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["summary", "updatedAt"],
+                    "properties": {
+                        "summary": {"type": ["string", "null"]},
+                        "updatedAt": {"type": ["string", "null"]},
+                    },
+                },
+                "suggestion": {"type": ["string", "null"]},
+            },
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "_meta": ui_tool_meta(),
+    },
     {
         "name": "handoff_setup",
         "description": "Show optional launcher setup and telemetry commands using this plugin's actual installation path. Read-only: does not install, enable telemetry, or require a workspace or user-supplied path.",
@@ -1038,6 +1135,13 @@ def _success(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _structured_success(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_success(data),
+        "structuredContent": data,
+    }
+
+
 def _error(message: str) -> dict[str, Any]:
     data = {"isError": True, "message": message}
     return {
@@ -1065,6 +1169,10 @@ def _call_tool(params: dict[str, Any]) -> dict[str, Any]:
     if unknown_argument is not None:
         return _error(f"unknown tool argument: {unknown_argument}")
     try:
+        if name == "codex_thread_status":
+            return _structured_success(
+                _codex_thread_status(parse_request_context(params))
+            )
         handlers = {
             "handoff_setup": _setup_info,
             "handoff_create": _create,
@@ -1110,7 +1218,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
             "id": request_id,
             "result": {
                 "protocolVersion": protocol_version,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"listChanged": False, "subscribe": False},
+                },
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             },
         }
@@ -1118,6 +1229,36 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": request_id, "result": {}}
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
+    if method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": list_ui_resources(),
+        }
+    if method == "resources/read":
+        params = request.get("params", {})
+        uri = params.get("uri") if isinstance(params, dict) else None
+        if not isinstance(uri, str):
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32602, "message": "resource URI must be a string"},
+            }
+        try:
+            result = read_ui_resource(uri)
+        except ValueError:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32602, "message": "unknown resource URI"},
+            }
+        except OSError:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32603, "message": "resource unavailable"},
+            }
+        return {"jsonrpc": "2.0", "id": request_id, "result": result}
     if method == "tools/call":
         return {"jsonrpc": "2.0", "id": request_id, "result": _call_tool(request.get("params", {}))}
     return {

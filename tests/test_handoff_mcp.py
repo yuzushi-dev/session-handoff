@@ -95,6 +95,7 @@ def test_server_initializes_and_lists_handoff_tools():
     assert tool_result(responses[0])["serverInfo"]["name"] == "session-handoff"
     names = {tool["name"] for tool in tool_result(responses[1])["tools"]}
     assert names == {
+        "codex_thread_status",
         "handoff_create",
         "handoff_migrate",
         "handoff_read",

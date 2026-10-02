@@ -33,6 +33,8 @@ BUNDLE_ENTRIES = (
     "docs/telemetry.md",
     "docs/CHANGELOG-0.7.4.md",
     "docs/compatibility.md",
+    "docs/compatibility-openai-mcp-apps.md",
+    "requirements-codex-app-server.txt",
     "bin",
     "commands",
     "server",

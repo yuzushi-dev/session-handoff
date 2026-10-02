@@ -116,6 +116,9 @@ for you after a handoff; migration between Claude Code and Codex works the same 
 - **Compaction recovery, kept separate.** A fail-open `PreCompact` hook writes a small redacted
 checkpoint before compaction and reinjects only a pointer to it — recovery evidence, not a
 semantic handoff.
+- **Codex thread status, read-only.** `codex_thread_status` uses only the host-bound thread on
+  that call; unsupported fields stay unavailable. The MCP App is optional, and the text result
+  remains available in Codex CLI.
 - **Secrets redacted before storage.** The MCP server redacts common credential forms in every
 handoff, on top of the model being told never to copy secrets into one.
 - **Doctor without spending a turn.** `session-handoff doctor --human` reports client and

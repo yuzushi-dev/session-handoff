@@ -1,0 +1,2 @@
+# Optional local managed app-server integration; base MCP server remains stdlib-only.
+openai-codex==0.160.0
