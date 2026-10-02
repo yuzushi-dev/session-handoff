@@ -31,7 +31,7 @@ BUNDLE_ENTRIES = (
     "hooks",
     "types",
     "docs/telemetry.md",
-    "docs/CHANGELOG-0.7.4.md",
+    "docs/CHANGELOG-0.7.5.md",
     "docs/compatibility.md",
     "docs/compatibility-openai-mcp-apps.md",
     "requirements-codex-app-server.txt",

@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.4-jev.5",
+  "version": "0.7.5",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
@@ -33,7 +33,7 @@
     "hooks/mod.tsx",
     "types/index.d.ts",
     "docs/telemetry.md",
-    "docs/CHANGELOG-0.7.4.md",
+    "docs/CHANGELOG-0.7.5.md",
     "docs/compatibility.md",
     "docs/compatibility-openai-mcp-apps.md",
     "requirements-codex-app-server.txt",
