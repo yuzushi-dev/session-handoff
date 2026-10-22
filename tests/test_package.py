@@ -52,6 +52,8 @@ def test_all_package_version_sources_agree():
     package = load_json("package.json")
     sources = {
         "package.json": package["version"],
+        "package-lock.json": load_json("package-lock.json")["version"],
+        "package-lock.json root": load_json("package-lock.json")["packages"][""]["version"],
         "docs/portable/plugin.json": load_json("docs/portable/plugin.json")["version"],
         ".codex-plugin/plugin.json": load_json(".codex-plugin/plugin.json")["version"],
         ".claude-plugin/plugin.json": load_json(".claude-plugin/plugin.json")["version"],
@@ -68,6 +70,33 @@ def test_all_package_version_sources_agree():
         "failure_stage": "none",
     })
     assert event["plugin_version"] == package["version"]
+
+
+def test_node_versions_and_trust_store_are_guarded():
+    expected_engines = (
+        ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27"
+    )
+    package = load_json("package.json")
+    lock = load_json("package-lock.json")
+    assert package["engines"]["node"] == expected_engines
+    assert lock["packages"][""]["engines"] == package["engines"]
+
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    publish = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+
+    def node_versions(workflow):
+        return [
+            line.split(":", 1)[1].strip().strip('"')
+            for line in workflow.splitlines()
+            if line.strip().startswith("node-version:")
+        ]
+
+    assert node_versions(ci) == ["22.23.4", "22.23.4"]
+    assert node_versions(publish) == ["24.22.1"]
+    assert "npm >= 11.15 is required" in publish
+    assert package["devDependencies"]["@modelcontextprotocol/client"] == "2.3.1"
+    assert lock["packages"][""]["devDependencies"]["@modelcontextprotocol/client"] == "2.3.1"
+    assert lock["packages"]["node_modules/@modelcontextprotocol/client"]["version"] == "2.3.1"
 
 
 @pytest.mark.parametrize(
@@ -265,6 +294,7 @@ def test_npx_setup_uses_the_resolved_package_root(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "home/.codex/skills/session-handoff/SKILL.md").is_file()
+    assert (tmp_path / "home/.local/share/session-handoff/plugin/docs/CHANGELOG-0.7.6.md").is_file()
     assert not (tmp_path / "home/.config/session-handoff/telemetry.json").exists()
 
 
@@ -311,6 +341,7 @@ def test_packed_tarball_runs_through_npx_setup(tmp_path):
     assert "package/.codex-plugin/plugin.json" in contents
     assert not any(path.startswith("package/hooks/__pycache__/") for path in contents)
     assert "package/docs/telemetry.md" in contents
+    assert "package/docs/CHANGELOG-0.7.6.md" in contents
     assert "package/server/migration_engine.py" in contents
 
     client_dir = tmp_path / "bin"

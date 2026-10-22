@@ -7,8 +7,8 @@ GitHub release, then runs npm pack --dry-run before publishing.
 
 The workflow defaults to a dry run and the latest dist-tag. Set dry-run to
 false only for an intentional release, and choose the npm dist-tag explicitly
-for prereleases such as jev. It uses Node 24 and npm 11.15 or newer. npm
-Trusted Publishing supplies the short-lived OIDC credential; the workflow
+for prereleases such as jev. It uses the canary-verified Node.js `24.22.1` release and npm
+11.15 or newer. npm Trusted Publishing supplies the short-lived OIDC credential; the workflow
 contains no npm token.
 
 Configure the npm trusted publisher for package session-handoff, repository
@@ -25,7 +25,7 @@ To configure the npm side (once, with npm account proof of presence), run:
 
 To exercise validation from the main branch:
 
-    gh workflow run publish.yml --ref main -f tag=v0.7.5 -f dry-run=true -f dist-tag=latest
+    gh workflow run publish.yml --ref main -f tag=v0.7.6 -f dry-run=true -f dist-tag=latest
 
 The dry run validates and packs the release but does not exercise the OIDC
 publish exchange. The first real publish requires the npm trusted-publisher

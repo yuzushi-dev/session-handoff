@@ -1,6 +1,6 @@
 {
   "name": "session-handoff",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Create handoffs and migrate sessions between Claude Code and Codex.",
   "license": "MIT",
   "bin": {
@@ -33,7 +33,7 @@
     "hooks/mod.tsx",
     "types/index.d.ts",
     "docs/telemetry.md",
-    "docs/CHANGELOG-0.7.5.md",
+    "docs/CHANGELOG-0.7.6.md",
     "docs/compatibility.md",
     "docs/compatibility-openai-mcp-apps.md",
     "requirements-codex-app-server.txt",
@@ -41,7 +41,7 @@
     "tests/compat/fixtures/"
   ],
   "engines": {
-    "node": ">=18",
+    "node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27",
     "python": ">=3.10"
   },
   "os": [
@@ -53,6 +53,7 @@
     "url": "https://github.com/yuzushi-dev/session-handoff.git"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/ext-apps": "2.0.3",
     "esbuild": "0.25.11"
   }

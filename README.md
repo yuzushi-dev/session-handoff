@@ -63,9 +63,11 @@ both probe answers, assessed for meaning, and recorded in internal pilot reports
 ## Install
 
 Requirements: Linux or macOS (tested on Linux; macOS validation is pending), Python 3.10 or
-newer, and Claude Code, Codex, or both. Git is needed for the marketplace install; Node.js 18
-or newer and npm are needed only for the npm alternative below. Your Claude Code or Codex
-installation may have its own separate dependencies.
+newer, and Claude Code, Codex, or both. Git is needed for the marketplace install; Node.js and
+npm are needed only for the npm alternative below. Supported Node.js ranges are
+`>=22.23.4 <23`, `>=24.22.1 <25`, or `>=26.12.1 <27`; these release floors reject both
+published eMudhra certificate-chain canaries. Your Claude Code or Codex installation may have
+its own separate dependencies.
 
 The [yuzushi-plugins](https://github.com/yuzushi-dev/yuzushi-plugins) marketplace installs the
 plugin from GitHub, on Python; it does not install or require Node/npm.
@@ -150,7 +152,7 @@ PreCompact hook ──► local recovery checkpoint (redacted, pointer-only rein
 The managed bundle carries `hooks/`, `server/` (MCP server and migration engine), `skills/`,
 `bin/`, and `commands/`, copied once into a persistent per-user location by setup.
 
-Release notes: [docs/CHANGELOG-0.7.5.md](docs/CHANGELOG-0.7.5.md).
+Release notes: [docs/CHANGELOG-0.7.6.md](docs/CHANGELOG-0.7.6.md).
 
 ---
 
