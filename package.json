@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "esbuild": "0.25.11"
   }
 }
