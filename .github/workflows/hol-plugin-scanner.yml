@@ -23,7 +23,7 @@ jobs:
 
       - name: HOL Plugin Scanner
         id: scan
-        uses: hashgraph-online/ai-plugin-scanner-action@18823f62adc66a1d3ce9bc1dabe0532623eb7507 # v1.2.678
+        uses: hashgraph-online/ai-plugin-scanner-action@8c2dd4f9cc381ad56496ca44aab10ce19f6bdd0f # v1.2.813
         with:
           plugin_dir: "."
           config: .plugin-scanner.toml
